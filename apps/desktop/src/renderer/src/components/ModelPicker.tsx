@@ -3,7 +3,6 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "../types";
 import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
 import { formatModelPricing } from "./modelPricing";
-import { compareModelPreference } from "../modelPreferences";
 
 interface ProviderGroup {
   id: string;
@@ -19,7 +18,7 @@ interface ModelPickerProps {
 
 function groupModels(models: ProviderModel[]): ProviderGroup[] {
   const groups = new Map<string, ProviderGroup>();
-  for (const model of [...models].sort(compareModelPreference)) {
+  for (const model of models) {
     const existing = groups.get(model.providerId);
     if (existing) {
       existing.models.push(model);

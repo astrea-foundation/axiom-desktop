@@ -3,8 +3,7 @@ param(
     [Parameter(Mandatory)][ValidateSet('x64', 'arm64')][string] $Arch,
     [Parameter(Mandatory)][string] $Version,
     [string] $Installer,
-    [string] $Publisher,
-    [switch] $Combined
+    [string] $Publisher
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -31,8 +30,7 @@ foreach ($file in $app, $cli) {
 $versioned = @($app)
 if ($Installer) {
     $Installer = (Resolve-Path -LiteralPath $Installer).Path
-    $installerArch = if ($Combined) { 'universal' } else { $Arch }
-    if ([IO.Path]::GetFileName($Installer) -cne "Axiom-$Version-win-$installerArch.exe") { throw 'Unexpected installer filename' }
+    if ([IO.Path]::GetFileName($Installer) -cne "Axiom-$Version-win-$Arch.exe") { throw 'Unexpected installer filename' }
     if (-not (Test-Path -LiteralPath "$Installer.blockmap")) { throw 'Missing installer blockmap' }
     $dist = Split-Path $Installer -Parent
     if (@(Get-ChildItem -LiteralPath $dist -File -Filter '*.exe').Count -ne 1 -or

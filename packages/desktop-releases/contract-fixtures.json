@@ -1,205 +1,153 @@
 {
   "release": {
-    "schemaVersion": 2,
-    "version": "0.2.0",
-    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "sequence": 100,
+    "schemaVersion": 1,
+    "version": "0.1.3",
     "signing": "unsigned",
     "downloads": [
       {
-        "name": "Axiom-0.2.0-mac-x64.pkg",
-        "product": "desktop",
-        "platform": "mac",
-        "arch": "x64",
-        "format": "pkg",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-mac-x64.pkg",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-mac-x64.pkg"
-      },
-      {
-        "name": "Axiom-0.2.0-mac-arm64.pkg",
-        "product": "desktop",
-        "platform": "mac",
-        "arch": "arm64",
-        "format": "pkg",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-mac-arm64.pkg",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-mac-arm64.pkg"
-      },
-      {
-        "name": "Axiom-0.2.0-win-x64.exe",
-        "product": "desktop",
-        "platform": "win",
-        "arch": "x64",
-        "format": "exe",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-win-x64.exe",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-win-x64.exe"
-      },
-      {
-        "name": "Axiom-0.2.0-win-arm64.exe",
-        "product": "desktop",
-        "platform": "win",
-        "arch": "arm64",
-        "format": "exe",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-win-arm64.exe",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-win-arm64.exe"
-      },
-      {
-        "name": "Axiom-0.2.0-linux-x64.AppImage",
-        "product": "desktop",
+        "name": "Axiom-0.1.3-linux-x64.AppImage",
         "platform": "linux",
         "arch": "x64",
         "format": "AppImage",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-linux-x64.AppImage",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-linux-x64.AppImage"
-      },
-      {
-        "name": "Axiom-0.2.0-linux-x64.deb",
-        "product": "desktop",
-        "platform": "linux",
-        "arch": "x64",
-        "format": "deb",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-linux-x64.deb",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-linux-x64.deb"
-      },
-      {
-        "name": "Axiom-0.2.0-linux-x64.pkg.tar.xz",
-        "product": "desktop",
-        "platform": "linux",
-        "arch": "x64",
-        "format": "pacman",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/Axiom-0.2.0-linux-x64.pkg.tar.xz",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/Axiom-0.2.0-linux-x64.pkg.tar.xz"
+        "bytes": 25,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "url": "https://cdn.axiom.stream/downloads/0.1.3/Axiom-0.1.3-linux-x64.AppImage"
       }
     ],
     "cliDownloads": [
       {
-        "name": "AxiomCLI-0.2.0-mac-x64.pkg",
-        "product": "cli",
-        "platform": "mac",
-        "arch": "x64",
-        "format": "pkg",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-mac-x64.pkg",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-mac-x64.pkg"
-      },
-      {
-        "name": "AxiomCLI-0.2.0-mac-arm64.pkg",
-        "product": "cli",
-        "platform": "mac",
-        "arch": "arm64",
-        "format": "pkg",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-mac-arm64.pkg",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-mac-arm64.pkg"
-      },
-      {
-        "name": "AxiomCLI-0.2.0-win-x64.exe",
-        "product": "cli",
-        "platform": "win",
-        "arch": "x64",
-        "format": "exe",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-win-x64.exe",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-win-x64.exe"
-      },
-      {
-        "name": "AxiomCLI-0.2.0-win-arm64.exe",
-        "product": "cli",
-        "platform": "win",
-        "arch": "arm64",
-        "format": "exe",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-win-arm64.exe",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-win-arm64.exe"
-      },
-      {
-        "name": "AxiomCLI-0.2.0-linux-x64.sh",
-        "product": "cli",
+        "name": "axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz",
         "platform": "linux",
         "arch": "x64",
-        "format": "sh",
-        "bytes": 20,
-        "sha256": "b6f9ec53e2e8c6eb6a35deac7c3e8a2d4833c22be6ceb2096d66d02e217dff64",
-        "url": "https://cdn.axiom.stream/downloads/0.2.0/AxiomCLI-0.2.0-linux-x64.sh",
-        "githubUrl": "https://github.com/astrea-foundation/axiom-releases/releases/download/v0.2.0/AxiomCLI-0.2.0-linux-x64.sh"
+        "format": "tar.gz",
+        "bytes": 25,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "url": "https://cdn.axiom.stream/downloads/0.1.3/axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz"
       }
     ]
   },
   "cases": [
     {
-      "name": "initial contract",
+      "name": "desktop and standalone bundle",
       "valid": true,
       "changes": []
     },
     {
-      "name": "reject schemaVersion",
-      "valid": false,
+      "name": "legacy desktop-only manifest",
+      "valid": true,
       "changes": [
         {
-          "path": "/schemaVersion",
-          "value": 1
+          "path": "/cliDownloads",
+          "remove": true
         }
       ]
     },
     {
-      "name": "reject version",
+      "name": "legacy implicit format and schema",
+      "valid": true,
+      "changes": [
+        {
+          "path": "/schemaVersion",
+          "remove": true
+        },
+        {
+          "path": "/downloads/0/format",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "empty CLI list",
+      "valid": true,
+      "changes": [
+        {
+          "path": "/cliDownloads",
+          "value": []
+        }
+      ]
+    },
+    {
+      "name": "invalid version 01.1.3",
       "valid": false,
       "changes": [
         {
           "path": "/version",
-          "value": "01.2.0"
+          "value": "01.1.3"
         }
       ]
     },
     {
-      "name": "reject revision",
+      "name": "invalid version 0.1.3-beta",
       "valid": false,
       "changes": [
         {
-          "path": "/revision",
-          "value": "bad"
+          "path": "/version",
+          "value": "0.1.3-beta"
         }
       ]
     },
     {
-      "name": "reject sequence",
+      "name": "invalid version 0.1.3+build",
       "valid": false,
       "changes": [
         {
-          "path": "/sequence",
-          "value": 0
+          "path": "/version",
+          "value": "0.1.3+build"
         }
       ]
     },
     {
-      "name": "reject signing",
+      "name": "invalid version 0.1",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/version",
+          "value": "0.1"
+        }
+      ]
+    },
+    {
+      "name": "invalid version 1000000000.1.3",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/version",
+          "value": "1000000000.1.3"
+        }
+      ]
+    },
+    {
+      "name": "invalid schemaVersion 2",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/schemaVersion",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "invalid schemaVersion None",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/schemaVersion",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "invalid signing unknown",
       "valid": false,
       "changes": [
         {
           "path": "/signing",
-          "value": "signed"
+          "value": "unknown"
         }
       ]
     },
     {
-      "name": "reject downloads",
+      "name": "invalid downloads []",
       "valid": false,
       "changes": [
         {
@@ -209,7 +157,7 @@
       ]
     },
     {
-      "name": "reject cliDownloads",
+      "name": "invalid cliDownloads None",
       "valid": false,
       "changes": [
         {
@@ -219,37 +167,27 @@
       ]
     },
     {
-      "name": "reject artifact product",
+      "name": "invalid cliDownloads {}",
       "valid": false,
       "changes": [
         {
-          "path": "/downloads/0/product",
-          "value": "cli"
+          "path": "/cliDownloads",
+          "value": {}
         }
       ]
     },
     {
-      "name": "reject artifact name",
+      "name": "downloads invalid name",
       "valid": false,
       "changes": [
         {
           "path": "/downloads/0/name",
-          "value": "../test.pkg"
+          "value": "../archive.tar.gz"
         }
       ]
     },
     {
-      "name": "reject artifact platform",
-      "valid": false,
-      "changes": [
-        {
-          "path": "/downloads/0/platform",
-          "value": "linux"
-        }
-      ]
-    },
-    {
-      "name": "reject artifact arch",
+      "name": "downloads invalid arch",
       "valid": false,
       "changes": [
         {
@@ -259,17 +197,7 @@
       ]
     },
     {
-      "name": "reject artifact format",
-      "valid": false,
-      "changes": [
-        {
-          "path": "/downloads/0/format",
-          "value": "dmg"
-        }
-      ]
-    },
-    {
-      "name": "reject artifact bytes",
+      "name": "downloads invalid bytes",
       "valid": false,
       "changes": [
         {
@@ -279,52 +207,256 @@
       ]
     },
     {
-      "name": "reject artifact sha256",
+      "name": "downloads invalid bytes",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/downloads/0/bytes",
+          "value": 2147483649
+        }
+      ]
+    },
+    {
+      "name": "downloads invalid bytes",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/downloads/0/bytes",
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "name": "downloads invalid sha256",
       "valid": false,
       "changes": [
         {
           "path": "/downloads/0/sha256",
-          "value": "bad"
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         }
       ]
     },
     {
-      "name": "reject artifact url",
+      "name": "downloads invalid url",
       "valid": false,
       "changes": [
         {
           "path": "/downloads/0/url",
-          "value": "http://cdn.axiom.stream/file"
+          "value": "https://evil.example/download"
         }
       ]
     },
     {
-      "name": "reject artifact githubUrl",
+      "name": "downloads invalid format",
       "valid": false,
       "changes": [
         {
-          "path": "/downloads/0/githubUrl",
-          "value": "https://example.com/file"
+          "path": "/downloads/0/format",
+          "value": null
         }
       ]
     },
     {
-      "name": "duplicate targets",
+      "name": "downloads invalid platform",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/downloads/0/platform",
+          "value": "win"
+        }
+      ]
+    },
+    {
+      "name": "downloads duplicate",
       "valid": false,
       "changes": [
         {
           "path": "/downloads",
-          "repeat": 2
+          "value": [
+            {
+              "name": "Axiom-0.1.3-linux-x64.AppImage",
+              "platform": "linux",
+              "arch": "x64",
+              "format": "AppImage",
+              "bytes": 25,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "url": "https://cdn.axiom.stream/downloads/0.1.3/Axiom-0.1.3-linux-x64.AppImage"
+            },
+            {
+              "name": "Axiom-0.1.3-linux-x64.AppImage",
+              "platform": "linux",
+              "arch": "x64",
+              "format": "AppImage",
+              "bytes": 25,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "url": "https://cdn.axiom.stream/downloads/0.1.3/Axiom-0.1.3-linux-x64.AppImage"
+            }
+          ]
         }
       ]
     },
     {
-      "name": "required cli inventory",
+      "name": "cliDownloads invalid name",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/name",
+          "value": "../archive.tar.gz"
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid arch",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/arch",
+          "value": "arm64"
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid bytes",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/bytes",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid bytes",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/bytes",
+          "value": 2147483649
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid bytes",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/bytes",
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid sha256",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/sha256",
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid url",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/url",
+          "value": "https://evil.example/download"
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid format",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/format",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads invalid platform",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/platform",
+          "value": "win"
+        }
+      ]
+    },
+    {
+      "name": "cliDownloads duplicate",
       "valid": false,
       "changes": [
         {
           "path": "/cliDownloads",
-          "remove": true
+          "value": [
+            {
+              "name": "axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz",
+              "platform": "linux",
+              "arch": "x64",
+              "format": "tar.gz",
+              "bytes": 25,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "url": "https://cdn.axiom.stream/downloads/0.1.3/axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz"
+            },
+            {
+              "name": "axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz",
+              "platform": "linux",
+              "arch": "x64",
+              "format": "tar.gz",
+              "bytes": 25,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "url": "https://cdn.axiom.stream/downloads/0.1.3/axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "CLI cannot be a desktop artifact",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/downloads/0/name",
+          "value": "axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz"
+        },
+        {
+          "path": "/downloads/0/format",
+          "value": "tar.gz"
+        },
+        {
+          "path": "/downloads/0/url",
+          "value": "https://cdn.axiom.stream/downloads/0.1.3/axiomai-0.1.3-x86_64-unknown-linux-gnu.tar.gz"
+        }
+      ]
+    },
+    {
+      "name": "desktop cannot be a CLI artifact",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads/0/name",
+          "value": "Axiom-0.1.3-linux-x64.AppImage"
+        },
+        {
+          "path": "/cliDownloads/0/format",
+          "value": "AppImage"
+        },
+        {
+          "path": "/cliDownloads/0/url",
+          "value": "https://cdn.axiom.stream/downloads/0.1.3/Axiom-0.1.3-linux-x64.AppImage"
+        }
+      ]
+    },
+    {
+      "name": "too many downloads",
+      "valid": false,
+      "changes": [
+        {
+          "path": "/cliDownloads",
+          "repeat": 100
         }
       ]
     }

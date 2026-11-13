@@ -202,7 +202,7 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
     ]);
     McpServerConfig {
         name: "Blossom Fixture".into(),
-        command: "env".into(),
+        command: "/usr/bin/env".into(),
         args,
         read_only_tools: read_only.then(|| "echo".into()).into_iter().collect(),
         tool_timeout_secs: axiomcli::config::default_mcp_tool_timeout_secs(),

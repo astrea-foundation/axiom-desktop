@@ -36,7 +36,7 @@ test("pending response followed by status notices renders exactly one Generating
   const badge = renderToStaticMarkup(createElement(TeeVerificationBadge, {
     session: session([]), modelId: "test-model", webEnabled: false, onVerify: () => {},
   }));
-  assert.match(badge, /Verifying reply/);
+  assert.match(badge, /Verifying TEE/);
 });
 
 test("fallback appears once before the assistant placeholder arrives", () => {
@@ -95,77 +95,9 @@ test("actual verification failures stay explicit and cannot be copied as complet
   const current = session([user, { ...pending, text: "Failed response", status: "failed", terminalVerified: false }]);
   current.running = false;
   const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-  assert.match(html, /This reply couldn&#x27;t be verified\. Try again\./);
+  assert.match(html, /Response interrupted/);
   assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Copy"/);
   assert.doesNotMatch(html, />E2EE</);
-});
-
-test("stream failures show one friendly notice without changing completion status", () => {
-  for (const detail of [
-    "Tinfoil stream ended without authenticated completion",
-    "relay stream ended without terminal completion",
-    "provider stream ended before [DONE]",
-    "Tinfoil response stalled",
-    "Tinfoil response timed out",
-    "Tinfoil request timed out",
-    "Tinfoil reported an inference error",
-  ]) {
-    const current = session([
-      user,
-      { ...pending, text: "Partial reply", status: "failed", terminalVerified: false },
-      { id: "failure", turnId: "turn-1", kind: "error", text: detail },
-    ]);
-    current.running = false;
-    const before = structuredClone(current);
-    const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-    assert.equal(html.match(/Try again\./g)?.length, 1);
-    assert.match(html, /role="status"/);
-    assert.match(html, /<details[^>]*>/);
-    assert.doesNotMatch(html, /<details[^>]*\sopen|role="alert"|final response could not be verified|This reply couldn|color-danger|>E2EE</);
-    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Copy"/);
-    assert.deepEqual(current, before);
-  }
-});
-
-test("authentication failures retain one error notice instead of being described as network interruptions", () => {
-  for (const detail of ["Tinfoil response authentication or transport failed", "Tinfoil encrypted exchange failed", "stream response identity changed"]) {
-    const current = session([
-      user, { ...pending, text: "Failed reply", status: "failed", terminalVerified: false },
-      { id: "failure", turnId: "turn-1", kind: "error", text: detail },
-    ]);
-    current.running = false;
-    const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-    assert.equal(html.match(/role="alert"/g)?.length, 1);
-    assert.doesNotMatch(html, /reply ended early|role="status"|This reply couldn|>E2EE</);
-    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Copy"/);
-    assert.ok(html.includes(detail));
-  }
-});
-
-test("a different turn's error cannot hide a failed reply's fallback notice", () => {
-  const current = session([
-    { id: "earlier-error", turnId: "earlier-turn", kind: "error", text: "Tinfoil response timed out" },
-    user, { ...pending, text: "Failed reply", status: "failed", terminalVerified: false },
-  ]);
-  current.running = false;
-  const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-  assert.match(html, /This reply couldn&#x27;t be verified\. Try again\./);
-  assert.equal(html.match(/role="alert"/g)?.length, 1);
-});
-
-test("reasoning and empty replies use the turn error as their single failure notice", () => {
-  for (const text of ["", "Partial reply"]) {
-    const current = session([
-      user,
-      { ...pending, text, status: "failed", terminalVerified: false },
-      { id: "thought", kind: "reasoning", turnId: "turn-1", text: "Partial thought", status: "failed", terminalVerified: false },
-      { id: "failure", turnId: "turn-1", kind: "error", text: "Tinfoil stream ended without authenticated completion" },
-    ]);
-    current.running = false;
-    const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
-    assert.equal(html.match(/The reply ended early\. Try again\./g)?.length, 1);
-    assert.doesNotMatch(html, /final response could not be verified|This reply couldn|Generating|>E2EE</);
-  }
 });
 
 function searchTool(id: string, status = "completed"): ClientTimelineItem {

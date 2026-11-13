@@ -5,7 +5,6 @@ import type {
   BillingStatusResponse,
   GiftCodeRedeemResponse,
   UsageSummaryResponse,
-  UsageSummaryRequest,
   ApiKeyListResponse,
   ApiKeyCreatedResponse,
   ApiKeyRevokeResponse,
@@ -58,7 +57,7 @@ export interface AgentApi {
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
   redeemGiftCode: (code: string, accountId: string) => Promise<GiftCodeRedeemResponse>;
-  usageSummary: (accountId: string, request?: UsageSummaryRequest) => Promise<UsageSummaryResponse>;
+  usageSummary: (accountId: string) => Promise<UsageSummaryResponse>;
   apiKeys: (accountId: string) => Promise<ApiKeyListResponse>;
   createApiKey: (name: string, accountId: string) => Promise<ApiKeyCreatedResponse>;
   revokeApiKey: (id: string, accountId: string) => Promise<ApiKeyRevokeResponse>;
@@ -67,7 +66,7 @@ export interface AgentApi {
   nativeLoginCancel: (loginId: string) => Promise<AccountStatusResponse>;
   openAccountPortal: () => Promise<void>;
   logout: () => Promise<AccountStatusResponse>;
-  verifySecurity: (sessionId: string, acceptOutdatedTee?: boolean, modelId?: string) => Promise<VerifySecurityResponse>;
+  verifySecurity: (sessionId: string) => Promise<VerifySecurityResponse>;
   compact: (sessionId: string, focus?: string) => Promise<CompactResponse>;
   deletePreview: (sessionIds: string[]) => Promise<DeletePreviewResponse>;
   deleteConfirm: (confirmationToken: string, sessionIds: string[]) => Promise<DeleteConfirmResponse>;
@@ -109,7 +108,7 @@ export const agentApi: AgentApi = {
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
   redeemGiftCode: (code, accountId) => invoke("redeem-gift-code", code, accountId),
-  usageSummary: (accountId, request = {}) => invoke("usage-summary", accountId, request.period ?? "all_time", request.timezone ?? "UTC"),
+  usageSummary: (accountId) => invoke("usage-summary", accountId),
   apiKeys: (accountId) => invoke("api-keys", accountId),
   createApiKey: (name, accountId) => invoke("api-key-create", name, accountId),
   revokeApiKey: (id, accountId) => invoke("api-key-revoke", id, accountId),
@@ -118,7 +117,7 @@ export const agentApi: AgentApi = {
   nativeLoginCancel: (loginId) => invoke("native-login-cancel", loginId),
   openAccountPortal: () => invoke("account-open"),
   logout: () => invoke("logout"),
-  verifySecurity: (sessionId, acceptOutdatedTee, modelId) => invoke("security-verify", sessionId, acceptOutdatedTee, modelId),
+  verifySecurity: (sessionId) => invoke("security-verify", sessionId),
   compact: (sessionId, focus) => invoke("compact", sessionId, focus),
   deletePreview: (sessionIds) => invoke("delete-preview", sessionIds),
   deleteConfirm: (confirmationToken, sessionIds) => invoke("delete-confirm", confirmationToken, sessionIds),

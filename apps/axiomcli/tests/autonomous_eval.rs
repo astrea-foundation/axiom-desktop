@@ -1,7 +1,3 @@
-#[path = "support/search.rs"]
-mod search;
-use search::test_registry;
-
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
@@ -12,6 +8,7 @@ use axiomcli::{
     provider::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent, ToolCall,
     },
+    tools::default_registry,
     workspace::Workspace,
 };
 use serde_json::json;
@@ -102,7 +99,7 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
     });
     let engine = AgentEngine::new(
         provider,
-        Arc::new(test_registry(32 * 1024).expect("tools")),
+        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:8888").expect("tools")),
         "scripted",
         8,
     );
@@ -209,7 +206,7 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
     });
     let engine = AgentEngine::new(
         provider,
-        Arc::new(test_registry(32 * 1024).expect("tools")),
+        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:8888").expect("tools")),
         "scripted",
         8,
     );
@@ -278,7 +275,7 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
     });
     let engine = AgentEngine::new(
         provider,
-        Arc::new(test_registry(4096).expect("tools")),
+        Arc::new(default_registry(4096, "http://127.0.0.1:8888").expect("tools")),
         "scripted",
         4,
     );

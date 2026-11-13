@@ -32,15 +32,6 @@ pub struct ProviderSecurityVerification {
 
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
-    async fn accept_outdated_tee(
-        &self,
-        _model: &str,
-        _cancellation: CancellationToken,
-    ) -> Result<ProviderSecurityVerification> {
-        Err(AxiomError::Provider(
-            "this provider does not support outdated-TEE consent".into(),
-        ))
-    }
     /// Establish and verify the selected model's security session without
     /// performing inference. Front ends use this as a startup preflight.
     async fn verify_security(
@@ -220,29 +211,6 @@ impl std::fmt::Debug for SecureAxiomProvider {
 
 #[async_trait]
 impl InferenceProvider for SecureAxiomProvider {
-    async fn accept_outdated_tee(
-        &self,
-        model: &str,
-        cancellation: CancellationToken,
-    ) -> Result<ProviderSecurityVerification> {
-        let client = self.client(&cancellation).await?;
-        let models = client
-            .models(cancellation.clone())
-            .await
-            .map_err(map_secure_error)?;
-        let model_info = models
-            .iter()
-            .find(|entry| entry.id == model)
-            .ok_or_else(|| AxiomError::Provider("selected secure model is unavailable".into()))?;
-        if cancellation.is_cancelled() {
-            return Err(AxiomError::Cancelled);
-        }
-        self.config
-            .accept_outdated_tee_for_provider(&model_info.provider_id)
-            .map_err(map_secure_error)?;
-        self.verify_security(model, cancellation).await
-    }
-
     async fn verify_security(
         &self,
         model: &str,
@@ -250,11 +218,7 @@ impl InferenceProvider for SecureAxiomProvider {
     ) -> Result<ProviderSecurityVerification> {
         let (_, _, session) = self.establish_verified(model, cancellation, true).await?;
         Ok(ProviderSecurityVerification {
-            state: if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
-                ProviderSecurityState::Degraded
-            } else {
-                ProviderSecurityState::Verified
-            },
+            state: ProviderSecurityState::Verified,
             evidence: Some(session.evidence().clone()),
         })
     }
@@ -309,13 +273,7 @@ impl InferenceProvider for SecureAxiomProvider {
             };
             send_provider_event(
                 &events,
-                ProviderEvent::SecurityState(
-                    if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
-                        ProviderSecurityState::Degraded
-                    } else {
-                        ProviderSecurityState::Verified
-                    },
-                ),
+                ProviderEvent::SecurityState(ProviderSecurityState::Verified),
                 &cancellation,
             )
             .await?;
@@ -358,15 +316,7 @@ impl InferenceProvider for SecureAxiomProvider {
                             .await?;
                         send_provider_event(
                             &retry_events,
-                            ProviderEvent::SecurityState(
-                                if session.evidence().state
-                                    == axiom_secure_client::SecurityState::Degraded
-                                {
-                                    ProviderSecurityState::Degraded
-                                } else {
-                                    ProviderSecurityState::Verified
-                                },
-                            ),
+                            ProviderEvent::SecurityState(ProviderSecurityState::Verified),
                             &cancellation,
                         )
                         .await?;
@@ -526,19 +476,7 @@ async fn secure_stream_failure<T>(
     ) {
         let _ = send_provider_event(
             events,
-            ProviderEvent::SecurityState(
-                if matches!(
-                    &error,
-                    AxiomError::SecureProvider {
-                        code: "PROVIDER_TDX_OUT_OF_DATE",
-                        ..
-                    }
-                ) {
-                    ProviderSecurityState::Outdated
-                } else {
-                    ProviderSecurityState::Failed
-                },
-            ),
+            ProviderEvent::SecurityState(ProviderSecurityState::Failed),
             &CancellationToken::new(),
         )
         .await;

@@ -34,27 +34,28 @@ trusted tool profile; requests requiring unavailable human authority fail closed
 
 ## Updates
 
-Use `/update` while the TUI is idle, or run `axiomcli update`. The native client
-checks the signed public release inventory, downloads its matching installer,
-verifies the bytes, installs and restarts the TUI in the same terminal. `/update`
-restores the current workspace and session. `axiomcli update --check` only checks.
-The TUI leaves fullscreen mode before downloading; Ctrl-C can cancel a download.
-Close other CLI/proxy sessions and, for a bundled CLI, Desktop when the helper
-waits for the installation lock. It times out after three minutes without killing
-them. Windows users should launch through the installed `axiomcli.cmd` command so
-the terminal launcher can hold the console open during replacement.
+`axiomcli update` checks the same anonymous release feed as Desktop, without
+loading credentials, account state, configuration, or model messages. It reports
+the latest version and the update path for the running executable. Checks reject
+redirects, malformed metadata, unsupported archives, and oversized responses.
 
-A bundled CLI updates the entire Desktop package; standalone installers update
-CLI and proxy together. OS authorization may be required for system packages.
-Source builds have no installation owner and must be rebuilt. Unsigned preview
-builds have no trusted stable release key and cannot install stable updates.
+Installed TUIs check quietly at startup and every six hours. A newer version
+appears as a local transcript notice; failed checks do not interrupt work, and
+notices are neither saved as conversation history nor sent to models. Source
+builds skip background checks. `exec` and ACP never start update checks.
 
-Installed TUIs check quietly at startup and every six hours. Notices and update
-failures remain local and are never sent to a model. `exec` and ACP do not check
-in the background. Update HTTP requests carry no account credentials or messages.
-Signatures, strict target selection, bounded transport, byte length, SHA-256 and
-remembered release sequence/version are checked again before application.
-See [installation](installing-desktop.md) and [release trust](releasing.md).
+A CLI inside Desktop's resources directory, including a PATH symlink or AppImage
+wrapper, directs you to **Axiom → Settings → Updates**. One desktop installer
+replaces Desktop and its bundled CLI together; there is no independent bundled
+CLI replacement. Close Desktop and all terminal sessions before installing.
+
+Standalone Linux x86-64 installs made by `scripts/install-release` receive the
+matching CLI + local proxy archive URL, byte size, SHA-256 and checksum-file URL.
+Download and verify the archive, stop CLI and proxy sessions, then reinstall the
+complete bundle with the same prefix. If the release has no compatible standalone
+archive, the command says so and never substitutes a desktop installer or another
+architecture. The command reports updates; it does not install or execute them.
+Unrecognized binaries receive source-build guidance.
 
 ## Terminal controls
 
@@ -88,7 +89,6 @@ reconciled against the live catalog before the new session is persisted.
 | `/topup` | Show the mainnet Zcash deposit address |
 | `/redeem` | Open masked gift-code entry; takes no code argument |
 | `/security`, `/refresh` | Inspect cached public evidence or request fresh local verification |
-| `/security accept-outdated` | Explicitly accept NEAR’s Intel `OutOfDate` posture until restart, then verify again |
 | `/usage` | Inspect the last reported request's usage, context capacity and compaction threshold |
 | `/theme dark\|light\|terminal` | Set the session appearance |
 | `/help` | Show the complete command reference |
@@ -100,12 +100,7 @@ boundary. Tool profiles and process isolation are described in
 Submitting an ordinary prompt remembers its model and thinking level as defaults
 for future chats. Resume restores the selected transcript's durable settings;
 a model selection that never ran does not become the resumed prompt's model.
-In the TUI, a short local label appears immediately, followed by one background
-title request to the selected model through attested provider E2EE. Its normal
-model charge is recorded as title usage. Failures retain the local label; manual
-renames and existing named threads are preserved. Title requests omit tools and
-attachments, use bounded first-prompt text and stop after 60 seconds. Headless
-commands retain local labels. A model's reasoning choices and
+Titles derive locally from the first prompt. A model's reasoning choices and
 context capacity come from validated catalog metadata, not its name.
 The composer and `/thinking` suggestions use the selected offering's exact
 controls, including enabled/disabled modes or supported effort levels. Models
@@ -128,11 +123,6 @@ Paste targets the visible input: picker filters, transcript search, question
 answers, the masked gift-code field or the composer. Non-editable overlays never change a hidden draft.
 Automatic and explicit compaction use tool-free attested E2EE inference and
 persist successor context for resume. Failed or cancelled work remains incomplete.
-The next prompt retains available partial reply text and completed tool results,
-with a notice that the earlier turn did not finish. Partial reasoning follows
-the selected model's reasoning replay policy. Stream failures and runtime limits
-preserve this context as well as normal completion; retained output does not gain
-verification or imply unfinished actions succeeded.
 
 The footer's context percentage uses the last completed conversation request's
 reported input/output tokens and that report's model capacity. `/usage` shows the
@@ -253,9 +243,3 @@ Command authority: [main.rs](../apps/axiomcli/src/main.rs),
 [slash.rs](../apps/axiomcli/src/slash.rs),
 [TUI](../apps/axiomcli/src/tui.rs), and
 [agent runtime](../apps/axiomcli/src/agent.rs).
-
-Outdated-provider consent is held in memory for the current native runtime and
-provider. The TUI keeps a yellow TEE warning after acceptance. Submit the prompt
-again after the fresh check succeeds. No other failed check becomes acceptable;
-headless and local-proxy processes remain strict unless explicitly controlled
-through a supported interactive consent operation.

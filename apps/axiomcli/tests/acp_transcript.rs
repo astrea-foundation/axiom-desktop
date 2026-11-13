@@ -196,7 +196,7 @@ impl AcpProcess {
                         "account": 2,
                         "billing": 2,
                         "usage": 1,
-                        "securityEvidence": 3,
+                        "securityEvidence": 2,
                         "compaction": 1,
                         "activity": 1
                     }
@@ -454,50 +454,6 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
         saw_title_notification,
         "initial titles must be published before the prompt completes"
     );
-    acp.close().await;
-}
-
-#[tokio::test]
-async fn generated_title_arrives_after_the_first_prompt_and_survives_reload() {
-    let workspace = tempfile::tempdir().unwrap();
-    let mut acp = AcpProcess::spawn("echo");
-    acp.initialize_extension().await;
-    let session = acp.new_session(2, workspace.path()).await;
-    acp.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"Please fix my login redirect"}]}})).await;
-    let mut completed = false;
-    let mut saw_fallback = false;
-    loop {
-        let value = acp.read().await;
-        if value["id"] == 3 {
-            assert_eq!(value["result"]["stopReason"], "end_turn");
-            completed = true;
-        }
-        if value["params"]["update"]["sessionUpdate"] == "session_info_update" {
-            let title = value["params"]["update"]["title"].as_str().unwrap();
-            if title == "Please fix my login redirect" {
-                saw_fallback = true;
-            }
-            if title == "Generated conversation title" {
-                assert!(saw_fallback);
-                assert!(
-                    completed,
-                    "title work must outlive a successfully completed prompt"
-                );
-                break;
-            }
-        }
-    }
-    acp.send(&json!({"jsonrpc":"2.0","id":4,"method":"_axiom/thread/list","params":{"limit":20}}))
-        .await;
-    let listed = acp.response(4).await;
-    let thread = listed["result"]["threads"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|thread| thread["threadId"] == session)
-        .unwrap();
-    assert_eq!(thread["title"], "Generated conversation title");
     acp.close().await;
 }
 
@@ -1177,8 +1133,7 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
             "help",
             "balance",
             "topup",
-            "redeem",
-            "update"
+            "redeem"
         ]
     );
     let model_command = commands
@@ -1309,20 +1264,6 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     }
     assert!(refreshed.contains("Attestation refreshed"));
     assert!(!refreshed.contains("Echo:"));
-    acp.send(&json!({"jsonrpc":"2.0","id":9,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/update"}]}}))
-        .await;
-    let mut update_help = String::new();
-    loop {
-        let value = acp.read().await;
-        update_help.push_str(&value.to_string());
-        if value.get("id").and_then(Value::as_i64) == Some(9) {
-            assert_eq!(value["result"]["stopReason"], "end_turn");
-            break;
-        }
-    }
-    assert!(update_help.contains("axiomcli update"));
-    assert!(!update_help.contains("Echo:"));
     acp.close().await;
 }
 
@@ -1342,13 +1283,9 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     }))
     .await;
     let mut transcript = String::new();
-    let mut updates = Vec::new();
     loop {
         let value = acp.read().await;
         transcript.push_str(&value.to_string());
-        if value["method"] == "session/update" {
-            updates.push(value["params"]["update"].clone());
-        }
         if value.get("id").and_then(Value::as_i64) == Some(3) {
             assert_eq!(value["result"]["stopReason"], "end_turn");
             break;
@@ -1360,37 +1297,19 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     );
     assert!(transcript.contains("replace_text"));
     assert!(transcript.contains("frontend-edit"));
-    let diff_update = updates
-        .iter()
-        .find(|update| {
-            update["sessionUpdate"] == "tool_call_update"
-                && update["toolCallId"] == "frontend-edit"
-                && update["content"][0]["type"] == "diff"
-        })
-        .expect("workspace edit diff update");
-    let content = diff_update["content"].as_array().expect("diff content");
-    assert_eq!(content.len(), 1, "one edited file");
-    let diff = &content[0];
-    assert_eq!(diff["oldText"], "before\n");
-    assert_eq!(diff["newText"], "after\n");
-    let locations = diff_update["locations"].as_array().expect("diff locations");
-    assert_eq!(locations.len(), 1, "one edited file location");
-    // Decode JSON escapes (including Windows separators) before normalizing
-    // filesystem aliases such as macOS /var and /private/var.
-    let expected_path = workspace
-        .path()
-        .join("frontend.txt")
-        .canonicalize()
-        .expect("canonical edited file");
-    for (kind, path) in [("diff", &diff["path"]), ("location", &locations[0]["path"])] {
-        let path = Path::new(path.as_str().expect("file path"));
-        assert!(path.is_absolute(), "{kind} path must be absolute: {path:?}");
-        assert_eq!(
-            path.canonicalize().expect("canonical ACP file path"),
-            expected_path,
-            "{kind} path must identify the edited file"
-        );
-    }
+    assert!(transcript.contains("\"type\":\"diff\""));
+    assert!(transcript.contains("\"oldText\":\"before\\n\""));
+    assert!(transcript.contains("\"newText\":\"after\\n\""));
+    assert!(transcript.contains("\"locations\""));
+    assert!(
+        transcript.contains(
+            workspace
+                .path()
+                .join("frontend.txt")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
     assert!(transcript.contains("Updated frontend.txt through the shared turn contract."));
     acp.close().await;
 }
@@ -1825,32 +1744,6 @@ async fn malformed_unknown_and_duplicate_ids_are_bounded() {
     let second = acp.response(9).await;
     assert!(first.get("result").is_some());
     assert!(second.get("result").is_some() || second.get("error").is_some());
-    acp.close().await;
-}
-
-#[tokio::test]
-async fn cancelled_permission_response_cancels_the_prompt_without_a_notification() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let mut acp = AcpProcess::spawn("approval");
-    acp.initialize().await;
-    let session = acp.new_session(2, workspace.path()).await;
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":3,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"wait for approval"}]}
-    }))
-    .await;
-    loop {
-        let value = acp.read().await;
-        if value["method"] == "session/request_permission" {
-            acp.send(&json!({
-                "jsonrpc":"2.0","id":value["id"],
-                "result":{"outcome":{"outcome":"cancelled"}}
-            }))
-            .await;
-            break;
-        }
-    }
-    assert_eq!(acp.response(3).await["result"]["stopReason"], "cancelled");
     acp.close().await;
 }
 

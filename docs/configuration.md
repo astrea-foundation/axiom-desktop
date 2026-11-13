@@ -65,7 +65,8 @@ separate. See [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md).
 ```toml
 base_url = "https://api.axiom.stream"
 permission_profile = "confirm"
-web_search_provider = "axiom" # the only supported search provider
+web_search_provider = "axiom" # alternatively: searxng
+searxng_url = "http://127.0.0.1:8888"
 max_context_bytes = 16777216
 max_context_tokens = 4194304
 max_tool_output_bytes = 131072
@@ -144,11 +145,6 @@ capacity, capped by local limits. Unsupported reasoning levels fail locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model
 may expose only a subset. See [CLI](cli.md) for remembered model/thinking settings.
 
-Web search uses the authenticated Axiom account endpoint. An unsupported
-`web_search_provider` value fails startup instead of silently choosing a
-different search destination. Search queries are not inference E2EE; see
-[privacy](privacy.md).
-
 ## Environment
 
 | Variable | Meaning |
@@ -157,7 +153,8 @@ different search destination. Search queries are not inference E2EE; see
 | `AXIOM_BASE_URL` | Relay origin, default `https://api.axiom.stream` |
 | `AXIOM_AUTH_URL` | Hosted account origin, default `https://auth.axiom.stream` |
 | `AXIOM_MODEL` | Discovered model ID override |
-| `AXIOM_WEB_SEARCH_PROVIDER` | `axiom` (default and only supported value) |
+| `AXIOM_WEB_SEARCH_PROVIDER` | `axiom` (default) or `searxng` |
+| `AXIOM_SEARXNG_URL` | Explicit SearXNG endpoint |
 | `AXIOM_PERMISSION_PROFILE` | Trusted startup tool profile |
 | `AXIOMCLI_CREDENTIAL_STORE` | Optional `keyring`; plaintext-file stores are rejected |
 | `AXIOMCLI_THEME` | `dark` (default), `light`, or `terminal` |
@@ -171,8 +168,6 @@ Desktop service-origin pairing and development overrides are described in
 a sanitized environment, not the application's credentials; per-command additions
 are limited by native policy.
 
-The default model setting is `auto`: prefer Tinfoil's DeepSeek V4.1 Flash
-(`deepseek-v4-1-flash`) when it appears in the validated provider catalog. Other
-Tinfoil offerings come next, followed by NEAR and then other registered providers.
-Configure an explicit model ID to select a particular offering. Saved selections
-take precedence; this preference cannot add an unavailable model to the catalog.
+The default model setting is `auto`: resolve a current offering from the validated
+provider catalog when creating a session. Configure an explicit model ID to select
+a particular offering. No default provider model name is compiled into the client.

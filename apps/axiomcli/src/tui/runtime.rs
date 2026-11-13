@@ -170,10 +170,6 @@ pub(super) fn account_status_text(account: &AccountStatus) -> String {
 
 pub(super) enum UiMessage {
     UpdateAvailable(String),
-    TitleFinished {
-        session_id: SessionId,
-        account_generation: u64,
-    },
     BillingFinished {
         generation: u64,
         account_generation: u64,
@@ -219,17 +215,6 @@ pub(super) fn start_security_preflight(
     cancellation: &mut Option<CancellationToken>,
     generation: &mut u64,
 ) {
-    start_security_preflight_with_consent(state, runner, ui_tx, cancellation, generation, false);
-}
-
-fn start_security_preflight_with_consent(
-    state: &mut TuiState,
-    runner: &Arc<dyn TurnRunner>,
-    ui_tx: &mpsc::Sender<UiMessage>,
-    cancellation: &mut Option<CancellationToken>,
-    generation: &mut u64,
-    accept_outdated: bool,
-) {
     if let Some(previous) = cancellation.take() {
         previous.cancel();
     }
@@ -246,11 +231,7 @@ fn start_security_preflight_with_consent(
     let model = state.model.clone();
     let result_tx = ui_tx.clone();
     tokio::spawn(async move {
-        let result = if accept_outdated {
-            task_runner.accept_outdated_tee(&model, token.clone()).await
-        } else {
-            task_runner.verify_security(&model, token.clone()).await
-        };
+        let result = task_runner.verify_security(&model, token.clone()).await;
         let result = if token.is_cancelled() {
             Err(AxiomError::Cancelled)
         } else {
@@ -913,9 +894,6 @@ pub async fn run(
     let mut billing_ticks = tokio::time::interval(Duration::from_secs(5));
     billing_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut cancellation: Option<CancellationToken> = None;
-    let title_lifetime = CancellationToken::new();
-    let _title_cancel_on_exit = title_lifetime.clone().drop_guard();
-    let mut title_tasks = tokio::task::JoinSet::new();
     let mut auth_cancellation: Option<CancellationToken> = None;
     let mut security_cancellation: Option<CancellationToken> = None;
     let mut security_generation = 0_u64;
@@ -960,7 +938,6 @@ pub async fn run(
         "requested terminal restoration probe"
     );
 
-    let mut update_requested = false;
     'ui: loop {
         if state.running || state.compacting {
             state.proof_refresh.record_activity(Instant::now());
@@ -1759,10 +1736,6 @@ pub async fn run(
                                         }
                                         match command {
                                             Err(error) => show_slash_error(&mut state, &error.to_string()),
-                                            Ok(SlashCommand::Update) => {
-                                                update_requested = true;
-                                                break 'ui;
-                                            }
                                             Ok(SlashCommand::Help) => {
                                                 state.push_entry(
                                                     EntryKind::System,
@@ -1961,13 +1934,6 @@ pub async fn run(
                                                         .await;
                                                 });
                                             }
-                                            Ok(SlashCommand::AcceptOutdatedTee) => {
-                                                if auth.has_credential() {
-                                                    start_security_preflight_with_consent(&mut state, &runner, &ui_tx, &mut security_cancellation, &mut security_generation, true);
-                                                    state.status = "Checking TEE with your outdated-provider consent…".into();
-                                                    state.status_tone = StatusTone::Waiting;
-                                                } else { state.open_login(Some("Sign in before accepting a provider warning.".into())); }
-                                            }
                                             Ok(SlashCommand::Security) => {
                                                 state.open_security();
                                                 if !state.running
@@ -2064,7 +2030,6 @@ pub async fn run(
                                         continue;
                                     }
                                     let turn_id = runtime.turn_id();
-                                    let token = CancellationToken::new();
                                     let should_generate_title = !state.has_prompt
                                         && store.as_ref().is_some_and(SessionStore::is_active);
                                     let submitted = runtime.dispatch(AppCommand::SubmitPrompt {attachments: Vec::new(),
@@ -2077,36 +2042,16 @@ pub async fn run(
                                         store.set_last_used_model(&state.model)?;
                                         store.set_last_used_thinking(state.thinking)?;
                                         if should_generate_title {
-                                            match crate::session_title::TitleGeneration::prepare(store, &session_id, &prompt, &state.model) {
-                                                Ok(Some(job)) => {
-                                                    let title_runner = runner.clone();
-                                                    let title_token = token.child_token();
-                                                    let lifetime = title_lifetime.clone();
-                                                    let title_tx = ui_tx.clone();
-                                                    let owner = session_id.clone();
-                                                    let account_generation = auth.generation();
-                                                    title_tasks.spawn(async move {
-                                                        let request = job.run(title_runner.as_ref(), title_token.clone());
-                                                        tokio::pin!(request);
-                                                        let result = tokio::select! {
-                                                            result = &mut request => result,
-                                                            () = lifetime.cancelled() => { title_token.cancel(); request.await }
-                                                        };
-                                                        if let Err(error) = result { tracing::debug!(%error, "background title kept its local fallback"); }
-                                                        tokio::select! {
-                                                            _ = title_tx.send(UiMessage::TitleFinished { session_id: owner, account_generation }) => {},
-                                                            () = lifetime.cancelled() => {},
-                                                        }
-                                                    });
-                                                }
-                                                Ok(None) => {},
-                                                Err(error) => tracing::warn!(%session_id, %error, "could not persist session title"),
+                                            let title = crate::session_title::session_title(&prompt);
+                                            if let Err(error) = store.set_title_if_absent(&session_id, &title) {
+                                                tracing::warn!(%session_id, %error, "could not persist session title");
                                             }
                                         }
                                     }
                                     for event in submitted {
                                         state.apply(&event.event);
                                     }
+                                    let token = CancellationToken::new();
                                     cancellation = Some(token.clone());
                                     active_turn = Some(turn_id.clone());
                                     let steering = Arc::new(crate::steering::TurnSteering::new(turn_id.clone()));
@@ -2239,20 +2184,6 @@ pub async fn run(
                         // UI-only information: never model input or persisted conversation history.
                         state.push_entry(EntryKind::System, notice, false);
                     }
-                    UiMessage::TitleFinished { session_id: owner, account_generation } => {
-                        if owner == session_id && account_generation == auth.generation()
-                            && let Some(store) = store.as_ref().filter(|store| store.is_active())
-                            && let Ok(snapshot) = store.thread_snapshot(&owner, None, 1)
-                        {
-                            for usage in snapshot.request_usage.into_iter().filter(|usage| usage.purpose == axiom_inference::InvocationPurpose::Title) {
-                                state.apply(&AppEvent::RequestUsageUpdated { usage });
-                            }
-                            if let Some(Overlay::ResumePicker { sessions, .. } | Overlay::DeletePicker { sessions, .. }) = &mut state.overlay
-                                && let Some(session) = sessions.iter_mut().find(|session| session.id == owner.to_string()) {
-                                session.title = snapshot.thread.title;
-                            }
-                        }
-                    }
                     UiMessage::BillingFinished { generation, account_generation, result } => {
                         billing_flow.finish(&mut state, generation, account_generation, result);
                         billing_ticks.reset();
@@ -2297,13 +2228,12 @@ pub async fn run(
                     {
                         security_cancellation = None;
                         state.proof_refresh.completed(Instant::now(), matches!(&result,
-                            Ok(SecurityVerification { status: crate::app::SecurityStatus::Verified | crate::app::SecurityStatus::Degraded, .. })
+                            Ok(SecurityVerification { status: crate::app::SecurityStatus::Verified, .. })
                         ));
                         match result {
                             Ok(SecurityVerification {
                                 status:
                                     security @ (crate::app::SecurityStatus::Verified
-                                    | crate::app::SecurityStatus::Degraded
                                     | crate::app::SecurityStatus::UnattestedDevelopment),
                                 evidence,
                             }) => {
@@ -2311,10 +2241,7 @@ pub async fn run(
                                     state.status == "Refreshing attestation…";
                                 state.security_evidence = evidence;
                                 state.apply(&AppEvent::SecurityStatusChanged { state: security });
-                                if security == crate::app::SecurityStatus::Degraded {
-                                    state.status = "TEE security updates needed · Accepted for this provider until restart".into();
-                                    state.status_tone = StatusTone::Waiting;
-                                } else if manually_refreshed {
+                                if manually_refreshed {
                                     state.status = "Attestation refreshed".into();
                                     state.status_tone = StatusTone::Success;
                                 } else if state.status == "Please wait…"
@@ -2331,12 +2258,6 @@ pub async fn run(
                                 state.status_tone = StatusTone::Error;
                             }
                             Err(AxiomError::Cancelled) => { state.reset_security(); }
-                            Err(AxiomError::SecureProvider { code: "PROVIDER_TDX_OUT_OF_DATE", .. }) => {
-                                state.security_evidence = None;
-                                state.apply(&AppEvent::SecurityStatusChanged { state: crate::app::SecurityStatus::Outdated });
-                                state.status = "TEE security updates needed · To accept this provider until restart: /security accept-outdated".into();
-                                state.status_tone = StatusTone::Waiting;
-                            }
                             Err(error) => {
                                 let detail = sanitize_terminal_text(&error.to_string());
                                 state.fail_security(&detail);
@@ -2421,7 +2342,6 @@ pub async fn run(
                                 });
                                 models.sort_by(|left, right| left.id.cmp(&right.id));
                                 models.dedup_by(|left, right| left.id == right.id);
-                                models.sort_by(crate::agent::compare_model_preference);
                                 state.model_candidates =
                                     models.iter().map(|model| model.id.clone()).collect();
                                 state.model_details = models
@@ -2729,8 +2649,6 @@ pub async fn run(
         }
     }
 
-    title_lifetime.cancel();
-    while title_tasks.join_next().await.is_some() {}
     if let Some(token) = security_cancellation.take() {
         token.cancel();
     }
@@ -2747,13 +2665,5 @@ pub async fn run(
         return Err(error);
     }
 
-    if update_requested {
-        drop(terminal);
-        drop(terminal_guard);
-        drop(store);
-        crate::updates::run_with_resume(cwd, session_id.to_string())
-            .await
-            .map_err(|error| crate::AxiomError::Config(error.to_string()))?;
-    }
     Ok(())
 }

@@ -594,14 +594,7 @@ export class AxiomStateStore extends EventEmitter {
       this.setConfig(record.sessionId, update.configOptions as SessionConfigOption[]);
       return session.needsResync ? record.sessionId : null;
     } else if (type === "session_info_update" && typeof update.title === "string") {
-      const summary = this.value.catalog.find((thread) => thread.threadId === record.sessionId);
-      if (!metadata || !summary || metadata.threadRevision >= summary.revision) {
-        session.title = update.title;
-        if (summary) {
-          summary.title = update.title;
-          if (metadata) summary.revision = Math.max(summary.revision, metadata.threadRevision);
-        }
-      }
+      session.title = update.title;
     }
     this.changed();
     return session.needsResync ? record.sessionId : null;

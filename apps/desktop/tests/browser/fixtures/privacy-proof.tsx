@@ -25,16 +25,6 @@ function ProofHarness() {
   const [disabledReason, setDisabledReason] = useState<string | undefined>();
   const [showChat, setShowChat] = useState(true);
   const requests = useRef(0);
-  const acceptances = useRef(0);
-  const acceptOutdated = async () => {
-    acceptances.current++;
-    const evidence = securityEvidence();
-    evidence.status.state = "degraded";
-    evidence.attestationProtocol = "near-tdx-nvidia-v2";
-    evidence.e2eeProtocol = "near-v3";
-    evidence.checks = evidence.checks.map((check) => check.name === "Intel TDX" ? { ...check, passed: false, detail: "OutOfDate" } : check);
-    setSession((current) => ({ ...current, security: { state: "degraded" }, securityEvidence: evidence }));
-  };
   const pending = useRef<{ resolve: () => void; reject: (error: Error) => void } | null>(null);
   const verify = () => {
     requests.current++;
@@ -43,7 +33,6 @@ function ProofHarness() {
   };
   Object.assign(window, { __privacyTest: {
     calls: () => requests.current,
-    acceptances: () => acceptances.current,
     update: (changes: Partial<ClientSessionState>) => setSession((current) => ({ ...current, ...changes })),
     setWeb, setScope, setModel, setDisabledReason, setShowChat,
     finish: (fail = false, keepEvidence = false) => {
@@ -63,7 +52,6 @@ function ProofHarness() {
         isStreaming={session.running} models={[model]} selectedModelId={selectedModel} modelStatusLabel="" onModelChange={setModel}
         requiresSignIn={false} onSignIn={() => {}} reasoningEffort="medium" onReasoningEffortChange={() => {}}
         onVerifySecurity={verify} securityScope={scope} securityRefreshDisabledReason={disabledReason}
-        onAcceptOutdatedTee={acceptOutdated}
         webEnabled={web} webDisabled={false} onWebToggle={() => setWeb((value) => !value)} /> : null}
     </main>
   </div>;

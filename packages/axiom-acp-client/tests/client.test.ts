@@ -90,7 +90,7 @@ test("extension negotiation accepts additive families and optional features only
     collections: 1,
     account: 2,
     billing: 3,
-    securityEvidence: 3,
+    securityEvidence: 2,
     webConsent: 1,
     futureFeature: 7,
   };
@@ -658,34 +658,6 @@ test("permission requests remain owned by AxiomCLI and resolve through the clien
   }
 });
 
-test("cancelling during verification prevents a waiting prompt from starting later", async () => {
-  const { client, workspace } = await fixture();
-  try {
-    const created = await client.newSession(workspace);
-    await client.verifySecurity(created.sessionId);
-    const request = client.process.request.bind(client.process);
-    let rejectVerification!: (error: Error) => void;
-    let prompts = 0;
-    client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
-      if (method === "_axiom/security/verify") return new Promise<T>((_resolve, reject) => { rejectVerification = reject; });
-      if (method === "session/prompt") prompts++;
-      return request<T>(method, params, timeoutMs, signal);
-    };
-    const verification = assert.rejects(client.verifySecurity(created.sessionId), /stopped/);
-    await new Promise((resolve) => setImmediate(resolve));
-    const pending = client.prompt(created.sessionId, "cancel before sending", "cancel-preflight");
-    await client.cancel(created.sessionId);
-    rejectVerification(new Error("verification stopped"));
-    await verification;
-    assert.equal((await pending).stopReason, "cancelled");
-    assert.equal(prompts, 0);
-    assert.equal(client.getState().sessions[created.sessionId]?.running, false);
-    client.process.request = request;
-    assert.equal((await client.prompt(created.sessionId, "new instruction", "after-cancel")).stopReason, "end_turn");
-    assert.equal(client.getState().sessions[created.sessionId]?.timeline.some((item) => item.clientItemId === "cancel-preflight"), false);
-  } finally { await client.close(); }
-});
-
 test("cancelling fail-closes and clears a pending permission", async () => {
   const { client, workspace } = await fixture("approval");
   try {
@@ -1133,25 +1105,14 @@ test("usage summary preserves exact values and rejects responses from the previo
     const state = (client as unknown as { state: AxiomStateStore }).state;
     state.setAccount({ revision: 1, state: "valid", account: { id: "account-a", linkedMethods: ["password"] } });
     const request = client.process.request.bind(client.process);
-    const requests: unknown[] = [];
     let complete: ((value: unknown) => void) | undefined;
     client.process.request = <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
-      if (method === "_axiom/usage/summary") {
-        requests.push(params);
-        return new Promise<T>(resolve => { complete = resolve as (value: unknown) => void; });
-      }
+      if (method === "_axiom/usage/summary") return new Promise<T>(resolve => { complete = resolve as (value: unknown) => void; });
       return request<T>(method, params, timeoutMs, signal);
     };
     const first = client.usageSummary();
     complete!({ summary });
     assert.deepEqual(await first, { summary });
-    const week = client.usageSummary({ period: "week", timezone: "America/Los_Angeles" });
-    complete!({ summary: { ...summary, period: "week" } });
-    assert.equal((await week).summary.period, "week");
-    assert.deepEqual(requests, [{}, { period: "week", timezone: "America/Los_Angeles" }]);
-    const wrongPeriod = client.usageSummary({ period: "month", timezone: "America/Los_Angeles" });
-    complete!({ summary }); // An old server/sidecar may ignore the period argument.
-    await assert.rejects(wrongPeriod, /selected period/i);
     const stale = client.usageSummary();
     state.setAccount({ revision: 2, state: "valid", account: { id: "account-b", linkedMethods: ["password"] } });
     complete!({ summary });

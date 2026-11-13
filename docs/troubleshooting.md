@@ -13,24 +13,6 @@ vault; a locked or denied vault cannot fall back to a plaintext token file.
 If a loopback callback is blocked, the pending native flow can still complete
 through PKCE polling. Keep the login flow open until completion or cancellation.
 
-Desktop preserves the native sign-in failure reason in its error banner, including
-TLS connection causes. Version 0.1.7 can hide failures while starting sign-in behind
-the generic `Internal error` message. A failed start can happen before a request
-reaches the account service, so server logs alone cannot identify it.
-
-If sign-in and the update check both fail to connect, compare the same check on
-another network (for example, a phone hotspot). On macOS, run the bundled native
-client from Terminal to check the same updater without installing anything:
-
-```sh
-/Applications/Axiom.app/Contents/Resources/bin/axiomcli update --check
-```
-
-`InvalidContentType` in the TLS error means the client encountered an invalid TLS
-record type, before receiving the release HTTP response. Check proxy, VPN and
-network-filter settings; that error alone does not identify which component sent
-the invalid data. Keep certificate verification enabled.
-
 `AXIOM_API_KEY` selects automation credentials in CLI/proxy modes and prevents
 native `/login` until unset. Desktop removes this override from its sidecar.
 `axiomcli models` checks model discovery separately from inference.
@@ -86,9 +68,9 @@ A 429 means the rolling account quota was reached; honor `Retry-After`. A 502/50
 indicates service/provider failure. There is no automatic provider fallback.
 Search queries leave the device outside inference E2EE; see [privacy](privacy.md).
 
-Only `web_search_provider = "axiom"` is supported. If startup rejects an older
-provider setting, remove that override or explicitly select `axiom` after
-reviewing the hosted-search privacy behavior. Rejection of loopback/private
+For an explicitly configured SearXNG service, use the
+[real-service commands](evaluations.md#real-searxng-integration). Empty results
+or engine warnings can reflect upstream throttling. Rejection of loopback/private
 URLs by `fetch_url` is expected.
 
 MCP server commands belong in trusted user configuration. Desktop's chat profile
@@ -121,22 +103,3 @@ and `v` opens its full viewer. `Esc` clears focus/closes an overlay. Two consecu
 Use `AXIOMCLI_COLOR=none`, `NO_COLOR=1`, `AXIOMCLI_ASCII=1` or
 `AXIOMCLI_REDUCED_MOTION=1` for terminal compatibility/accessibility. Terminal
 restoration is guarded for normal exit and panic.
-
-## Updates
-
-Use `axiomcli update --check` or Settings → Updates to inspect a failure. Close
-other installed AxiomCLI/ACP sessions and proxies before applying; a bundled TUI
-also needs Desktop to close. The helper waits at most three minutes and does not
-kill those processes. Keep using the installed Windows launcher for TUI updates.
-
-Signature, unknown-key, changed-inventory and checksum errors fail closed. Retry
-after connectivity is restored; do not bypass verification. Source builds require
-a rebuild. A release without a matching platform/package is not substituted with
-another product. Unsigned previews have stable updates disabled.
-
-If installation or OS authorization fails, the helper records the error in the
-per-installation `axiom/updates` directory under the OS user cache. The next app
-check displays it. Retry the same verified installer from the public release to
-repair program files; account data is outside the installation. Staging directories
-can be removed once no update helper is running. Linux standalone keeps previous
-version directories, but do not reactivate one against incompatible account data.

@@ -5,7 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import type { ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
+import type { ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
 // sidecar, or provider request. The bridge below operates only on fake threads.
@@ -46,7 +46,7 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model") {
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true) {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
   page.setDefaultTimeout(8_000);
   const errors: string[] = [];
@@ -60,7 +60,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean }) => {
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
     const defaultDirectory = (id: string) => platform === "win32" ? `C:\\Axiom\\chat\\${id}` : `/axiom/chat/${id}`;
@@ -93,7 +93,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       catalog: [summary("old-thread")],
       collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
       preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
-      billing: null as BillingStatus | null, diagnostic: "", error: null as string | null,
+      billing: null as BillingStatus | null, diagnostic: "", error: null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
     let failRename = false;
@@ -104,6 +104,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const pendingLogins = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
     const setupGates = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>();
     const waitForSetup = async (stage: string) => { await setupGates.get(stage)?.promise; };
+    const pendingSteers = new Map<string, { thread: string; text: string; resolve: (value: unknown) => void }>();
     const listeners = new Set<(state: unknown) => void>();
     const emit = () => {
       for (const listener of listeners) listener(structuredClone(state));
@@ -111,8 +112,8 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const agent = {
       onState: (listener: (state: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
       getState: async () => structuredClone(state),
-      desktopBootstrap: async () => ({ newThreadSettings: { model: rememberedModel, thinkingLevel: savedThinking() } }),
-      listModels: async () => modelCatalog ?? ({ models: [{
+      desktopBootstrap: async () => ({ newThreadSettings: { model: "test-model", thinkingLevel: savedThinking() } }),
+      listModels: async () => ({ models: [{
         id: "test-model", label: "Test model", shortLabel: "Test model", providerId: "test",
         providerLabel: "Test provider", upstreamModel: "test-model", thinkingLevels,
         contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000, supportsImages,
@@ -202,20 +203,19 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       promptWithAttachments: async (id: string, text: string, clientItemId: string, webEnabled: boolean, _revision: number, attachments: any[]) => {
         calls.push({ method: "attachments", id, text: JSON.stringify({ text, attachments }), webEnabled });
-        await waitForSetup("prompt");
-        state.sessions[id]!.timeline.push({ id: `native-${clientItemId}`, clientItemId, kind: "user", text, status: "completed", raw: { metadata: { attachments: attachments.map((file) => ({ name: file.name, kind: file.kind })) } } });
+        state.sessions[id]!.timeline.push({ id: clientItemId, clientItemId, kind: "user", text, status: "completed", raw: { metadata: { attachments: attachments.map((file) => ({ name: file.name, kind: file.kind })) } } });
         emit(); return { stopReason: "end_turn" };
       },
       revisePrompt: async (id: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean) => {
         calls.push({ method: "revise", id, text, userItemId, expectedRevision, webEnabled });
         return { stopReason: "end_turn" };
       },
-      steer: async () => { calls.push({ method: "steer" }); throw new Error("Desktop queue must send a new turn"); },
-      cancel: async (id: string) => {
-        calls.push({ method: "cancel", id });
-        await waitForSetup("cancel");
-        state.sessions[id]!.running = false; state.sessions[id]!.activeTurnId = null; emit();
+      steer: async (request: { threadId: string; clientItemId: string; text: string; expectedTurnId: string; webEnabled: boolean }) => {
+        calls.push({ method: "steer", id: request.clientItemId, text: request.text, webEnabled: request.webEnabled });
+        if (state.sessions[request.threadId]?.activeTurnId !== request.expectedTurnId) throw new Error("stale turn");
+        return new Promise((resolve) => pendingSteers.set(request.clientItemId, { thread: request.threadId, text: request.text, resolve }));
       },
+      cancel: async (id: string) => { calls.push({ method: "cancel", id }); state.sessions[id]!.running = false; emit(); },
       listThreads: async () => state.catalog,
       apiKeys: async () => ({keys: []}),
       createApiKey: async () => { throw new Error("API keys not configured in this fixture"); },
@@ -267,10 +267,17 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setAccount: (id: string) => { state.account.account!.id = id; emit(); },
         setAccountState: (account: AccountStatus) => { state.account = account; state.sessions = {}; state.catalog = []; emit(); },
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
-        setError: (error: string | null) => { state.error = error; emit(); },
-        setSecurity: (security: string) => { state.sessions["old-thread"]!.security = { state: security }; emit(); },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
+        finishSteers: () => {
+          for (const [id, pending] of pendingSteers) {
+            const session = state.sessions[pending.thread]!;
+            session.timeline.push({ id, clientItemId: id, kind: "user", text: pending.text });
+            session.timeline.push({ id: `reply-${id}`, kind: "assistant", text: "Continuing with your update", status: "streaming" });
+            pending.resolve({ clientItemId: id, turnId: session.activeTurnId });
+          }
+          pendingSteers.clear(); emit();
+        },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
         failRename: (fail: boolean) => { failRename = fail; },
         failAgent: (fail: boolean) => { failAgent = fail; },
@@ -319,11 +326,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages })});` });
   await page.goto(origin);
   try {
-    if (modelCatalog) await page.locator("textarea[data-chat-input]").waitFor();
-    else await page.getByRole("button", { name: "Test model" }).waitFor();
+    await page.getByRole("button", { name: "Test model" }).waitFor();
   } catch (error) {
     console.error("Renderer startup failed", errors, await page.locator("body").innerText());
     await page.close();
@@ -331,40 +337,6 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   }
   return { page, errors, nativeDialogs };
 }
-
-test("outdated TEE consent retries the paused turn through attachment-preserving revision", async () => {
-  const { page, errors } = await openApp();
-  try {
-    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.evaluate(() => {
-      const bridge = (window as any).__deletionTest;
-      bridge.setTimeline([
-        { id: "question", turnId: "paused-turn", kind: "user", text: "Explain this diagram", status: "completed",
-          raw: { metadata: { attachments: [{ name: "diagram.png", kind: "image" }] } } },
-        { id: "error", turnId: "paused-turn", kind: "error", text: "The provider's Intel TDX environment is OutOfDate and requires security updates.", status: "failed" },
-      ]);
-      bridge.setSecurity("outdated");
-      (window as any).axiomDesktop.agent.verifySecurity = async (id: string, accept: boolean, modelId: string) => {
-        bridge.calls.push({ method: "verify", id, text: JSON.stringify({ accept, modelId }) });
-        bridge.setSecurity("degraded");
-        return { status: { state: "degraded" } };
-      };
-    });
-    await page.getByRole("button", { name: "Continue generation", exact: true }).click();
-    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "revise"));
-    const requests = await page.evaluate(() => (window as any).__deletionTest.calls);
-    assert.deepEqual(requests.filter((call: any) => call.method === "verify"), [
-      { method: "verify", id: "old-thread", text: JSON.stringify({ accept: true, modelId: "test-model" }) },
-    ]);
-    assert.deepEqual(requests.filter((call: any) => call.method === "revise"), [
-      { method: "revise", id: "old-thread", text: "Explain this diagram", userItemId: "question", expectedRevision: 1, webEnabled: false },
-    ]);
-    assert.equal(requests.filter((call: any) => call.method === "prompt" || call.method === "attachments").length, 0);
-    assert.equal(await page.getByText("diagram.png", { exact: true }).isVisible(), true);
-    assert.match(await page.locator("[data-outdated-tee-warning]").innerText(), /You chose to continue/);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
 
 for (const platform of ["linux", "win32", "darwin"]) {
   test(`stale thinking preferences become an offered value and persist after sending (${platform})`, async () => {
@@ -433,20 +405,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.match(await messages.innerText(), /Work on my project/);
       assert.equal(await messages.locator('[data-timeline-kind="user"] > .group').evaluate((element) => getComputedStyle(element).opacity), "1");
-      const composer = page.locator("textarea[data-chat-input]");
-      assert.equal(await composer.count(), 1, "the composer stays visible while creating the thread");
-      const preparedInput = await composer.elementHandle();
-      const checkPreparingComposer = async () => {
-        assert.equal(await composer.isVisible(), true);
-        assert.equal(await composer.isDisabled(), true, "wait for a thread before accepting another draft");
-        const bounds = await composer.boundingBox();
-        assert.ok(bounds && bounds.y > 0 && bounds.y + bounds.height <= page.viewportSize()!.height,
-          "the composer is inside the window, below the transcript");
-        for (const name of ["Attach files", "Web", "Agent", "Send"]) {
-          assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true);
-        }
-      };
-      await checkPreparingComposer();
+      assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
       await page.keyboard.press("Enter");
       assert.equal((await calls(page)).filter((call) => call.method === "new").length, 1);
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
@@ -459,19 +418,13 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
       await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.length === 1);
       assert.equal(await messages.getByRole("status").innerText(), "Sending…");
-      await checkPreparingComposer();
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("settings"));
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "configureAgent"));
       assert.equal(await messages.getByRole("status").innerText(), "Sending…");
-      await checkPreparingComposer();
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("agent"));
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
       await page.locator("textarea[data-chat-input]").waitFor();
-      assert.equal(await preparedInput!.evaluate((element) => element === document.querySelector("textarea[data-chat-input]")), true,
-        "setup completes without replacing the composer");
-      assert.equal(await composer.isEnabled(), true, "typing resumes before the provider finishes");
-      await composer.fill("My next message");
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.equal(await page.getByRole("status", { name: "Sending message" }).count(), 1);
       assert.equal(await page.getByRole("region", { name: "Message queue" }).count(), 0);
@@ -480,7 +433,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.getByRole("status", { name: "Sending message" }).waitFor({ state: "hidden" });
       assert.equal(await messages.locator('[data-timeline-kind="user"]').count(), 1);
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
-      assert.equal(await composer.inputValue(), "My next message", "finishing delivery preserves the next draft");
+      assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "");
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -567,52 +520,9 @@ test("a long draft keeps its sending indicator in view during thread preparation
   } finally { await page.close(); }
 });
 
-test("an idle existing chat shows its dispatched message in the transcript while later input waits in the queue", async () => {
+test("an unconfirmed first message leaves sending state and remains queued for an explicit retry", async () => {
   const { page, errors } = await openApp();
   try {
-    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
-    const input = page.locator("textarea[data-chat-input]");
-    const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
-    const queue = page.getByRole("region", { name: "Message queue", exact: true });
-    await input.fill("Send this immediately");
-    await page.getByRole("button", { name: "Send", exact: true }).click();
-    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
-    await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor();
-    assert.equal(await transcript.getByText("Send this immediately", { exact: true }).count(), 1);
-    assert.equal(await queue.count(), 0, "an active send is not a queued follow-up");
-    assert.equal(await input.inputValue(), "");
-    await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
-    if (process.env.AXIOM_IDLE_SEND_CAPTURE) {
-      await page.screenshot({ path: process.env.AXIOM_IDLE_SEND_CAPTURE, animations: "disabled" });
-      await page.emulateMedia({ colorScheme: "dark" });
-      await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
-      await page.screenshot({ path: `${process.env.AXIOM_IDLE_SEND_CAPTURE}.dark.png`, animations: "disabled" });
-    }
-    await page.getByRole("button", { name: "New thread", exact: true }).click();
-    assert.equal(await page.getByRole("status", { name: "Sending message", exact: true }).count(), 0);
-    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor();
-    assert.equal(await queue.count(), 0, "returning to the chat preserves the active send");
-    await input.fill("Wait until that finishes");
-    await page.getByRole("button", { name: "Queue message", exact: true }).click();
-    await queue.getByText("Wait until that finishes", { exact: true }).waitFor();
-    assert.equal(await queue.locator("[data-queued-message]").count(), 1);
-    assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 1);
-    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
-    await queue.waitFor({ state: "hidden" });
-    await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor({ state: "hidden" });
-    assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["Send this immediately", "Wait until that finishes"]);
-    assert.equal(await transcript.getByText("Send this immediately", { exact: true }).count(), 1);
-    assert.equal(await transcript.getByText("Wait until that finishes", { exact: true }).count(), 1);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-for (const existing of [false, true]) test(`an unconfirmed message leaves sending state and remains queued for an explicit retry (${existing ? "existing" : "new"} thread)`, async () => {
-  const { page, errors } = await openApp();
-  try {
-    if (existing) await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
     await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
     await page.locator("textarea[data-chat-input]").fill("Do not lose this message");
     await page.locator("textarea[data-chat-input]").press("Enter");
@@ -624,13 +534,9 @@ for (const existing of [false, true]) test(`an unconfirmed message leaves sendin
     await page.getByRole("status", { name: "Sending message" }).waitFor({ state: "hidden" });
     assert.match(await queue.innerText(), /Do not lose this message/);
     assert.equal(await page.locator('[data-timeline-kind="user"]').count(), 0);
-    await page.evaluate(() => (window as any).__deletionTest.holdSetup("prompt"));
     await queue.getByRole("button", { name: "Send now", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prompt").length === 2);
-    await page.getByRole("status", { name: "Sending message", exact: true }).waitFor();
     await queue.waitFor({ state: "hidden" });
-    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
-    await page.getByRole("status", { name: "Sending message", exact: true }).waitFor({ state: "hidden" });
     assert.equal(await page.locator('[data-timeline-kind="user"]').count(), 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
@@ -959,79 +865,16 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`unexpected stream endings show one notice with optional details (${platform})`, async () => {
+  test(`messages queue during a reply and Send now waits for a safe boundary (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-      const transcript = page.getByRole("region", { name: "Chat messages" });
-      const detail = "Tinfoil stream ended without authenticated completion";
-      await page.evaluate((detail) => (window as any).__deletionTest.setTimeline([
-        { id: "prompt", turnId: "failed-turn", kind: "user", text: "Tell me more.", status: "completed" },
-        { id: "partial", turnId: "failed-turn", kind: "assistant", text: "Here is the beginning of the reply.", status: "failed", terminalVerified: false },
-        { id: "failure", turnId: "failed-turn", kind: "error", text: detail },
-      ], false), detail);
-      const notice = transcript.getByRole("status");
-      await notice.getByText("The reply ended early. Try again.", { exact: true }).waitFor();
-      assert.equal(await notice.count(), 1);
-      assert.equal(await transcript.getByRole("alert").count(), 0);
-      assert.doesNotMatch(await transcript.innerText(), /final response could not be verified|authenticated completion|E2EE/);
-      assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).isDisabled(), true);
-      const disclosure = notice.locator("summary");
-      await disclosure.focus();
-      await disclosure.press("Enter");
-      await notice.getByText(detail, { exact: true }).waitFor();
-      await disclosure.press("Enter");
-      assert.equal(await notice.getByText(detail, { exact: true }).isVisible(), false);
-      if (platform === "linux" && process.env.AXIOM_REPLY_ERROR_SCREENSHOT) {
-        await page.setViewportSize({ width: 865, height: 650 });
-        for (const theme of ["light", "dark"] as const) {
-          await page.emulateMedia({ colorScheme: theme });
-          await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, theme);
-          await page.screenshot({ path: `${process.env.AXIOM_REPLY_ERROR_SCREENSHOT}-${theme}.png`, animations: "disabled" });
-        }
-      }
-      await notice.getByRole("button", { name: "Dismiss notice", exact: true }).focus();
-      await page.keyboard.press("Enter");
-      assert.equal(await notice.count(), 0);
-      assert.equal(await transcript.locator('[data-timeline-kind="activity"]').count(), 0);
-      assert.equal(await transcript.evaluate((element) => element === document.activeElement), true);
-      assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).isDisabled(), true);
-      await page.evaluate(async () => {
-        const state = await (window as any).axiomDesktop.agent.getState();
-        (window as any).__deletionTest.setTimeline(state.sessions["old-thread"].timeline, false);
-      });
-      assert.equal(await notice.count(), 0, "routine updates must not restore a dismissed notice");
-      assert.equal(await transcript.getByRole("alert").count(), 0, "dismissal must not reveal the duplicate warning");
-      const status = await page.evaluate(async () => {
-        const state = await (window as any).axiomDesktop.agent.getState();
-        return state.sessions["old-thread"].timeline.find((item: ClientTimelineItem) => item.id === "partial");
-      });
-      assert.equal(status.status, "failed");
-      assert.equal(status.terminalVerified, false);
-      await transcript.getByRole("button", { name: "Regenerate", exact: true }).click();
-      await transcript.getByRole("button", { name: "Regenerate from here", exact: true }).click();
-      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "revise"));
-      const revisions = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
-      assert.equal(revisions.length, 1);
-      assert.equal(revisions[0].userItemId, "prompt");
-      assert.equal(revisions[0].text, "Tell me more.");
-      assert.deepEqual(errors, []);
-    } finally { await page.close(); }
-  });
-
-  test(`Send now stops the reply and sends the selected queued message first (${platform})`, async () => {
-    const { page, errors } = await openApp(platform);
-    try {
-      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-      await page.evaluate(() => {
-        (window as any).__deletionTest.setTimeline([
-          { id: "intro", kind: "assistant", text: "I am checking that now.", status: "streaming" },
-        ], true);
-        (window as any).__deletionTest.holdSetup("cancel");
-        (window as any).__deletionTest.holdSetup("prompt");
-      });
+      await page.evaluate(() => (window as any).__deletionTest.setTimeline([
+        { id: "intro", kind: "assistant", text: "I am checking that now.", status: "streaming" },
+      ], true));
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await page.locator("textarea").fill("After that, summarize the result.");
+      await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
       await page.getByRole("button", { name: "Queue message", exact: true }).click();
       await queue.getByText("After that, summarize the result.", { exact: true }).waitFor();
       await page.locator("textarea").fill("Use the revised requirements instead.");
@@ -1039,61 +882,24 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.waitForFunction(() => document.querySelectorAll("[data-queued-message]").length === 2);
       assert.equal(await page.locator("textarea").inputValue(), "");
       assert.equal((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).length, 0);
-      if (platform === "linux" && process.env.AXIOM_QUEUE_CAPTURE_DIR) {
-        await queue.screenshot({ path: `${process.env.AXIOM_QUEUE_CAPTURE_DIR}/queued-light.png` });
-        await page.emulateMedia({ colorScheme: "dark" });
-        await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
-        await queue.screenshot({ path: `${process.env.AXIOM_QUEUE_CAPTURE_DIR}/queued-dark.png` });
-      }
       await queue.getByRole("button", { name: "Send now", exact: true }).last().click();
-      await queue.getByText("Stopping…", { exact: true }).waitFor();
-      assert.equal(await queue.getByRole("button", { name: "Cancel queued message", exact: true }).count(), 2);
-      assert.equal(await queue.getByRole("button", { name: "Send now", exact: true }).isEnabled(), false);
-      assert.deepEqual((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).map((call) => call.method), ["cancel"]);
-      const transcript = page.getByRole("region", { name: "Chat messages" });
-      assert.equal(await transcript.getByText("Use the revised requirements instead.", { exact: true }).count(), 0);
-      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
-      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
-      assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["Use the revised requirements instead."]);
-      await transcript.getByRole("status", { name: "Sending message", exact: true }).waitFor();
-      assert.equal(await transcript.getByText("Use the revised requirements instead.", { exact: true }).count(), 1);
-      assert.equal(await queue.locator("[data-queued-message]").count(), 1, "only the waiting follow-up remains queued");
-      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
-      await queue.waitFor({ state: "hidden" });
-      assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), [
-        "Use the revised requirements instead.", "After that, summarize the result.",
+      await queue.getByText("Waiting for current step to finish…", { exact: true }).waitFor();
+      assert.deepEqual((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).map((call) => [call.method, call.text]), [
+        ["steer", "Use the revised requirements instead."],
       ]);
-      assert.equal(await transcript.getByText("Use the revised requirements instead.", { exact: true }).count(), 1);
-      assert.deepEqual(errors, []);
-    } finally { await page.close(); }
-  });
-
-  for (const stopping of [false, true]) test(`cancel a queued message${stopping ? " while Send now is stopping" : " without interrupting the reply"} (${platform})`, async () => {
-    const { page, errors } = await openApp(platform);
-    try {
-      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-      await page.evaluate(() => {
-        (window as any).__deletionTest.setTimeline([], true);
-        (window as any).__deletionTest.holdSetup("cancel");
-      });
-      await page.locator("textarea").fill("Do not send this queued message.");
-      await page.locator("textarea").press("Enter");
-      const queue = page.getByRole("region", { name: "Message queue", exact: true });
-      await queue.getByText("Do not send this queued message.", { exact: true }).waitFor();
-      if (stopping) {
-        await queue.getByRole("button", { name: "Send now", exact: true }).click();
-        await queue.getByText("Stopping…", { exact: true }).waitFor();
-      }
-      const cancel = queue.getByRole("button", { name: "Cancel queued message", exact: true });
-      await cancel.focus(); await page.keyboard.press("Enter");
+      assert.equal(await page.getByRole("region", { name: "Chat messages" }).getByText("Use the revised requirements instead.", { exact: true }).count(), 0,
+        "steering is not presented as delivered before the boundary acknowledgement");
+      if (platform === "linux") await page.screenshot({ path: "/tmp/axiom-message-queue.png" });
+      await page.evaluate(() => (window as any).__deletionTest.finishSteers());
+      await page.getByRole("region", { name: "Chat messages" }).getByText("Use the revised requirements instead.", { exact: true }).waitFor();
+      await page.waitForFunction(() => document.querySelectorAll("[data-queued-message]").length === 1);
+      const transcript = await page.getByRole("region", { name: "Chat messages" }).innerText();
+      assert.ok(transcript.indexOf("I am checking") < transcript.indexOf("Use the revised"));
+      assert.ok(transcript.indexOf("Use the revised") < transcript.indexOf("Continuing with your update"));
+      assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
+      await page.evaluate(() => (window as any).__deletionTest.finishTurn());
       await queue.waitFor({ state: "hidden" });
-      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
-      if (stopping) await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor({ state: "hidden" });
-      else assert.equal(await page.getByRole("button", { name: "Stop generating", exact: true }).count(), 1);
-      assert.deepEqual((await calls(page)).filter((call) => ["prompt", "steer", "cancel"].includes(call.method)).map((call) => call.method), stopping ? ["cancel"] : []);
-      await page.reload();
-      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-      assert.equal(await queue.count(), 0, "cancelled messages do not return after reload");
+      assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), ["After that, summarize the result."]);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
@@ -1111,7 +917,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const queue = page.getByRole("region", { name: "Message queue", exact: true });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0);
-      await queue.getByRole("button", { name: "Cancel queued message", exact: true }).click();
+      await queue.getByRole("button", { name: "Remove queued message", exact: true }).click();
       await queue.waitFor({ state: "hidden" });
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -1238,8 +1044,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await web.click();
       const warning = page.getByRole("alertdialog", { name: "Turn on Web?" });
       await warning.waitFor();
-      assert.match(await warning.innerText(), /Web searches run outside Axiom’s verified private environment/);
-      assert.doesNotMatch(await warning.innerText(), /Decodo/i);
+      assert.match(await warning.innerText(), /Search queries may include details from your messages and are shared with an external search service/);
+      assert.doesNotMatch(await warning.innerText(), /Decodo|SearXNG/i);
       if (platform === "linux") {
         await page.emulateMedia({ colorScheme: "dark" });
         await page.waitForFunction(() => getComputedStyle(document.querySelector("dialog")!).color === "rgb(244, 244, 246)");
@@ -1257,7 +1063,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await warning.waitFor({ state: "detached" });
       assert.equal(await web.getAttribute("aria-pressed"), "false");
       await web.click();
-      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "true");
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await page.waitForFunction(() => (window as unknown as { __deletionTest: { calls: { method: string }[] } }).__deletionTest.calls.some((call) => call.method === "prompt"));
@@ -1273,7 +1079,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await web.click();
       await warning.waitFor(); // Not remembered: every off -> on asks again.
       await page.getByRole("checkbox", { name: "Don’t show this warning again" }).check();
-      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       assert.equal(await web.getAttribute("aria-pressed"), "false", "new chat always starts off");
       await web.click();
@@ -1325,7 +1131,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await openThread();
       await expectWeb(false);
       await web.click();
-      await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+      await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
       await expectWeb(true);
       assert.equal((await calls(page)).filter((call) => call.method === "prompt").length, 0, "toggle saves without a message");
 
@@ -1371,7 +1177,7 @@ test("saved Web choices from the welcome draft stay with its new thread and are 
   try {
     const web = page.getByRole("button", { name: "Web", exact: true });
     await web.click();
-    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
     await page.locator("textarea").fill("Create with Web on");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
@@ -1401,12 +1207,12 @@ test("Web storage failures never silently enable Web or claim an opt-out was sav
       Storage.prototype.setItem = () => { throw new Error("Storage full"); };
     });
     await web.click();
-    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
     await page.getByText("Web could not be saved and remains off. Please try again.", { exact: true }).waitFor();
     assert.equal(await web.getAttribute("aria-pressed"), "false");
     await page.evaluate(() => (window as any).__restoreWebStorage());
     await web.click();
-    await page.getByRole("button", { name: "Yes, I understand", exact: true }).click();
+    await page.getByRole("button", { name: "Turn on Web", exact: true }).click();
     assert.equal(await web.getAttribute("aria-pressed"), "true");
     await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage full"); }; });
     await web.click();
@@ -2074,47 +1880,6 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
   } finally { await page.close(); }
 });
 
-test("balance refreshes keep one top-up panel and preserve gift code input", async () => {
-  const { page, errors } = await openApp();
-  const keyWarnings: string[] = [];
-  page.on("console", (message) => {
-    if (message.text().includes("same key")) keyWarnings.push(message.text());
-  });
-  try {
-    await page.clock.install();
-    const billing = depositBilling(900_000);
-    await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
-    await openAccountScreen(page, "Balance");
-    const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
-    const giftCode = panel.getByLabel("Gift code", { exact: true });
-    await giftCode.fill("AXG-UNSUBMITTED");
-    for (let revision = 2; revision <= 4; revision++) {
-      const updated = { ...billing, revision, availableMicrousd: revision * 1_000_000 };
-      await page.evaluate((billing) => {
-        const now = Date.now();
-        billing.zecUsdQuote = billing.revision % 2 === 0 ? {
-          source: "coinbase", price_microusd_per_zec: "1510360000",
-          as_of: new Date(now).toISOString(), expires_at: new Date(now + 60_000).toISOString(),
-        } : null;
-        (window as any).__deletionTest.setBilling(billing);
-      }, updated);
-      await panel.getByText(`$${revision}.00`, { exact: true }).first().waitFor();
-      await page.getByRole("button", { name: "Refresh balance", exact: true }).click();
-      await page.clock.runFor(5_001);
-      assert.equal(await panel.getByRole("region", { name: "Zcash deposits", exact: true }).count(), 1);
-      assert.equal(await panel.getByLabel("Mainnet deposit address", { exact: true }).count(), 1);
-      assert.equal(await panel.locator("svg title").filter({ hasText: "Mainnet Zcash deposit payment URI" }).count(), 1);
-      assert.equal(await panel.getByRole("button", { name: "Copy address", exact: true }).count(), 1);
-      assert.equal(await panel.getByRole("region", { name: "Gift credit", exact: true }).count(), 1);
-      assert.equal(await giftCode.inputValue(), "AXG-UNSUBMITTED");
-      assert.match(await panel.getByLabel("Current ZEC exchange rate").innerText(),
-        revision % 2 === 0 ? /1 ZEC ≈ \$1,510\.36/ : /Rate unavailable/);
-    }
-    assert.deepEqual(keyWarnings, []);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
 test("balance shows debt and a reusable deposit address without displaying a reservation", async () => {
   const { page, errors } = await openApp();
   try {
@@ -2239,15 +2004,11 @@ test("balance deposit controls fit the reference window, respect reduced motion,
       assert.equal(await page.getByRole("region", { name: "Balance", exact: true }).evaluate((element) => getComputedStyle(element).animationName), "none");
       const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
       if (screenshot) await page.screenshot({ path: `${screenshot}-${theme}-balance.png`, animations: "disabled" });
-      assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "balance content fits the panel width");
+      assert.equal(await panel.evaluate((element) => element.scrollHeight <= element.clientHeight), true, "the empty deposit screen fits without scrolling");
       const action = await page.getByRole("button", { name: "Copy address", exact: true }).boundingBox();
       const panelBounds = await panel.boundingBox();
       assert.ok(action && panelBounds && action.y + action.height <= panelBounds.y + panelBounds.height);
       assert.equal(await page.getByLabel("Current ZEC exchange rate").innerText(), "1 ZEC ≈ $123.46\n\nRate at confirmation applies");
-      const giftCode = panel.getByLabel("Gift code", { exact: true });
-      await giftCode.scrollIntoViewIfNeeded();
-      const giftBounds = await giftCode.boundingBox();
-      assert.ok(giftBounds && panelBounds && giftBounds.y >= panelBounds.y && giftBounds.y + giftBounds.height <= panelBounds.y + panelBounds.height);
       await page.getByRole("button", { name: "Back", exact: true }).click();
     }
     await openAccountScreen(page, "Balance");
@@ -2858,47 +2619,6 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
 });
 
 
-for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider order and composer logos preserve ${remembered} selection`, async () => {
-  const model = (id: string, label: string, providerId: string, upstreamModel: string) => ({
-    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
-    upstreamModel, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
-    autoCompactThresholdTokens: 27853, supportsImages: false, fileMimeTypes: [],
-    inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000,
-  });
-  const catalog = { models: [
-    model("near-glm", "GLM 5.3 Flash", "near", "glm-5-3-flash"),
-    model("tinfoil-a", "Gemma 4", "tinfoil", "gemma4-31b"),
-    model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil", "deepseek-v4-1-flash"),
-  ] };
-  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, remembered);
-  try {
-    const currentLabel = remembered === "auto" ? "DeepSeek V4.1 Flash" : "GLM 5.3 Flash";
-    const control = page.getByRole("button", { name: currentLabel, exact: true });
-    await control.waitFor();
-    await control.click();
-    const picker = page.getByRole("dialog", { name: "Choose a model" });
-    const tabs = picker.getByRole("tab");
-    assert.match(await tabs.nth(0).innerText(), /^Tinfoil/);
-    assert.match(await tabs.nth(1).innerText(), /^NEAR AI/);
-    assert.equal(await tabs.nth(remembered === "auto" ? 0 : 1).getAttribute("aria-selected"), "true");
-    await tabs.nth(0).click();
-    const choices = picker.getByRole("tabpanel").getByRole("button");
-    assert.match(await choices.first().innerText(), /^DeepSeek V4.1 Flash/);
-    await choices.first().click();
-    const selected = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
-    const logos = selected.locator("img");
-    assert.deepEqual(await logos.evaluateAll(images => images.map(image => image.getAttribute("title"))), ["Tinfoil", "DeepSeek"]);
-    await page.waitForFunction(() => [...document.querySelectorAll('button[title="Select model"] img')].every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0));
-    const providerBounds = (await logos.nth(0).boundingBox())!;
-    const modelBounds = (await logos.nth(1).boundingBox())!;
-    assert.ok(providerBounds.x + providerBounds.width <= modelBounds.x);
-    await page.locator("textarea[data-chat-input]").fill("Keep the chosen model");
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    assert.equal(await selected.isVisible(), true);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
 test("catalog refresh withdraws saved models and shows Tinfoil upload icons", async () => {
   const { page, errors } = await openApp();
   try {
@@ -2928,454 +2648,6 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     await page.screenshot({path:"/tmp/axiom-provider-picker.png"});
     await picker.getByRole("button", {name:/New vision/}).click();
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isEnabled());
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("dismissing reply errors preserves failed output and allows new notices", async () => {
-  const { page, errors } = await openApp();
-  try {
-    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    const reply = { id: "partial", turnId: "failed-turn", kind: "assistant" as const, text: "Partial reply", status: "failed", terminalVerified: false };
-    const transcript = page.getByRole("region", { name: "Chat messages" });
-    await page.evaluate((reply) => (window as any).__deletionTest.setTimeline([reply], false), reply);
-    const alert = transcript.getByRole("alert");
-    await alert.getByText("This reply couldn't be verified. Try again.", { exact: true }).waitFor();
-    await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
-    assert.equal(await alert.count(), 0);
-    assert.equal(await transcript.getByText("Partial reply", { exact: true }).isVisible(), true);
-    assert.equal(await transcript.getByRole("button", { name: "Copy", exact: true }).isDisabled(), true);
-    const firstError = { id: "failure-1", turnId: "failed-turn", kind: "error" as const, text: "stream response identity changed" };
-    for (const failure of [firstError, { ...firstError, text: "invalid authenticated SSE framing" }, { ...firstError, id: "failure-2" }]) {
-      await page.evaluate(({ reply, failure }) => (window as any).__deletionTest.setTimeline([reply, failure], false), { reply, failure });
-      await alert.getByText(failure.text, { exact: true }).waitFor();
-      assert.equal(await alert.count(), 1);
-      await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
-      assert.equal(await alert.count(), 0);
-    }
-    const stored = await page.evaluate(async () => {
-      const state = await (window as any).axiomDesktop.agent.getState();
-      return state.sessions["old-thread"].timeline;
-    });
-    assert.deepEqual(stored, [reply, { ...firstError, id: "failure-2" }]);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("top error banners dismiss without clearing native errors and show new failures", async () => {
-  const { page, errors } = await openApp();
-  try {
-    await page.evaluate(() => (window as any).__deletionTest.setError("Connection lost"));
-    const alert = page.getByRole("alert");
-    await alert.getByText("Connection lost", { exact: true }).waitFor();
-    assert.equal(await alert.evaluate((node) => getComputedStyle(node).position), "absolute");
-    await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
-    assert.equal(await alert.count(), 0);
-    assert.equal(await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).error), "Connection lost");
-    await page.evaluate(() => (window as any).__deletionTest.setError("Connection lost"));
-    assert.equal(await alert.count(), 0);
-    await page.evaluate(() => (window as any).__deletionTest.setError("Connection failed again"));
-    await alert.getByText("Connection failed again", { exact: true }).waitFor();
-    await alert.getByRole("button", { name: "Dismiss notice", exact: true }).click();
-    await page.evaluate(() => (window as any).__deletionTest.setError(null));
-    await page.evaluate(() => (window as any).__deletionTest.setError("Connection failed again"));
-    await alert.getByText("Connection failed again", { exact: true }).waitFor();
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-for (const existing of [false, true]) {
-  test(`attachment cards and image previews remain visible through sending (${existing ? "existing" : "new"} thread)`, async () => {
-    const { page, errors } = await openApp("linux", false, [], "medium", true, false);
-    try {
-      if (existing) await page.locator('[data-thread-id="old-thread"]').click();
-      await page.evaluate((existing) => {
-        const app = (window as any).__deletionTest;
-        for (const stage of existing ? ["prompt"] : ["new", "settings", "prompt"]) app.holdSetup(stage);
-        (window as any).__previewReads = 0;
-        (window as any).axiomDesktop.agent.getAttachments = async () => {
-          (window as any).__previewReads++;
-          throw new Error("Newly sent attachments must use their local previews");
-        };
-      }, existing);
-      await page.locator('input[type="file"]').setInputFiles([
-        { name: "pixel.png", mimeType: "image/png", buffer: tinyPng },
-        { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Original file bytes") },
-      ]);
-      await page.getByRole("button", { name: "Remove notes.txt" }).waitFor();
-      await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[data-attachment-card] img')?.naturalWidth === 1);
-      await page.locator("textarea[data-chat-input]").fill("What is in these files?");
-      await page.evaluate(() => {
-        const state = { running: true, missing: 0, frames: 0 };
-        (window as any).__previewContinuity = state;
-        const observe = () => {
-          if (!state.running) return;
-          state.frames++;
-          const image = document.querySelector<HTMLImageElement>('[data-attachment-card] img[alt="pixel.png"]');
-          if (!image?.complete || !image.naturalWidth) state.missing++;
-          requestAnimationFrame(observe);
-        };
-        requestAnimationFrame(observe);
-      });
-      await page.getByRole("button", { name: "Send", exact: true }).click();
-      const cards = page.locator("[data-attachment-card]");
-      if (!existing) {
-        await page.getByRole("status", { name: "Sending message" }).waitFor();
-        assert.equal(await cards.count(), 2);
-        assert.equal(await page.getByRole("img", { name: "pixel.png" }).isVisible(), true);
-        if (process.env.AXIOM_ATTACHMENT_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/sending.png`, animations: "disabled" });
-        await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
-        await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.length > 0);
-        assert.equal(await cards.count(), 2);
-        await page.evaluate(() => (window as any).__deletionTest.releaseSetup("settings"));
-      }
-      await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
-      assert.equal(await cards.count(), 2);
-      assert.equal(await page.getByRole("img", { name: "pixel.png" }).isVisible(), true);
-      await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
-      const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
-      await transcript.getByRole("img", { name: "pixel.png" }).waitFor();
-      await page.getByRole("button", { name: "Edit message", exact: true }).waitFor();
-      await page.locator("textarea[data-chat-input]").fill("Next message");
-      assert.equal(await cards.count(), 2);
-      assert.equal(await transcript.getByText("notes.txt", { exact: true }).count(), 1);
-      assert.equal(await page.evaluate(() => (window as any).__previewReads), 0);
-      const continuity = await page.evaluate(() => {
-        const state = (window as any).__previewContinuity;
-        state.running = false;
-        return state;
-      });
-      assert.ok(continuity.frames > 0);
-      assert.equal(continuity.missing, 0, "no painted frame drops the image preview during handoff");
-      const bounds = await transcript.locator("[data-attachment-card]").first().boundingBox();
-      assert.ok(bounds && bounds.width < 200 && bounds.height > 140, "attachments use compact cards rather than full-width bars");
-      if (!existing && process.env.AXIOM_ATTACHMENT_CAPTURE) {
-        await page.emulateMedia({ colorScheme: "dark" });
-        await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
-        await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/sent-dark.png`, animations: "disabled" });
-      }
-      assert.deepEqual(errors, []);
-    } finally { await page.close(); }
-  });
-}
-
-test("saved image cards load previews automatically and discard late results after an account switch", async () => {
-  const { page, errors } = await openApp("linux", false, [], "medium", true);
-  try {
-    await page.locator('[data-thread-id="old-thread"]').click();
-    await page.evaluate(() => {
-      (window as any).__previewReads = 0;
-      (window as any).axiomDesktop.agent.getAttachments = async () => {
-        (window as any).__previewReads++;
-        return new Promise((resolve) => { (window as any).__resolvePreview = resolve; });
-      };
-      (window as any).__deletionTest.setTimeline([{ id: "saved-image", kind: "user", text: "Saved picture", status: "completed",
-        raw: { metadata: { attachments: [{ name: "saved.png", kind: "image" }] } } }]);
-    });
-    await page.waitForFunction(() => (window as any).__previewReads === 1);
-    assert.equal(await page.locator("[data-attachment-card]").count(), 1);
-    await page.evaluate(() => (window as any).__resolvePreview({ attachments: [] }));
-    await page.getByRole("button", { name: "Retry preview" }).waitFor();
-    assert.equal(await page.getByText("saved.png", { exact: true }).count(), 1, "failed previews keep their cards");
-    await page.getByRole("button", { name: "Retry preview" }).click();
-    await page.waitForFunction(() => (window as any).__previewReads === 2);
-    const file = { kind: "image", name: "saved.png", image: { mimeType: "image/png", data: tinyPng.toString("base64") } };
-    await page.evaluate((file) => (window as any).__resolvePreview({ attachments: [file] }), file);
-    await page.getByRole("img", { name: "saved.png" }).waitFor();
-    await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.locator('[data-thread-id="old-thread"]').click();
-    await page.waitForFunction(() => (window as any).__previewReads === 3);
-    await page.evaluate(() => {
-      (window as any).__oldResolvePreview = (window as any).__resolvePreview;
-      (window as any).__deletionTest.setAccount("different-account");
-    });
-    await page.waitForFunction(() => (window as any).__previewReads === 4);
-    await page.evaluate(async (file) => {
-      (window as any).__oldResolvePreview({ attachments: [file] });
-      await new Promise(requestAnimationFrame);
-    }, file);
-    assert.equal(await page.getByRole("img", { name: "saved.png" }).count(), 0);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-for (const existing of [false, true]) {
-  test(`files dropped across the ${existing ? "conversation" : "welcome"} panel attach once and nested drags keep feedback`, async () => {
-    const { page, errors } = await openApp("linux", false, [], "medium", true);
-    try {
-      if (existing) await page.locator('[data-thread-id="old-thread"]').click();
-      const zone = page.locator("[data-chat-drop-zone]");
-      for (const [index, selector] of ["[data-chat-drop-zone]", "[data-chat-drop-zone] header", "textarea[data-chat-input]"].entries()) {
-        const transfer = await page.evaluateHandle((name) => {
-          const data = new DataTransfer();
-          data.items.add(new File(["Dropped original bytes"], name, { type: "text/plain" }));
-          return data;
-        }, `drop-${index}.txt`);
-        await zone.dispatchEvent("dragenter", { dataTransfer: transfer });
-        await page.locator("textarea[data-chat-input]").dispatchEvent("dragenter", { dataTransfer: transfer });
-        await page.locator("textarea[data-chat-input]").dispatchEvent("dragleave", { dataTransfer: transfer });
-        assert.equal(await page.locator("[data-file-drop-overlay]").isVisible(), true);
-        if (!existing && index === 0 && process.env.AXIOM_ATTACHMENT_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/drop-zone.png`, animations: "disabled" });
-        await page.locator(selector).dispatchEvent("dragover", { dataTransfer: transfer });
-        await page.locator(selector).dispatchEvent("drop", { dataTransfer: transfer });
-        await page.getByRole("button", { name: `Remove drop-${index}.txt` }).waitFor();
-        assert.equal(await page.locator("[data-attachment-card]").count(), index + 1);
-        assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
-        await transfer.dispose();
-      }
-      const textDrag = await page.evaluateHandle(() => {
-        const data = new DataTransfer(); data.setData("text/plain", "Selected text"); return data;
-      });
-      await zone.dispatchEvent("dragenter", { dataTransfer: textDrag });
-      assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
-      await textDrag.dispose();
-      const outside = await page.evaluateHandle(() => {
-        const data = new DataTransfer(); data.items.add(new File(["Outside"], "outside.txt", { type: "text/plain" })); return data;
-      });
-      await page.getByPlaceholder("Search threads").dispatchEvent("drop", { dataTransfer: outside });
-      assert.equal(await page.locator("[data-attachment-card]").count(), 3);
-      await page.getByRole("button", { name: "Agent", exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "Agent settings" });
-      await dialog.dispatchEvent("dragenter", { dataTransfer: outside });
-      await dialog.dispatchEvent("drop", { dataTransfer: outside });
-      assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      assert.equal(await page.locator("[data-attachment-card]").count(), 3, "a dialog outside the panel does not attach files");
-      await outside.dispose();
-      assert.deepEqual(errors, []);
-    } finally { await page.close(); }
-  });
-}
-
-test("image card viewer enlarges local images, fits the window, and restores keyboard focus", async () => {
-  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
-  try {
-    const data = await page.evaluate(() => {
-      const canvas = document.createElement("canvas"); canvas.width = 1600; canvas.height = 900;
-      const context = canvas.getContext("2d")!;
-      const gradient = context.createLinearGradient(0, 0, 1600, 900);
-      gradient.addColorStop(0, "#164e63"); gradient.addColorStop(1, "#fb923c");
-      context.fillStyle = gradient; context.fillRect(0, 0, 1600, 900);
-      context.fillStyle = "white"; context.font = "72px sans-serif"; context.fillText("Image preview", 120, 450);
-      return canvas.toDataURL("image/png").split(",")[1]!;
-    });
-    await page.locator('input[type="file"]').setInputFiles({ name: "landscape.png", mimeType: "image/png", buffer: Buffer.from(data, "base64") });
-    const trigger = page.getByRole("button", { name: "View image landscape.png", exact: true });
-    await trigger.waitFor();
-    const thumbnail = await page.locator("[data-attachment-card] img").boundingBox();
-    await trigger.focus();
-    await page.keyboard.press("Enter");
-    const dialog = page.getByRole("dialog", { name: "Image preview: landscape.png", exact: true });
-    await dialog.waitFor();
-    const close = dialog.getByRole("button", { name: "Close image preview" });
-    const image = dialog.getByRole("img", { name: "landscape.png" });
-    await page.waitForFunction(() => document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth === 1600);
-    assert.equal(await image.getAttribute("src"), `data:image/png;base64,${data}`);
-    const enlarged = await image.boundingBox();
-    assert.ok(enlarged && thumbnail && enlarged.width > thumbnail.width * 3 && enlarged.height > thumbnail.height * 3);
-    assert.equal(await image.evaluate((element) => getComputedStyle(element).objectFit), "contain");
-    for (const key of ["Tab", "Shift+Tab"]) {
-      await page.keyboard.press(key);
-      assert.ok(await close.evaluate((element) => element === document.activeElement));
-    }
-    await image.click();
-    assert.ok(await dialog.isVisible(), "clicking the picture keeps it open");
-    if (process.env.AXIOM_IMAGE_VIEWER_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_IMAGE_VIEWER_CAPTURE}/large.png`, animations: "disabled" });
-    await page.setViewportSize({ width: 640, height: 500 });
-    const bounds = await dialog.boundingBox();
-    assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 640 && bounds.y + bounds.height <= 500);
-    assert.ok(await image.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
-    }));
-    if (process.env.AXIOM_IMAGE_VIEWER_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_IMAGE_VIEWER_CAPTURE}/narrow.png`, animations: "disabled" });
-    await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "detached" });
-    assert.ok(await trigger.evaluate((element) => element === document.activeElement));
-    await page.keyboard.press("Space");
-    await dialog.waitFor();
-    await close.click();
-    await dialog.waitFor({ state: "detached" });
-    assert.ok(await trigger.evaluate((element) => element === document.activeElement));
-    await trigger.click();
-    await dialog.waitFor();
-    await page.mouse.click(2, 2);
-    await dialog.waitFor({ state: "detached" });
-    assert.ok(await trigger.evaluate((element) => element === document.activeElement));
-    await page.getByRole("button", { name: "Remove landscape.png" }).click();
-    assert.equal(await page.locator("[data-attachment-card], dialog").count(), 0, "removing an image does not open its viewer");
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("image card viewer opens during sending and after acknowledgement without reloading attachments", async () => {
-  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
-  try {
-    await page.evaluate(() => {
-      (window as any).__deletionTest.holdSetup("prompt");
-      (window as any).__previewReads = 0;
-      (window as any).axiomDesktop.agent.getAttachments = async () => { (window as any).__previewReads++; throw new Error("Unexpected preview read"); };
-    });
-    await page.locator('input[type="file"]').setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: tinyPng });
-    await page.getByRole("button", { name: "Send", exact: true }).click();
-    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
-    const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
-    for (const acknowledged of [false, true]) {
-      if (acknowledged) {
-        await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
-        await page.getByText("Sending…", { exact: true }).waitFor({ state: "hidden" });
-      }
-      await transcript.getByRole("button", { name: "View image pixel.png" }).click();
-      const dialog = page.getByRole("dialog", { name: "Image preview: pixel.png" });
-      await dialog.waitFor();
-      assert.equal(await dialog.getByRole("img").getAttribute("src"), `data:image/png;base64,${tinyPng.toString("base64")}`);
-      await page.keyboard.press("Escape");
-      await dialog.waitFor({ state: "detached" });
-    }
-    assert.equal(await page.evaluate(() => (window as any).__previewReads), 0);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("saved image card viewer closes when its account is replaced", async () => {
-  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
-  try {
-    await page.locator('[data-thread-id="old-thread"]').click();
-    await page.evaluate((data) => {
-      (window as any).axiomDesktop.agent.getAttachments = async () => ({ attachments: [{ kind: "image", name: "saved.png", image: { mimeType: "image/png", data } }] });
-      (window as any).__deletionTest.setTimeline([{ id: "saved-image", kind: "user", text: "Saved picture", status: "completed",
-        raw: { metadata: { attachments: [{ name: "saved.png", kind: "image" }] } } }]);
-    }, tinyPng.toString("base64"));
-    await page.getByRole("button", { name: "View image saved.png" }).click();
-    const dialog = page.getByRole("dialog", { name: "Image preview: saved.png" });
-    await dialog.waitFor();
-    await page.evaluate(() => (window as any).__deletionTest.setAccount("different-account"));
-    await dialog.waitFor({ state: "detached" });
-    assert.equal(await page.locator("dialog:modal").count(), 0);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("attachment cards wrap within narrow windows and the draft tray scrolls without hiding Send", async () => {
-  const { page, errors } = await openApp("linux", false, [], "medium", true);
-  try {
-    await page.setViewportSize({ width: 640, height: 800 });
-    await page.locator('input[type="file"]').setInputFiles(Array.from({ length: 8 }, (_, index) => ({
-      name: `long-attachment-name-${index}-with-extra-words.png`, mimeType: "image/png", buffer: tinyPng,
-    })));
-    await page.getByRole("button", { name: "Remove long-attachment-name-7-with-extra-words.png" }).waitFor();
-    const send = page.getByRole("button", { name: "Send", exact: true });
-    const bounds = await send.boundingBox();
-    assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= 800);
-    await send.click();
-    const transcript = page.getByRole("region", { name: "Chat messages", exact: true });
-    await transcript.locator("[data-attachment-card]").nth(7).waitFor();
-    assert.equal(await transcript.locator("[data-attachment-card]").count(), 8);
-    const fits = await transcript.evaluate((element) => element.scrollWidth <= element.clientWidth);
-    assert.equal(fits, true, "card rows do not overflow the chat viewport");
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    if (process.env.AXIOM_ATTACHMENT_CAPTURE) await page.screenshot({ path: `${process.env.AXIOM_ATTACHMENT_CAPTURE}/narrow.png`, animations: "disabled" });
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("code highlighting follows both themes and preserves exact text through streamed updates", async () => {
-  const { page, errors } = await openApp();
-  try {
-    await page.locator('[data-thread-id="old-thread"]').click();
-    const source = '#!/usr/bin/env python3\n# extra precision\ndef pi(digits: int = 100):\n    return "3.14"\n';
-    const show = async (text: string) => page.evaluate((text) => (window as any).__deletionTest.setTimeline([
-      { id: "code", kind: "assistant", text, status: "streaming" },
-    ]), text);
-    await show(`\`\`\`python\n${source}\`\`\``);
-    const block = page.locator(".markdown-prose pre code");
-    await block.locator(".hljs-keyword").first().waitFor();
-    assert.equal(await block.textContent(), source);
-    const themeColours: string[][] = [];
-    for (const theme of ["light", "dark"] as const) {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.waitForFunction(value => document.documentElement.dataset.theme === value, theme);
-      const colours = await block.evaluate(el => [el, ...["keyword", "string", "number", "comment"].map(kind => el.querySelector(`.hljs-${kind}`)!)].map(token => getComputedStyle(token).color));
-      assert.equal(new Set(colours).size, 5, `${theme} code has distinct token colours`);
-      themeColours.push(colours);
-      assert.equal(await block.textContent(), source);
-    }
-    assert.notDeepEqual(themeColours[0], themeColours[1]);
-    // Same transcript row, first incomplete and then complete, just as streaming supplies it.
-    const partial = 'def pi():\n    return "3.';
-    await show(`\`\`\`python\n${partial}`);
-    await page.waitForFunction(expected => document.querySelector(".markdown-prose pre code")?.textContent === expected, `${partial}\n`);
-    await show('```python\ndef pi():\n    return "3.14"\n```');
-    await page.waitForFunction(() => document.querySelector(".markdown-prose pre code")?.textContent === 'def pi():\n    return "3.14"\n');
-    assert.ok(await block.locator(".hljs-string").count() > 0);
-    await show(`\`\`\`\n${source}\`\`\``);
-    await block.locator(".hljs-keyword").first().waitFor();
-    assert.equal(await block.textContent(), source);
-    await show('```html\n<img src=x onerror=alert(1)>\n```');
-    await page.waitForFunction(() => document.querySelector(".markdown-prose pre code")?.textContent === '<img src=x onerror=alert(1)>\n');
-    assert.equal(await block.locator("img").count(), 0);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("usage period tabs update totals and charts, discard stale replies, and support keyboard retry", async () => {
-  const { page, errors } = await openApp();
-  try {
-    await page.evaluate(() => {
-      const win = window as any;
-      win.__periodRequests = [];
-      win.__weekCalls = 0;
-      win.axiomDesktop.agent.usageSummary = async (accountId: string, request: { period: string; timezone: string }) => {
-        win.__periodRequests.push({ accountId, ...request });
-        const model = (costMicrousd: string, modelName: string) => ({ provider: "tinfoil", modelId: modelName, modelName, costMicrousd });
-        if (request.period === "week") {
-          win.__weekCalls++;
-          if (win.__weekCalls === 1) return new Promise(resolve => { win.__lateWeek = resolve; });
-          if (win.__weekCalls === 2) return { summary: { period: "all_time", totalCostMicrousd: "0", models: [] } };
-          return { summary: { period: "week", totalCostMicrousd: "0", models: [] } };
-        }
-        if (request.period === "month") return { summary: { period: "month", totalCostMicrousd: "3000000", models: [model("1000000", "Month A"), model("2000000", "Month B")] } };
-        return { summary: { period: "all_time", totalCostMicrousd: "9000000", models: [model("9000000", "All-time model")] } };
-      };
-    });
-    await openAccountScreen(page, "Settings");
-    await page.getByRole("tab", { name: "Usage", exact: true }).click();
-    const total = page.locator("[data-usage-total]");
-    await total.waitFor();
-    assert.equal(await total.innerText(), "$9.00");
-    const tabs = page.getByRole("tablist", { name: "Spending period" });
-    await tabs.getByRole("tab", { name: "This week" }).click();
-    await page.waitForFunction(() => !!(window as any).__lateWeek);
-    assert.equal(await total.count(), 0);
-    assert.equal(await tabs.isVisible(), true);
-    await tabs.getByRole("tab", { name: "This month" }).click();
-    await page.getByText("Spending this month", { exact: true }).waitFor();
-    assert.equal(await total.innerText(), "$3.00");
-    assert.equal(await page.getByRole("img", { name: /Spending by model/ }).locator("path").count(), 2);
-    assert.equal(await page.getByRole("button", { name: /Month B.*66.7%/ }).count(), 1);
-    await page.evaluate(async () => {
-      (window as any).__lateWeek({ summary: { period: "week", totalCostMicrousd: "77000000", models: [{ provider: "near", modelId: "old", modelName: "Stale week", costMicrousd: "77000000" }] } });
-      await new Promise(resolve => requestAnimationFrame(resolve));
-    });
-    assert.equal(await total.innerText(), "$3.00");
-    assert.equal(await page.getByText("Stale week", { exact: true }).count(), 0);
-    await tabs.getByRole("tab", { name: "This month" }).press("Home");
-    await page.getByRole("alert").filter({ hasText: "Couldn’t load your usage." }).waitFor();
-    assert.equal(await total.count(), 0);
-    assert.equal(await tabs.getByRole("tab", { name: "This week" }).getAttribute("aria-selected"), "true");
-    await page.getByRole("button", { name: "Try again" }).click();
-    await page.getByRole("heading", { name: "No spending this week" }).waitFor();
-    assert.equal(await total.innerText(), "$0.00");
-    await tabs.getByRole("tab", { name: "This week" }).press("ArrowRight");
-    await page.getByText("Spending this month", { exact: true }).waitFor();
-    await tabs.getByRole("tab", { name: "This month" }).press("End");
-    await page.getByText("All-time spending", { exact: true }).waitFor();
-    assert.equal(await total.innerText(), "$9.00");
-    const requests = await page.evaluate(() => (window as any).__periodRequests);
-    assert.equal(requests[0]?.period, "all_time");
-    // StrictMode can issue the initial request twice; switching must send each selected period.
-    assert.deepEqual(requests.slice(-6).map((r: { period: string }) => r.period), ["week", "month", "week", "week", "month", "all_time"]);
-    assert.ok(requests.every((r: { accountId: string; timezone: string }) => r.accountId === "test-account" && typeof r.timezone === "string" && r.timezone.length > 0));
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

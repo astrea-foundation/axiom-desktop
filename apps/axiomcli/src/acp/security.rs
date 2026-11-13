@@ -32,11 +32,6 @@ pub(super) async fn verify_security(
         let external_id = external_id.clone();
         let internal_id = session.internal_id.clone();
         let model = session.model.clone();
-        if request.accept_outdated_tee && request.model_id.as_deref() != Some(model.as_str()) {
-            return responder.respond_with_internal_error(
-                "The selected model changed; review its warning before continuing.",
-            );
-        }
         if registry.active_work.contains_key(&internal_id) {
             return responder.respond_with_internal_error("session already has active work");
         }
@@ -84,18 +79,12 @@ pub(super) async fn verify_security(
                     status: extension_security_status(crate::app::SecurityStatus::Verifying),
                 },
             )?;
-            let verify = async {
-                if request.accept_outdated_tee {
-                    ctx_runner
-                        .accept_outdated_tee(&model, work.cancellation.clone())
-                        .await
-                } else {
-                    ctx_runner
-                        .verify_security(&model, work.cancellation.clone())
-                        .await
-                }
-            };
-            let verification = await_session_future(&request_cancellation, &work, verify).await?;
+            let verification = await_session_future(
+                &request_cancellation,
+                &work,
+                ctx_runner.verify_security(&model, work.cancellation.clone()),
+            )
+            .await?;
             let verification = match verification {
                 Ok(verification) => verification,
                 Err(crate::AxiomError::Cancelled) => {
@@ -134,8 +123,6 @@ pub(super) async fn verify_security(
             let verification_status =
                 if work.cancellation.is_cancelled() || error.code == (-32001).into() {
                     crate::app::SecurityStatus::Unverified
-                } else if error.code == (-32010).into() {
-                    crate::app::SecurityStatus::Outdated
                 } else {
                     crate::app::SecurityStatus::Failed
                 };
@@ -149,12 +136,9 @@ pub(super) async fn verify_security(
             )
             .await
             {
-                let status = if matches!(
-                    verification_status,
-                    crate::app::SecurityStatus::Failed | crate::app::SecurityStatus::Outdated
-                ) {
+                let status = if verification_status == crate::app::SecurityStatus::Failed {
                     ExtensionSecurityStatus {
-                        state: extension_security_state(verification_status),
+                        state: ExtensionSecurityState::Failed,
                         detail: Some(error.to_string()),
                     }
                 } else {

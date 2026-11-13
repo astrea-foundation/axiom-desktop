@@ -1,10 +1,5 @@
 # Documentation validation and outstanding acceptance
 
-Automatic updates: the [2026-09-22 implementation report](testing/automatic-updates-2026-09-22.md)
-records local signature, helper, installer, UI and publication tests. Signed
-Windows/macOS and real Linux package A-to-B acceptance plus release credential
-provisioning remain required before publication. Implementation stays on `dev`.
-
 The 2026-09-21 consolidation reviewed the native implementation at `fa9c4ab`
 (the then-current `dev` baseline), manifests, generated contracts, tests and workflow definitions.
 The clean-baseline refactor updates the storage and billing findings below and
@@ -18,7 +13,7 @@ the current state of production, published installers or unrecorded manual work.
 | Components and independent hosted/native ownership | [workspace](../Cargo.toml), [package scripts](../package.json), [architecture](architecture.md) |
 | Configuration precedence, bounds, storage paths and explicit account reset | [config.rs](../apps/axiomcli/src/config.rs), [paths.rs](../apps/axiomcli/src/paths.rs), [session.rs](../apps/axiomcli/src/session.rs) |
 | Schema 2/application ID `0x41584133`, transactional upgrade from schema 1, and rejection of obsolete stores | [storage schema/migrations](../apps/axiomcli/src/session/schema.rs), [versioning](versioning.md) |
-| Background encrypted titles, rename protection, failure accounting and local fallbacks; edit/regenerate and staged compaction | [title regressions](../apps/axiomcli/src/agent_title_tests.rs), [storage tests](../apps/axiomcli/src/session/tests.rs), [ACP transcripts](../apps/axiomcli/tests/acp_transcript.rs), [sidebar updates](../packages/axiom-acp-client/tests/state-streaming.test.ts), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
+| Local titles, edit/regenerate, staged compaction and stable user-submission ordering | [title helper](../apps/axiomcli/src/session_title.rs), [agent.rs](../apps/axiomcli/src/agent.rs), [ACP](../apps/axiomcli/src/acp.rs), [concurrency regressions](testing/concurrency-ui-2026-09-20/FIXES.md) |
 | Desktop Agent on all packaged OS targets; Linux-only Bubblewrap isolation | [workspace.rs](../apps/axiomcli/src/workspace.rs), [policy.rs](../apps/axiomcli/src/policy.rs), [Desktop](desktop.md) |
 | ACP 0.2 features, API-key creation and Tinfoil generation exception | [extension DTOs](../crates/axiom-acp-extension/src/lib.rs), [contract](acp-compatibility.md) |
 | Mainnet ZEC deposits, gift redemption and `billing@3` | [billing.rs](../apps/axiomcli/src/billing.rs), [TUI credit](../apps/axiomcli/src/tui/billing.rs), [Desktop gift form](../apps/desktop/src/renderer/src/components/GiftCodePanel.tsx) |
@@ -99,8 +94,7 @@ acceptance and production cutover were not exercised by this source cleanup.
 ## Native maintenance verification
 
 The [maintenance plan](native-maintenance-plan.md) removes dormant UI/counters,
-unused assets and the former asynchronous title plumbing (replaced by account-bound
-background titles on September 22); historically connected the now-retired
+unused assets and asynchronous title plumbing; historically connected the now-retired
 Phala verifier to signed NVIDIA policy; tests NEAR report binding through the production
 verifier; and separates ACP, TUI and Desktop controller responsibilities.
 
@@ -249,91 +243,3 @@ older journal. Client negotiation rejects an incompatible evidence contract.
 The previously recorded billing browser failures remain open; this change did
 not rerun the complete browser suite, perform live inference or deploy either
 repository.
-
-## Queued-message controls (2026-09-22)
-
-Desktop's Send now action cancels the current reply and submits the selected
-queued message as a new turn after cancellation and prompt cleanup. Queued
-messages can also be cancelled while that cleanup is pending. The queue retains
-attachments, Web choice, Agent revision and stable message IDs; disconnects,
-account changes and failed cancellation cannot silently replay the message.
-Stopping during verification also prevents a waiting prompt from starting later.
-
-All 79 ACP client tests and 198 Desktop unit/contract tests passed; one
-PowerShell-dependent signing check was skipped. This includes 21 queue tests
-covering priority, cancellation, storage failure, attachments, account/runtime
-changes and delayed cleanup. All 12 focused queue browser tests passed across
-the Linux, Windows and macOS renderer fixtures. Light/dark queue controls were
-visually checked. TypeScript checks and the Desktop production build passed.
-These checks used local fixtures; live inference and native OS qualification
-were not repeated, and the existing billing browser failures remain open.
-
-## Balance panel refreshes (2026-09-22)
-
-Deposit and gift-credit panels now have distinct account-scoped React keys.
-A browser regression reproduced four deposit panels before the fix and verifies
-one address, QR code and copy button after repeated manual/automatic refreshes
-and exchange-rate changes, while preserving unsubmitted gift-code input.
-
-All nine focused balance, deposit and gift-redemption browser checks passed,
-including the previously failing billing checks. The layout check now permits
-vertical scrolling to the gift form while requiring the deposit action to remain
-visible and all content to fit the panel width. Light/dark screenshots were
-visually checked. All 198 Desktop unit/contract tests, Desktop TypeScript checks
-and the production build passed; one PowerShell-dependent test was skipped.
-These checks used local fixtures and did not submit payments or redeem live codes.
-
-## Interrupted-reply notices (2026-09-22)
-
-Desktop shows one notice per failed turn when the timeline includes its error.
-Known stream endings and timeouts use short messages with a collapsed technical
-detail. Ambiguous authentication/transport failures remain errors; presentation
-never changes the stored status, terminal verification or native checks.
-
-All 26 timeline unit tests and seven focused browser checks passed. Coverage
-includes partial text/reasoning, failures in separate turns, retained verification
-failures, deliberate cancellation, keyboard-operated details and regeneration
-through the existing native revision flow. Desktop TypeScript checks and the
-production build passed. Light/dark screenshots were visually checked; provider
-traffic and native cryptographic verification were unchanged and not rerun.
-
-Reply notices and global error banners also have keyboard-accessible dismissal
-buttons. Eight focused browser checks cover dismissal, later/changed errors,
-rapid connection recovery and failure, preserved native errors and failed reply
-status, and removal of the notice without an empty timeline row. The 26 timeline
-unit tests, Desktop TypeScript checks and production build passed. Light/dark
-screenshots were checked with the dismissal controls visible.
-
-Outdated-TEE consent regression coverage: native status/consent/restart checks in
-`crates/axiom-secure-client/src/providers/near/attestation.rs`, report validation
-and model-change protection in the ACP client security tests, and light/dark
-warning/acceptance screenshots in the Desktop privacy-proof browser suite. The
-companion backend tests explicit session consent and preserves rejection of
-invalid quote signatures, nonce/key/TLS/workload bindings and other TCB statuses.
-
-## NEAR rotating signing keys and reasoning-only completion (2026-10-28)
-
-The public NVIDIA JWKS measured 525,732 bytes, exceeding the native verifier's
-previous 256 KiB download bound. The new 1 MiB bound admits that rotating key set
-while retaining certificate validity, signed-policy anchors, ES384 signatures,
-challenge nonces and passing GPU verdicts. Local live investigation then passed
-NEAR's Intel `UpToDate`, NVIDIA, model/key, TLS and workload checks without
-outdated-TCB consent.
-
-That request subsequently failed in the relay after provider usage settled:
-the model exhausted its output budget with encrypted reasoning and no answer
-text, which the relay and native client incorrectly treated as empty output.
-Both source fixes preserve authenticated reasoning-only results and the provider's
-finish reason. A successful authenticated live completion after the paired fix
-remains outstanding; a debit or successful attestation is not completion evidence.
-The companion relay change is
-[axiom-platform PR 98](https://github.com/astrea-foundation/axiom-platform/pull/98).
-Production promotion and native release qualification remain separate work.
-
-The secure-client and proxy suites passed 78 tests, with two explicit live or
-cross-runtime tests ignored. Regressions cover large and oversized JWKS bodies,
-wrong nonces and anchors, expired certificates, signed reasoning-only output,
-empty output, missing receipts and altered ciphertext. Both packages passed
-Clippy with all targets/features and warnings denied; workspace formatting
-passed. The proxy also preserves static typed security diagnostics and correlates
-its completion IDs with upstream accounting IDs without relaxing response checks.

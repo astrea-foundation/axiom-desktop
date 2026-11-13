@@ -25,7 +25,7 @@ non-Desktop consumers.
 | `initialize` | ACP v1, metadata, load-session support and optional Axiom negotiation |
 | `session/new`, `session/load` | Canonical workspace, durable state and restored model/thinking/profile |
 | `session/prompt` | Text/resource links, ordered user/assistant/reasoning chunks, tools and stop reason |
-| `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel. A cancelled permission response also cancels its prompt, even if it arrives before the cancellation notification. |
+| `session/cancel`, `$/cancel_request` | Cooperative cancellation; supported long-running extension requests also cancel |
 | `session/set_mode` | CLI permission profile; Desktop Agent changes use the dedicated revisioned method |
 | `session/set_config_option` | Model/thinking selection validated by native policy and the catalog |
 | Permission requests | Only offered deny/once/eligible session-grant choices are valid |
@@ -49,21 +49,16 @@ family; each named feature negotiates its own version. Missing/zero versions
 mean unsupported. Desktop checks its required feature set and negotiates optional
 features separately.
 
-`account`, `timeline`, and `attachments` are version **2**;
-`billing` and `securityEvidence` are version **3**.
+`account`, `timeline`, `attachments`, and `securityEvidence` are version **2**;
+`billing` is version **3**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
 `webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
-`securityEvidence@3` carries verified hardware, key, freshness and provenance
-evidence plus `outdated` (awaiting consent) and `degraded` (explicitly accepted)
-states. Desktop requires this version before accepting verification reports.
-`security/verify` accepts `acceptOutdatedTee: true` only with the current `modelId`;
-the native runtime resolves the provider and remembers consent until restart.
-Normal verification requests never grant consent. Degraded reports retain the
-failed Intel `OutOfDate` posture check; other checks must still pass.
+`securityEvidence@2` carries verified hardware, key, freshness and provenance
+evidence. Desktop requires this version before accepting verification reports.
 
 ## Methods and ownership
 
@@ -79,7 +74,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
 | Billing | `billing/status`, `billing/redeem_gift_code` |
-| Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
+| Usage | `usage/summary` |
 | Evidence/compaction/steering | `security/verify`, `compaction/start`, `turn/steer` |
 
 Permission and question responses remain standard ACP. Standard notifications

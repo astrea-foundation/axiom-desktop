@@ -289,7 +289,6 @@ pub(super) fn render_header(frame: &mut Frame<'_>, state: &TuiState, theme: Them
         ReportStatus::Verified => (state.glyph("✓", "+"), theme.success),
         ReportStatus::Verifying => (state.activity_glyph(false), theme.brand),
         ReportStatus::Failed => (state.glyph("✕", "!"), theme.error),
-        ReportStatus::Degraded | ReportStatus::Outdated => (state.glyph("⚠", "!"), theme.warning),
         ReportStatus::Expired | ReportStatus::Unavailable => (state.glyph("○", "o"), theme.warning),
         ReportStatus::Idle | ReportStatus::Unverified => (state.glyph("○", "o"), theme.muted),
     };
@@ -1463,12 +1462,6 @@ pub(super) fn security_overlay_lines(
                 ReportStatus::Failed => {
                     "Verification failed. This retained report is not current proof."
                 }
-                ReportStatus::Degraded => {
-                    "TEE updates needed. Accepted for this provider until restart; other checks still apply."
-                }
-                ReportStatus::Outdated => {
-                    "TEE updates needed. To continue: /security accept-outdated (until restart)."
-                }
                 _ => "Current proof is unavailable. This is a previous report; press R to verify.",
             },
             Style::default().fg(
@@ -1591,11 +1584,6 @@ pub(super) fn security_summary_lines(
                 if check.passed { "✓ " } else { "× " },
                 Style::default().fg(if check.passed {
                     theme.success
-                } else if report == ReportStatus::Degraded
-                    && check.id == "intel_tdx"
-                    && check.status == "OutOfDate"
-                {
-                    theme.warning
                 } else {
                     theme.error
                 }),

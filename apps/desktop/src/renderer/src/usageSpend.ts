@@ -1,6 +1,4 @@
-import type { UsageSummaryRequest, UsageSummary } from "@axiom/axiom-acp-client";
-
-export type UsagePeriod = NonNullable<UsageSummaryRequest["period"]>;
+import type { UsageSummary } from "@axiom/axiom-acp-client";
 
 export interface ModelSpending {
   id: string;
@@ -26,8 +24,8 @@ function label(value: unknown): string | null {
 }
 
 /** Costs stay integer millionths through validation, merging, sorting and display. */
-export function spendingBreakdown(summary: UsageSummary, period: UsagePeriod = "all_time"): { total: bigint; models: ModelSpending[] } {
-  if (!summary || summary.period !== period || !Array.isArray(summary.models) || summary.models.length > 512) {
+export function spendingBreakdown(summary: UsageSummary): { total: bigint; models: ModelSpending[] } {
+  if (!summary || summary.period !== "all_time" || !Array.isArray(summary.models) || summary.models.length > 512) {
     throw new Error("Spending data is unavailable. Please try again.");
   }
   const total = amount(summary.totalCostMicrousd);

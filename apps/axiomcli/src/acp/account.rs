@@ -468,7 +468,7 @@ pub(super) fn api_key_revoke(
 
 pub(super) fn usage_summary(
     context: &ServerContext,
-    request: extension::UsageSummaryRequest,
+    _request: extension::UsageSummaryRequest,
     responder: Responder<extension::UsageSummaryResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
@@ -489,7 +489,7 @@ pub(super) fn usage_summary(
     let request_cancellation = responder.cancellation();
     connection.spawn(async move {
         let _guard = guard;
-        let summary = client.usage_summary(&request, &cancellation);
+        let summary = client.usage_summary(&cancellation);
         tokio::pin!(summary);
         let result = tokio::select! {
             biased;

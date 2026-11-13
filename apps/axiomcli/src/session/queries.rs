@@ -347,7 +347,7 @@ impl SessionStore {
         let title = validate_title(title)?;
         self.update_thread_metadata(
             id,
-            "UPDATE threads SET title=?2, title_generation_id=NULL, revision=revision+1, updated_at=?3 WHERE id=?1",
+            "UPDATE threads SET title=?2, revision=revision+1, updated_at=?3 WHERE id=?1",
             title,
         )
     }
@@ -419,47 +419,6 @@ impl SessionStore {
             return Ok(true);
         }
         ensure_thread_exists_connection(&connection, id).map(|()| false)
-    }
-
-    /// Reserve one automatic title without treating a later manual rename as a fallback.
-    pub fn begin_title_generation(&self, id: &SessionId, fallback: &str) -> Result<Option<String>> {
-        let fallback = validate_title(fallback)?;
-        let generation = uuid::Uuid::new_v4().to_string();
-        let changed = self.lock()?.execute(
-            "UPDATE threads SET title=?2, title_generation_id=?3, revision=revision+1, updated_at=?4
-             WHERE id=?1 AND title IS NULL",
-            params![id.to_string(), fallback, generation, Utc::now().to_rfc3339()],
-        ).map_err(storage_error)?;
-        Ok((changed > 0).then_some(generation))
-    }
-
-    pub fn title_generation_pending(&self, id: &SessionId, generation: &str) -> Result<bool> {
-        self.lock()?
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND title_generation_id=?2)",
-                params![id.to_string(), generation],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)
-    }
-
-    /// Compare and replace only this job's fallback; deletion and every rename revoke it.
-    pub fn finish_title_generation(
-        &self,
-        id: &SessionId,
-        generation: &str,
-        title: Option<&str>,
-    ) -> Result<bool> {
-        let title = title.map(validate_title).transpose()?;
-        let changed = self
-            .lock()?
-            .execute(
-                "UPDATE threads SET title=COALESCE(?3,title), title_generation_id=NULL,
-             revision=revision+1, updated_at=?4 WHERE id=?1 AND title_generation_id=?2",
-                params![id.to_string(), generation, title, Utc::now().to_rfc3339()],
-            )
-            .map_err(storage_error)?;
-        Ok(changed > 0)
     }
 
     pub fn archive(&self, id: &SessionId, archived: bool) -> Result<ThreadRevision> {

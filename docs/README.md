@@ -25,15 +25,12 @@ that a particular installer is published or that a live deployment has passed ac
 | [ACP contract](acp-compatibility.md) | Standard ACP, negotiated features, recovery and DTO generation |
 | [Gift credit controls](adr/0017-gift-credit-controls.md) | Private redemption, TUI funding and `billing@3` |
 | [Security and trust operations](threat-model.md) | Trust boundaries, provider verification and signed-policy handling |
-| [Outdated TEE consent](adr/0018-outdated-tee-consent.md) | Runtime consent, degraded warnings and the strict verification boundary |
 | [Provider discovery and uploads](provider-catalogs.md) | Refreshed models, direct encrypted attachments and provider retirement |
 | [NEAR v3](protocols/near-v3.md) | Worker sessions, Ed25519 receipts and relay routing |
 | [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md) | Router verification and authenticated encrypted completion |
 | [Development](development.md) | Build/check commands, Desktop development and visual assets |
-| [Evaluations](evaluations.md) | Deterministic and live-provider evaluation lanes |
-| [Combined installer decision](adr/0019-combined-installers.md) | Universal Mac and combined Windows distribution |
+| [Evaluations](evaluations.md) | Deterministic, live-provider and real-search lanes |
 | [Release procedure](releasing.md) | Target matrix, signing, packaging and publication handoff |
-| [Automatic updates plan](automatic-updates-plan.md) | Implemented update design, dev scope and remaining installer qualification |
 | [Versioning](versioning.md) | Product, storage and protocol compatibility |
 | [Validation and outstanding work](validation.md) | Source evidence and release checks still requiring recorded outcomes |
 

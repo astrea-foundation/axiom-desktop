@@ -11,7 +11,6 @@ use crate::app::ThinkingLevel;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
-    Update,
     Usage,
     Permissions,
     Compact { focus: Option<String> },
@@ -26,7 +25,6 @@ pub enum SlashCommand {
     Topup,
     Redeem,
     Security,
-    AcceptOutdatedTee,
     Refresh,
     Theme(crate::tui::Appearance),
     Web(bool),
@@ -106,7 +104,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "security",
-        usage: "/security [accept-outdated]",
+        usage: "/security",
         description: "Inspect attestation, encryption, and workload evidence",
         aliases: &["attestation"],
     },
@@ -158,12 +156,6 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         description: "Inspect reported context usage, capacity, and compaction threshold",
         aliases: &[],
     },
-    SlashCommandSpec {
-        name: "update",
-        usage: "/update",
-        description: "Install the latest Axiom release and restart this session",
-        aliases: &[],
-    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,7 +201,6 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
             SlashCommand::Redeem,
             "/redeem (enter the code in the private screen)",
         ),
-        Some("update") => no_arguments(arguments, SlashCommand::Update, "/update"),
         Some("help") => no_arguments(arguments, SlashCommand::Help, "/help"),
         Some("usage") => no_arguments(arguments, SlashCommand::Usage, "/usage"),
         Some("permissions") => {
@@ -229,7 +220,6 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         Some("login") => no_arguments(arguments, SlashCommand::Login, COMMANDS[6].usage),
         Some("logout") => no_arguments(arguments, SlashCommand::Logout, COMMANDS[7].usage),
         Some("account") => no_arguments(arguments, SlashCommand::Account, COMMANDS[8].usage),
-        Some("security") if arguments == "accept-outdated" => Ok(SlashCommand::AcceptOutdatedTee),
         Some("security") => no_arguments(arguments, SlashCommand::Security, COMMANDS[9].usage),
         Some("refresh") => no_arguments(arguments, SlashCommand::Refresh, COMMANDS[10].usage),
         Some("theme") => crate::tui::Appearance::parse(arguments)
@@ -370,9 +360,10 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
             ("high", "Use high reasoning effort"),
             ("xhigh", "Use extra-high reasoning effort"),
         ],
-        "permissions" | "compact" | "help" | "update" | "model" | "resume" | "delete" | "login"
-        | "logout" | "account" | "security" | "refresh" | "balance" | "topup" | "redeem"
-        | "usage" => Vec::new(),
+        "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
+        | "account" | "security" | "refresh" | "balance" | "topup" | "redeem" | "usage" => {
+            Vec::new()
+        }
         _ => unreachable!("all command specs are handled"),
     };
     options

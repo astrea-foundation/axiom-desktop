@@ -2,7 +2,6 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { rehypeCodeHighlight } from "../codeHighlight";
 
 // Keep component identities stable: chat interaction/streaming can rerender
 // Markdown between pointer-down and click, and must not replace the link DOM.
@@ -34,7 +33,7 @@ export function ChatMarkdown({ text }: { text: string }) {
           maxExpand: 1_000,
           maxSize: 20,
           output: "htmlAndMathml",
-        }], rehypeCodeHighlight]}
+        }]]}
       >{text}</ReactMarkdown>
     </div>
   );

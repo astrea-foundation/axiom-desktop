@@ -153,42 +153,6 @@ struct WorkerSessionEnvelope {
     evidence: Value,
 }
 
-fn accept_intel_status(
-    status: &str,
-    policy: &TrustPolicy,
-    config: &SecureClientConfig,
-) -> Result<bool> {
-    if status == "UpToDate"
-        && policy
-            .accepted_intel_statuses
-            .iter()
-            .any(|accepted| accepted == status)
-    {
-        return Ok(false);
-    }
-    if status == "OutOfDate" {
-        if config.accepts_outdated_tcb(super::PROVIDER_ID) {
-            return Ok(true);
-        }
-        return Err(SecureClientError::with_code(
-            axiom_inference::ProviderFailureKind::AttestationRejected,
-            crate::SecureErrorCode::OutdatedTee,
-            "The provider's Intel TDX environment is OutOfDate and requires security updates.",
-            false,
-        ));
-    }
-    Err(SecureClientError::attestation(match status {
-        "OutOfDateConfigurationNeeded" => "Intel TDX status is OutOfDateConfigurationNeeded",
-        "ConfigurationNeeded" => "Intel TDX status is ConfigurationNeeded",
-        "SWHardeningNeeded" => "Intel TDX status is SWHardeningNeeded",
-        "ConfigurationAndSWHardeningNeeded" => {
-            "Intel TDX status is ConfigurationAndSWHardeningNeeded"
-        }
-        "Revoked" => "Intel TDX status is Revoked",
-        _ => "Intel TDX status is rejected by policy; see verification diagnostics",
-    }))
-}
-
 pub(crate) async fn verify_model(
     config: &SecureClientConfig,
     credential: &crate::ApiCredential,
@@ -273,9 +237,28 @@ pub(crate) async fn verify_model(
             )
         } => result?,
     };
-    let outdated_accepted = accept_intel_status(&intel.status, policy, config).inspect_err(|_| {
+    if !policy
+        .accepted_intel_statuses
+        .iter()
+        .any(|status| status == &intel.status)
+    {
         tracing::warn!(status = %intel.status, advisory_ids = ?intel.advisory_ids, "NEAR Intel TDX rejected by policy");
-    })?;
+        return Err(SecureClientError::attestation(
+            match intel.status.as_str() {
+                "OutOfDate" => "Intel TDX status is OutOfDate",
+                "OutOfDateConfigurationNeeded" => {
+                    "Intel TDX status is OutOfDateConfigurationNeeded"
+                }
+                "ConfigurationNeeded" => "Intel TDX status is ConfigurationNeeded",
+                "SWHardeningNeeded" => "Intel TDX status is SWHardeningNeeded",
+                "ConfigurationAndSWHardeningNeeded" => {
+                    "Intel TDX status is ConfigurationAndSWHardeningNeeded"
+                }
+                "Revoked" => "Intel TDX status is Revoked",
+                _ => "Intel TDX status is rejected by policy; see verification diagnostics",
+            },
+        ));
+    }
     if !policy.require_nvidia_verified {
         return Err(SecureClientError::configuration(
             "near-v3 requires NVIDIA verification",
@@ -289,20 +272,6 @@ pub(crate) async fn verify_model(
         &intel,
         manifest,
     );
-    if outdated_accepted {
-        evidence.state = SecurityState::Degraded;
-        if let Some(check) = evidence
-            .checks
-            .iter_mut()
-            .find(|check| check.id == "intel_tdx")
-        {
-            check.passed = false;
-        }
-        evidence.provider_claims.push(EvidenceClaim {
-            name: "outdated_tcb_accepted".into(),
-            value: "Accepted by user for this provider until restart".into(),
-        });
-    }
     evidence.checks.push(check(
         "response_signature",
         "Provider response signature",
@@ -853,45 +822,6 @@ impl HttpClient for BoundedCollateralHttp {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn outdated_consent_is_runtime_scoped_and_cannot_accept_other_tcb_failures() {
-        let config = crate::SecureClientConfig::new("https://relay.example").unwrap();
-        let policy = crate::TrustPolicy::default();
-        assert!(!super::accept_intel_status("UpToDate", &policy, &config).unwrap());
-        assert_eq!(
-            super::accept_intel_status("OutOfDate", &policy, &config)
-                .unwrap_err()
-                .code(),
-            crate::SecureErrorCode::OutdatedTee
-        );
-        assert!(config.accept_outdated_tee_for_provider("tinfoil").is_err());
-        assert!(config.accept_outdated_tee_for_provider("*").is_err());
-        let sibling = config.clone();
-        config.accept_outdated_tee_for_provider("near").unwrap();
-        assert!(super::accept_intel_status("OutOfDate", &policy, &sibling).unwrap());
-        for status in [
-            "Revoked",
-            "OutOfDateConfigurationNeeded",
-            "ConfigurationNeeded",
-            "SWHardeningNeeded",
-            "ConfigurationAndSWHardeningNeeded",
-            "unknown",
-            "",
-        ] {
-            assert!(
-                super::accept_intel_status(status, &policy, &config).is_err(),
-                "{status}"
-            );
-        }
-        assert_eq!(
-            policy.accepted_intel_statuses,
-            ["UpToDate"],
-            "consent never rewrites signed policy"
-        );
-        let restarted = crate::SecureClientConfig::new("https://relay.example").unwrap();
-        assert!(super::accept_intel_status("OutOfDate", &policy, &restarted).is_err());
-    }
-
     use base64::Engine;
     use p384::{
         ecdsa::{Signature, SigningKey, signature::Signer},
@@ -1035,14 +965,6 @@ mod tests {
     }
 
     fn nvidia_fixture(result: &Value, verdict_nonce: Option<String>) -> NvidiaFixture {
-        nvidia_fixture_with_expiry(result, verdict_nonce, 2035)
-    }
-
-    fn nvidia_fixture_with_expiry(
-        result: &Value,
-        verdict_nonce: Option<String>,
-        expiry_year: i32,
-    ) -> NvidiaFixture {
         let mut ca_params = CertificateParams::default();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params
@@ -1052,8 +974,8 @@ mod tests {
             KeyUsagePurpose::DigitalSignature,
             KeyUsagePurpose::KeyCertSign,
         ];
-        ca_params.not_before = date_time_ymd(2020, 1, 1);
-        ca_params.not_after = date_time_ymd(expiry_year, 1, 1);
+        ca_params.not_before = date_time_ymd(2025, 1, 1);
+        ca_params.not_after = date_time_ymd(2035, 1, 1);
         let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
         let issuer = Issuer::new(ca_params, ca_key);
@@ -1063,8 +985,8 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "Test NVIDIA Leaf");
         leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-        leaf_params.not_before = date_time_ymd(2020, 1, 1);
-        leaf_params.not_after = date_time_ymd(expiry_year, 1, 1);
+        leaf_params.not_before = date_time_ymd(2025, 1, 1);
+        leaf_params.not_after = date_time_ymd(2035, 1, 1);
         let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let leaf_cert = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
 
@@ -1153,64 +1075,6 @@ mod tests {
             )
             .is_err()
         );
-        let expired = nvidia_fixture_with_expiry(&Value::Bool(true), None, 2021);
-        assert!(
-            verify_nvidia_jwt(
-                &expired.jwt,
-                &expired.jwks,
-                &expired.nonce,
-                std::slice::from_ref(&expired.anchor_hash),
-            )
-            .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn rotating_nvidia_key_set_can_exceed_legacy_limit_without_relaxing_verification() {
-        let fixture = nvidia_fixture(&Value::Bool(true), None);
-        let original: Value = serde_json::from_slice(&fixture.jwks).unwrap();
-        let signing_key = original["keys"][0].clone();
-        let key_size = serde_json::to_vec(&signing_key).unwrap().len();
-        let mut keys = Vec::new();
-        for index in 0..=(600 * 1024 / key_size) {
-            let mut retired = signing_key.clone();
-            retired["kid"] = format!("retired-{index}").into();
-            keys.push(retired);
-        }
-        keys.push(signing_key);
-        let bytes = serde_json::to_vec(&serde_json::json!({ "keys": keys })).unwrap();
-        assert!(bytes.len() > 512 * 1024);
-        let limit = SecureClientConfig::new("https://api.axiom.stream")
-            .unwrap()
-            .limits
-            .nvidia_jwks_bytes;
-        assert!(bytes.len() < limit);
-        // The real vendor response can be chunked; do not rely on Content-Length.
-        let response = reqwest::Response::from(http::Response::new(bytes));
-        let bounded = bounded_body(response, limit).await.unwrap();
-        assert!(
-            verify_nvidia_jwt(
-                &fixture.jwt,
-                &bounded,
-                &fixture.nonce,
-                std::slice::from_ref(&fixture.anchor_hash),
-            )
-            .is_ok()
-        );
-        assert!(
-            verify_nvidia_jwt(
-                &fixture.jwt,
-                &bounded,
-                &"cd".repeat(32),
-                std::slice::from_ref(&fixture.anchor_hash),
-            )
-            .is_err()
-        );
-        assert!(
-            verify_nvidia_jwt(&fixture.jwt, &bounded, &fixture.nonce, &["00".repeat(32)]).is_err()
-        );
-        let oversized = reqwest::Response::from(http::Response::new(vec![b' '; limit + 1]));
-        assert!(bounded_body(oversized, limit).await.is_err());
     }
 
     #[test]

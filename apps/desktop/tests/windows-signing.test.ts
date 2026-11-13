@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -46,38 +44,6 @@ test('electron-builder config loads its real SHA256 signing hook and fails witho
   assert.notEqual(missing.status, 0);
 });
 
-test('afterPack signs added Windows runtime and launcher files and propagates signing failure', async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), 'axiom signing '));
-  const modules = ['../../../scripts/package-licenses.cjs', '../scripts/bundle-windows-runtime.cjs'];
-  const saved = modules.map(name => { const id=require.resolve(name); require(id); return [id, require.cache[id]!.exports] as const; });
-  const signer = require('../scripts/windows-signing.cjs');
-  const originalSign = signer.sign;
-  try {
-    for (const [id] of saved) require.cache[id]!.exports = async () => {};
-    mkdirSync(path.join(directory,'bin'), {recursive:true});
-    writeFileSync(path.join(directory,'bin/vcruntime140.dll'),'runtime fixture');
-    writeFileSync(path.join(directory,'bin/axiomcli.exe'),'native executable fixture');
-    mkdirSync(path.join(directory,'installer'), {recursive:true});
-    writeFileSync(path.join(directory,'installer/windows-cli-path.ps1'),'installer fixture');
-    const calls: Array<{path:string;hash:string;isNest:boolean}> = [];
-    signer.sign = (configuration: {path:string;hash:string;isNest:boolean}) => calls.push(configuration);
-    // Deliberately has no private electron-builder signing methods.
-    const context = {electronPlatformName:'win32', appOutDir:directory, packager:{projectDir:desktop, getResourcesDir:()=>directory, config:{forceCodeSigning:true, extraMetadata:{axiomUpdateFormat:'exe'}}}};
-    const afterPack = require('../scripts/after-pack.cjs');
-    await afterPack(context);
-    assert.deepEqual(calls.map(call=>path.basename(call.path)).sort(), ['axiomcli.exe','axiomcli.ps1','vcruntime140.dll','windows-cli-path.ps1']);
-    assert.ok(calls.every(call=>call.hash==='sha256' && call.isNest===false));
-    signer.sign = () => { throw new Error('signing service rejected'); };
-    await assert.rejects(afterPack(context), /signing service rejected/);
-    context.packager.config.forceCodeSigning=false;
-    await afterPack(context);
-  } finally {
-    signer.sign=originalSign;
-    for (const [id, exports] of saved) require.cache[id]!.exports=exports;
-    rmSync(directory,{recursive:true,force:true});
-  }
-});
-
 test('unpacked build input is restricted to the explicit unsigned Windows path', () => {
   for (const args of [['--win', '--arm64', '--dir'], ['--mac', '--arm64', '--unsigned', '--dir']]) {
     const result = spawnSync(process.execPath, ['scripts/package-desktop.mjs', ...args], { cwd: desktop, encoding: 'utf8' });
@@ -86,9 +52,9 @@ test('unpacked build input is restricted to the explicit unsigned Windows path',
   }
 });
 
-test('signed release uses the protected native-build/sign workflow', () => {
+test('signed release and manual Windows lanes share the protected native-build/sign workflow', () => {
   const read = (file: string) => readFileSync(`${root}/.github/workflows/${file}`, 'utf8');
-  for (const file of ['release.yml']) {
+  for (const file of ['release.yml', 'desktop-packages.yml']) {
     assert.match(read(file), /uses: \.\/\.github\/workflows\/windows-signed\.yml/);
     assert.doesNotMatch(read(file), /WINDOWS_CERTIFICATE/);
   }
@@ -99,12 +65,8 @@ test('signed release uses the protected native-build/sign workflow', () => {
   assert.match(workflow, /windows-11-arm/);
   assert.match(workflow, /runs-on: windows-2025/);
   assert.doesNotMatch(workflow, /test-windows-install|windows-signed-candidate/);
-  assert.match(read('release.yml'), /Sign the complete final-byte inventory/);
-  assert.match(workflow, /package-cli.mjs/);
-  assert.match(workflow, /native-input.mjs win/);
-  assert.match(workflow, /package-desktop.mjs --win --universal/);
-  assert.match(workflow, /package-cli.mjs --win --universal/);
-  assert.doesNotMatch(workflow.split('  sign:')[1], /matrix:/);
+  assert.ok(workflow.indexOf('package-signed-windows.ps1') < workflow.indexOf('download-manifest.mjs'));
+  assert.match(workflow, /--unsigned --dir/);
 });
 
 const pwsh = process.env.AXIOM_TEST_PWSH || 'pwsh';

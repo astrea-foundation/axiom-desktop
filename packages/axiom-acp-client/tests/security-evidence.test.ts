@@ -14,36 +14,6 @@ function fixture(t: TestContext) {
   model(client, "test-model");
   return client;
 }
-
-test("degraded reports retain OutOfDate and reject every other failed check", () => {
-  const evidence = securityEvidence();
-  evidence.status.state = "degraded";
-  evidence.providerId = "near";
-  evidence.attestationProtocol = "near-tdx-nvidia-v2";
-  evidence.e2eeProtocol = "near-v3";
-  const intel = evidence.checks.find((check) => check.name === "Intel TDX")!;
-  intel.detail = "OutOfDate"; intel.passed = false;
-  const result: VerifySecurityResponse = { status: { state: "degraded" }, evidence };
-  assert.equal(publicSecurityEvidence(result, "test-model")!.status.state, "degraded");
-  for (const status of ["Revoked", "OutOfDateConfigurationNeeded", "unknown"]) {
-    intel.detail = status;
-    assert.throws(() => publicSecurityEvidence(result, "test-model"), /incomplete|mismatched/);
-  }
-  intel.detail = "OutOfDate";
-  evidence.checks.find((check) => check.name === "NVIDIA GPU")!.passed = false;
-  assert.throws(() => publicSecurityEvidence(result, "test-model"), /incomplete|mismatched/);
-});
-
-test("consent requires the selected model and is sent only by an explicit call", async (t) => {
-  const client = fixture(t);
-  const requests: unknown[] = [];
-  t.mock.method(client.process, "request", async (_method: string, params: unknown) => { requests.push(params); return result(); });
-  await assert.rejects(client.verifySecurity("thread", true, "another-model"), /selected model changed/);
-  assert.equal(requests.length, 0);
-  await client.verifySecurity("thread");
-  await client.verifySecurity("thread", true, "test-model");
-  assert.deepEqual(requests, [{ threadId: "thread" }, { threadId: "thread", acceptOutdatedTee: true, modelId: "test-model" }]);
-});
 function model(client: AxiomAcpClient, model: string) {
   client.state.setConfig("thread", [{ id: "model", name: "Model", currentValue: model, options: [] }]);
 }
@@ -80,7 +50,6 @@ for (const change of ["model", "account", "runtime", "disconnect", "remove"] as 
     const client = fixture(t);
     const pending = hold(t, client);
     const verification = client.verifySecurity("thread");
-    const consent = client.verifySecurity("thread", true, "test-model");
     await Promise.resolve();
     if (change === "model") { model(client, "other-model"); model(client, "test-model"); }
     if (change === "account") client.state.setAccount({ revision: 2, state: "valid", account: { id: "account-two", linkedMethods: [] } });
@@ -94,8 +63,6 @@ for (const change of ["model", "account", "runtime", "disconnect", "remove"] as 
     }
     pending.resolve(result());
     await assert.rejects(verification, /context changed/);
-    await assert.rejects(consent, /context changed/);
-    assert.equal(pending.request.mock.callCount(), 1, "a delayed consent never dispatches after its context changes");
     assert.equal(client.getState().sessions.thread?.securityEvidence ?? null, null);
     assert.equal(client.getState().sessions.thread?.securityVerificationPending ?? false, false);
   });

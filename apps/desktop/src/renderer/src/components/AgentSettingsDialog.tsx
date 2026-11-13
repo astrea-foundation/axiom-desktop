@@ -92,8 +92,8 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
           <div><label id={`${id}-enable`} htmlFor={`${id}-toggle`} className="cursor-pointer text-[13px] font-medium">Enable agent mode</label><p className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">Only for this thread</p></div>
           <button ref={toggle} id={`${id}-toggle`} type="button" role="switch" aria-checked={draft.enabled} aria-labelledby={`${id}-enable`} disabled={blocked}
             onClick={() => setDraft((value) => ({ ...value, enabled: !value.enabled }))}
-            className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--ring-focus-visible)] disabled:opacity-40 ${draft.enabled ? "bg-brand dark:bg-[var(--color-cherry)]" : "bg-[var(--color-border-strong)]"}`}>
-            <span aria-hidden="true" className={`absolute left-[3px] top-[3px] h-4 w-4 rounded-full shadow-sm transition-transform motion-reduce:transition-none ${draft.enabled ? "translate-x-4 bg-on-brand dark:bg-[var(--color-on-accent)]" : "bg-[var(--color-text-primary)]"}`} />
+            className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--ring-focus-visible)] disabled:opacity-40 ${draft.enabled ? "bg-[var(--color-cherry)]" : "bg-[var(--color-border-strong)]"}`}>
+            <span aria-hidden="true" className={`absolute left-[3px] top-[3px] h-4 w-4 rounded-full shadow-sm transition-transform motion-reduce:transition-none ${draft.enabled ? "translate-x-4 bg-[var(--color-on-accent)]" : "bg-[var(--color-text-primary)]"}`} />
           </button>
         </div>
 
@@ -101,9 +101,9 @@ export function AgentSettingsDialog({ options, onClose }: { options: AgentContro
           <legend className="mb-2.5 text-[13px] font-medium text-[var(--color-text-secondary)]">Permissions</legend>
           <div className="grid grid-cols-2 gap-2.5">
             {PERMISSIONS.map(({ value, label, description, icon: Icon }) => <label key={value}
-              className={`relative cursor-pointer rounded-[13px] border p-3.5 transition-colors focus-within:ring-2 focus-within:ring-[var(--ring-focus-visible)] ${blocked ? "cursor-default opacity-50" : "hover:bg-[var(--wash-chip-hover)]"} ${draft.permission === value ? "border-brand bg-brand/10 dark:border-[var(--color-border-accent)] dark:bg-[var(--wash-chip)]" : "border-[var(--color-border)] bg-[var(--wash-row)]"}`}>
+              className={`relative cursor-pointer rounded-[13px] border p-3.5 transition-colors focus-within:ring-2 focus-within:ring-[var(--ring-focus-visible)] ${blocked ? "cursor-default opacity-50" : "hover:bg-[var(--wash-chip-hover)]"} ${draft.permission === value ? "border-[var(--color-border-accent)] bg-[var(--wash-chip)]" : "border-[var(--color-border)] bg-[var(--wash-row)]"}`}>
               <input type="radio" className="sr-only" name={`${id}-permission`} aria-label={label} value={value} checked={draft.permission === value} onChange={() => setDraft((current) => ({ ...current, permission: value }))} />
-              <span className="mb-3 flex items-center justify-between text-[var(--color-text-secondary)]"><Icon size={17} aria-hidden="true" /><span aria-hidden="true" className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${draft.permission === value ? "border-brand bg-brand dark:border-[var(--color-text-primary)] dark:bg-transparent" : "border-[var(--color-border-strong)]"}`}>{draft.permission === value ? <span className="h-1.5 w-1.5 rounded-full bg-on-brand dark:bg-[var(--color-text-primary)]" /> : null}</span></span>
+              <span className="mb-3 flex items-center justify-between text-[var(--color-text-secondary)]"><Icon size={17} aria-hidden="true" /><span aria-hidden="true" className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${draft.permission === value ? "border-[var(--color-text-primary)]" : "border-[var(--color-border-strong)]"}`}>{draft.permission === value ? <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-primary)]" /> : null}</span></span>
               <span className="block text-[13px] font-medium">{label}</span>
               <span className="mt-1 block text-[12px] leading-[18px] text-[var(--color-text-secondary)]">{description}</span>
             </label>)}

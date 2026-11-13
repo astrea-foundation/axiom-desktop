@@ -20,16 +20,11 @@ invalid metadata and withdrawals do not authorize fallback. A loaded conversatio
 is withdrawn stays unavailable until the user chooses another model. New-session
 native preferences resolve against current offerings; Desktop requires an explicit
 choice when its remembered model is unavailable. The default configuration uses
-`auto` to prefer Tinfoil's DeepSeek V4.1 Flash (`deepseek-v4-1-flash`) from the
-validated catalog, then other Tinfoil offerings, then NEAR. Desktop and TUI show
-the same provider preference order. Explicit configuration and remembered model
-choices take precedence. This is a default-selection preference, not an
-availability list; models are never substituted based on aliases or similar names.
+`auto` to select a discovered offering. Models are
+never silently substituted based on aliases or similar names.
 
 Image and file icons replace capability words in Desktop. Tinfoil uses its official
-provider symbol. The composer model control shows the provider symbol to the left
-of the model brand icon and name; hovering the provider symbol shows its name.
-Brand artwork is presentation metadata, not a model availability
+provider symbol; brand artwork is presentation metadata, not a model availability
 list. A previously unseen model uses the generic model icon when no brand matches.
 
 ## Direct uploads and compatibility

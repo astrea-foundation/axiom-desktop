@@ -30,9 +30,11 @@ mac:
   gatekeeperAssess: false
   notarize: true
   target:
+    - target: dmg
+    - target: zip
     - target: pkg
   extraResources:
-    - from: ../../target/release/${arch}/axiomcli
+    - from: ../../target/release/axiomcli
       to: bin/axiomcli
 
 pkg:
@@ -70,7 +72,7 @@ win:
   target:
     - target: nsis
   extraResources:
-    - from: ../../target/release/${arch}/axiomcli.exe
+    - from: ../../target/release/axiomcli.exe
       to: bin/axiomcli.exe
     - from: build/windows-cli-path.ps1
       to: installer/windows-cli-path.ps1
@@ -78,7 +80,6 @@ win:
 nsis:
   include: build/installer.nsh
   oneClick: false
-  runAfterFinish: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   installerIcon: build/icon.ico

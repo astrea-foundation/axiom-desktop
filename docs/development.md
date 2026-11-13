@@ -30,14 +30,16 @@ and [configuration](configuration.md).
 
 ## Checks
 
-Run the checks relevant to a change before pushing `dev`; CI runs on pull
-requests targeting `main` and explicit dispatches, without repeating on merge.
+Run the checks relevant to a change before pushing `dev`; CI currently runs on
+pushes to `main` and pull requests targeting `main`, not on development pushes.
 The full local checks corresponding to the main workflow are:
 
 ```sh
 cargo fmt --all -- --check
+cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 pnpm test:rust
+scripts/axiomcli-eval deterministic
 cargo install cargo-deny --version "=$(tr -d '\r\n' < .cargo-deny-version)" --locked
 cargo deny check
 node packages/brand/scripts/build-callback.mjs --check
@@ -53,38 +55,16 @@ pnpm --filter axiom-desktop test:browser
 regression. ACP client tests need the debug AxiomCLI binary built first. Protocol
 generation must leave the committed schema and TypeScript DTOs unchanged unless
 an intentional contract change is part of the patch.
-The generator's banner argument uses double quotes so package scripts preserve
-it as one argument in both Windows `cmd.exe` and Unix shells.
-Broken-pipe fixtures close the child's read end on Unix and the parent's writable
-pipe on Windows, where [libuv deliberately leaves descriptors 0-2 open](https://github.com/nodejs/node/blob/v22.23.2/deps/uv/src/win/fs.c#L633). Both
-paths assert request/notification rejection, safe permission-response shutdown,
-and child cleanup; they do not skip the error-handling assertions on Windows.
-The failing-request fixture has a five-second RPC deadline instead of retaining
-the normal two-minute timeout after a test has already failed.
 
-The [evaluation guide](evaluations.md) owns the opt-in repeated deterministic
-and performance lane (`scripts/axiomcli-eval deterministic`) and budgeted
-live-provider instructions. Routine tests explicitly skip three host-performance
-benchmarks and retain a small persistence regression. Live inference always uses registered, locally
-verified provider E2EE; it is not a prerequisite for a documentation edit.
+The [evaluation guide](evaluations.md) owns deterministic, real SearXNG and
+budgeted live-provider instructions. Live inference always uses registered,
+locally verified provider E2EE; it is not a prerequisite for a documentation edit.
 
-The [CI workflow](../.github/workflows/ci.yml) runs Rust/security and browser UI
-checks on pull requests, without repeating them on merge. Manual dispatch accepts
-`target=all`, `native`, `linux`, `desktop`, `macos-intel`, `macos-arm64`,
-`windows-x64`, or `windows-arm64` so native validation and failure retries can
-be targeted. Use `native` alongside a promotion PR to run the four native jobs
-without duplicating its Linux/UI checks. Run all
-required platforms before release packaging. Set `extended=true` only when the
-additional repetitions and performance benchmarks are wanted. These jobs do not package applications
+The [main CI workflow](../.github/workflows/ci.yml) has Rust/security, browser UI,
+macOS/Windows portability, and real-SearXNG jobs. Portability runners cover both
+macOS architectures and Windows x64/ARM64. These jobs do not package applications
 or establish interactive OS acceptance. [Release workflows](releasing.md) do the
 packaging and require separate release evidence.
-
-Portability fixtures compare canonical working directories and keep differently
-cased Desktop resource layouts in separate directories, including on macOS's
-case-insensitive filesystem. ACP workspace-edit tests decode diff and location
-paths from JSON, require absolute paths, and compare canonical paths to the edited
-file. This preserves path assertions across filesystem aliases and Windows JSON
-escaping.
 
 ## Desktop UI and captures
 
@@ -145,15 +125,3 @@ provenance, generated protocol files and runtime prompts retain their required
 locations. When moving a document, fix inbound links and distinguish historical
 plans/test evidence from current instructions. Carry unresolved work into
 [validation](validation.md) before retiring a plan.
-
-## Updater development
-
-The native updater lives in `apps/axiomcli/src/updates`; the shared installation
-identity/lease is in `crates/axiom-installation`. Desktop only controls its lifecycle
-and UI. `cargo test -p axiom-installation -p axiomcli` covers signatures, staging,
-transport, locks and the Linux helper. Desktop's normal tests cover update states
-and the standalone installer; `pnpm --filter axiom-desktop exec tsx --test
-tests/browser/updates.test.ts` exercises the light/dark controls. See
-[release previews](releasing.md#development-previews) and
-[qualification](testing/automatic-updates-2026-09-22.md). Production keys are not
-needed for local tests; committed fixture keys must never sign a release.

@@ -1487,8 +1487,11 @@ fn task_events_update_one_live_card_and_keep_raw_details_folded() {
 
 #[test]
 fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
-    let cwd = std::env::current_dir().expect("absolute workspace");
-    let mut state = TuiState::new(cwd.clone(), "model".into(), PermissionProfile::Confirm);
+    let mut state = TuiState::new(
+        PathBuf::from("/work/axiomai"),
+        "model".into(),
+        PermissionProfile::Confirm,
+    );
     let turn = TurnId::new();
     state.apply(&AppEvent::PromptAccepted {
         attachments: Vec::new(),
@@ -1522,7 +1525,7 @@ fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
         (
             "read",
             "read_file",
-            serde_json::json!({"path":cwd.join("src/lib.rs")}),
+            serde_json::json!({"path":"/work/axiomai/src/lib.rs"}),
             "Read `src/lib.rs`",
         ),
         (

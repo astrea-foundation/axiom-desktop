@@ -25,12 +25,7 @@ async function open(theme = "light", mockClock = false) {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.setDefaultTimeout(8000);
-  if (mockClock) {
-    // Installation alone still advances with real time. Freeze before loading
-    // the fixture so slow page startup cannot consume the renewal boundary.
-    await page.clock.install({ time: new Date("2026-09-10T04:59:00Z") });
-    await page.clock.pauseAt(new Date("2026-09-10T05:00:00Z"));
-  }
+  if (mockClock) await page.clock.install({ time: new Date("2026-09-10T05:00:00Z") });
   // tsx's name helper must also exist inside serialized page callbacks.
   await page.addInitScript({ content: "window.__name = (fn) => fn;" });
   await page.route("**/*", (route) => {
@@ -49,35 +44,6 @@ const proofButton = (page: Page) => page.getByRole("button", { name: /View priva
 const dialog = (page: Page) => page.getByRole("dialog", { name: "Privacy proof", exact: true });
 const count = (page: Page) => page.evaluate(() => (window as any).__privacyTest.calls());
 const capture = async (page: Page, name: string) => { if (captures) await page.screenshot({ path: `${captures}/${name}.png` }); };
-
-for (const theme of ["light", "dark"]) test(`outdated TEE requires a click and keeps a warning after consent (${theme})`, async () => {
-  const { page, errors } = await open(theme);
-  try {
-    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "outdated" }, securityEvidence: null }));
-    const notice = page.locator("[data-outdated-tee-warning]");
-    await notice.getByRole("button", { name: "Continue generation" }).waitFor();
-    assert.equal(await page.evaluate(() => (window as any).__privacyTest.acceptances()), 0);
-    assert.match(await notice.innerText(), /until Axiom restarts/);
-    await capture(page, `${theme}-outdated-consent`);
-    await notice.getByRole("button", { name: "Continue generation" }).click();
-    await page.getByRole("button", { name: "TEE updates needed. View privacy proof", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => (window as any).__privacyTest.acceptances()), 1);
-    assert.equal(await notice.getByRole("button").count(), 0);
-    assert.match(await notice.innerText(), /You chose to continue/);
-    await capture(page, `${theme}-outdated-accepted`);
-    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "verifying" }, securityVerificationPending: true }));
-    await page.getByRole("button", { name: "TEE updates needed. View privacy proof", exact: true }).waitFor();
-    assert.match(await notice.innerText(), /You chose to continue/);
-    await page.evaluate(() => {
-      // Keep the injected failed state observable instead of racing automatic
-      // renewal, which has separate tests below.
-      (window as any).__privacyTest.setDisabledReason("Renewal paused for failed-state assertion");
-      (window as any).__privacyTest.update({ security: { state: "failed" }, securityVerificationPending: false });
-    });
-    await notice.waitFor({ state: "detached" });
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
 
 for (const theme of ["light", "dark"]) test(`privacy proof matches the composer and disclosures work (${theme})`, async () => {
   const { page, errors } = await open(theme);
@@ -114,48 +80,6 @@ for (const theme of ["light", "dark"]) test(`privacy proof matches the composer 
   } finally { await page.close(); }
 });
 
-test("TEE help supports hover, keyboard, clicks and narrow dialogs without refreshing proof", async () => {
-  const { page, errors } = await open();
-  try {
-    await proofButton(page).click();
-    const help = page.getByRole("button", { name: "What does TEE verified mean?", exact: true });
-    const tooltip = page.getByRole("tooltip");
-    await help.hover();
-    await tooltip.waitFor();
-    assert.equal(await tooltip.innerText(), "What does TEE verified mean?\n\nA TEE (Trusted Execution Environment) is a protected space on the provider’s servers. Axiom checks security evidence from the server’s hardware before sending your encrypted messages there. This helps keep your messages private while the AI processes them.");
-    await tooltip.hover();
-    assert.equal(await tooltip.isVisible(), true, "help stays open while reading it");
-    await page.getByRole("heading", { name: "Privacy proof", exact: true }).hover();
-    await tooltip.waitFor({ state: "hidden" });
-
-    await help.focus();
-    await tooltip.waitFor();
-    assert.equal(await help.getAttribute("aria-describedby"), await tooltip.getAttribute("id"));
-    await page.keyboard.press("Escape");
-    await tooltip.waitFor({ state: "hidden" });
-    assert.equal(await dialog(page).isVisible(), true, "Escape dismisses help before the report");
-    assert.equal(await help.evaluate((element) => element === document.activeElement), true);
-    await page.keyboard.press("Enter");
-    await tooltip.waitFor();
-    await page.keyboard.press("Tab");
-    await tooltip.waitFor({ state: "hidden" });
-
-    await page.setViewportSize({ width: 360, height: 640 });
-    await help.click();
-    await tooltip.waitFor();
-    const helpBounds = (await tooltip.boundingBox())!;
-    const reportBounds = (await dialog(page).boundingBox())!;
-    assert.ok(helpBounds.x >= reportBounds.x && helpBounds.x + helpBounds.width <= reportBounds.x + reportBounds.width);
-    assert.ok(helpBounds.y + helpBounds.height <= reportBounds.y + reportBounds.height);
-    await page.getByRole("heading", { name: "Privacy proof", exact: true }).click();
-    await tooltip.waitFor({ state: "hidden" });
-    assert.equal(await count(page), 0, "explaining verification must not request new evidence");
-    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "failed" } }));
-    await help.waitFor({ state: "detached" });
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
 test("refresh is separate, deduplicated, and leaves inspection accessible during verification", async () => {
   const { page, errors } = await open();
   try {
@@ -188,7 +112,7 @@ test("expiry, missing evidence, and provisional replies stay explicit without an
     await page.evaluate(() => (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification"));
     await page.evaluate((evidence) => (window as any).__privacyTest.update({ securityEvidence: evidence }),
       { ...securityEvidence(), hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 1 });
-    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
     await proofButton(page).click();
     assert.match(await dialog(page).innerText(), /expired/);
     assert.doesNotMatch(await dialog(page).innerText(), /Software identity was not checked|Software identity is not approved/);
@@ -201,72 +125,6 @@ test("expiry, missing evidence, and provisional replies stay explicit without an
     assert.match(await dialog(page).innerText(), /not end-to-end encrypted/);
     assert.equal(await page.getByRole("button", { name: "Refresh", exact: true }).isDisabled(), true);
     await capture(page, "missing-pending-web");
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-for (const theme of ["light", "dark"]) test(`a streaming reply outlives its report and only authenticated completion verifies it (${theme})`, async () => {
-  const { page, errors } = await open(theme, true);
-  const answer = { id: "answer", turnId: "turn", kind: "assistant", text: "A reply that takes longer than the report lease.", status: "in_progress" };
-  try {
-    await page.evaluate((item) => (window as any).__privacyTest.update({ running: true, timeline: [item] }), answer);
-    await page.getByRole("button", { name: "Verifying reply. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(301_000);
-    await page.getByRole("button", { name: "Verifying reply. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 0, "report refresh must not overlap the stream");
-    await capture(page, `streaming-expired-${theme}`);
-    await page.setViewportSize({ width: 540, height: 600 });
-    const badgeBounds = (await proofButton(page).boundingBox())!;
-    assert.ok(badgeBounds.x >= 0 && badgeBounds.x + badgeBounds.width <= 540, "pending label stays visible in a narrow composer");
-    await capture(page, `streaming-narrow-${theme}`);
-    await page.setViewportSize({ width: 1120, height: 800 });
-    await proofButton(page).click();
-    assert.match(await dialog(page).innerText(), /Latest reply verification\s+Pending/);
-    assert.match(await dialog(page).innerText(), /Cached attestation report\s+Report needs refresh/);
-    await page.locator("summary").filter({ hasText: "Latest reply verification" }).click();
-    assert.match(await dialog(page).innerText(), /stays provisional until its complete response is authenticated/);
-    await capture(page, `streaming-report-${theme}`);
-    await page.evaluate((item) => {
-      (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification");
-      (window as any).__privacyTest.update({ running: false, timeline: [{ ...item, status: "completed" }] });
-    }, answer);
-    await page.getByRole("button", { name: "Reply incomplete. View privacy proof", exact: true }).waitFor();
-    await page.evaluate((item) => (window as any).__privacyTest.update({ timeline: [{ ...item, status: "completed", terminalVerified: true }] }), answer);
-    await page.getByRole("button", { name: "Reply verified. View privacy proof", exact: true }).waitFor();
-    assert.match(await dialog(page).innerText(), /Latest reply verification\s+Verified/);
-    assert.match(await dialog(page).innerText(), /Cached attestation report\s+Report needs refresh/);
-    await capture(page, `verified-expired-report-${theme}`);
-    await page.evaluate(() => (window as any).__privacyTest.setDisabledReason(undefined));
-    await dialog(page).getByRole("status").filter({ hasText: "Verifying TEE" }).waitFor();
-    await page.getByRole("button", { name: "Reply verified. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    await page.evaluate(() => (window as any).__privacyTest.finish(true));
-    await dialog(page).getByRole("status").filter({ hasText: "TEE check failed" }).waitFor();
-    await page.getByRole("button", { name: "Reply verified. View privacy proof", exact: true }).waitFor();
-    assert.match(await dialog(page).innerText(), /Latest reply verification\s+Verified/);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("interrupted and failed output cannot inherit a previous reply's verification", async () => {
-  const { page, errors } = await open("dark", true);
-  const previous = { id: "previous", turnId: "old-turn", kind: "assistant", text: "Earlier verified reply.", status: "completed", terminalVerified: true };
-  const question = { id: "question", turnId: "new-turn", kind: "user", text: "Continue", status: "completed" };
-  try {
-    await page.evaluate((item) => (window as any).__privacyTest.update({ timeline: [item] }), previous);
-    await page.getByRole("button", { name: "Reply verified. View privacy proof", exact: true }).waitFor();
-    await page.evaluate((items) => (window as any).__privacyTest.update({ timeline: items }), [previous, question]);
-    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    for (const status of ["in_progress", "cancelled", "failed"]) {
-      await page.evaluate((items) => (window as any).__privacyTest.update({ timeline: items }), [previous, question,
-        { id: "partial", turnId: "new-turn", kind: "assistant", text: "Partial output", status }]);
-      const label = status === "failed" ? "Reply check failed" : "Reply incomplete";
-      await page.getByRole("button", { name: `${label}. View privacy proof`, exact: true }).waitFor();
-      await proofButton(page).click();
-      assert.match(await dialog(page).innerText(), status === "failed" ? /Latest reply verification\s+Failed/ : /Latest reply verification\s+Incomplete/);
-      await page.getByRole("button", { name: "Close privacy proof", exact: true }).click();
-    }
-    assert.equal(await count(page), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -299,7 +157,7 @@ test("background renewal waits for replies, connection, sign-in, and thread resy
     await page.evaluate(() => (window as any).__privacyTest.update({ running: true }));
     await page.clock.fastForward(301_000);
     assert.equal(await count(page), 0);
-    await page.getByRole("button", { name: "Verifying reply. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
     await page.evaluate(() => {
       (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification");
       (window as any).__privacyTest.update({ running: false });
@@ -362,7 +220,7 @@ test("returning the same short lease cannot trigger a refresh loop or extend its
     await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
     await page.clock.fastForward(29_000);
     assert.equal(await count(page), 1);
-    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
     await page.clock.fastForward(2_000);
     await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
     assert.equal(await count(page), 2);
@@ -447,7 +305,7 @@ test("user activity resets the 30-minute window even while renewal is unavailabl
     await page.clock.fastForward(1_740_000);
     await page.keyboard.press("Shift");
     await page.clock.fastForward(61_000);
-    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
     await page.clock.fastForward(1_739_000);
     await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
     await capture(page, "idle-light");
@@ -483,7 +341,7 @@ test("long running replies stay active and renew as soon as work finishes", asyn
   try {
     await page.evaluate(() => (window as any).__privacyTest.update({ running: true }));
     await page.clock.fastForward(1_860_000);
-    await page.getByRole("button", { name: "Verifying reply. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "TEE proof expired. View privacy proof", exact: true }).waitFor();
     assert.equal(await count(page), 0, "renewal does not overlap native session work");
     await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
     await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();

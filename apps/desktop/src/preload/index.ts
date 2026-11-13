@@ -71,17 +71,10 @@ const api: DesktopApi = {
   agent: agentApi,
   proxy: proxyApi,
   updates: {
-    onBeforeRestart: callback => {
-      const listener = (_event: unknown, token: string) => {
-        void callback().then(() => ipcRenderer.send('updates:flushed', token, null), () => ipcRenderer.send('updates:flushed', token, true));
-      };
-      ipcRenderer.on('updates:prepare-restart', listener);
-      return () => ipcRenderer.removeListener('updates:prepare-restart', listener);
-    },
     getState: () => ipcRenderer.invoke("updates:state"),
     check: () => ipcRenderer.invoke("updates:check"),
-    install: () => ipcRenderer.invoke("updates:install"),
-    cancel: () => ipcRenderer.invoke("updates:cancel"),
+    download: (format) => ipcRenderer.invoke("updates:download", format),
+    reveal: () => ipcRenderer.invoke("updates:reveal"),
     onStateChange: (callback) => {
       const listener = (_event: unknown, state: Parameters<typeof callback>[0]) => callback(state);
       ipcRenderer.on("updates:state-changed", listener);

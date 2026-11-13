@@ -1,7 +1,5 @@
 # Recorded test evidence
 
-- [Automatic updater implementation checks, 2026-09-22](automatic-updates-2026-09-22.md).
-
 Reports describe the named date, environment and build. Initial findings and
 later fixes must be read together. A test report does not certify a newer
 release or replace [interactive acceptance](../releasing.md#interactive-acceptance).

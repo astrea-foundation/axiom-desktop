@@ -25,7 +25,7 @@ use axiomcli::{
     policy::{EffectClass, PolicyRule, RuleAction},
     provider::{InferenceProvider, SecureAxiomProvider},
     session::{ExportOptions, SessionStore},
-    tools::registry_with_search,
+    tools::{default_registry, registry_with_search},
     web::HostedSearchClient,
 };
 use clap::{Parser, Subcommand};
@@ -75,8 +75,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Download, verify, install and restart an installed Axiom release.
-    Update(axiomcli::updates::Arguments),
+    /// Check the shared Axiom release feed and show how to update this installation.
+    Update,
     /// Run the account-bound secure loopback proxy under Desktop supervision.
     DesktopProxy {
         #[arg(long)]
@@ -220,13 +220,11 @@ enum SessionAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    if let Some(Command::Update(arguments)) = cli.command {
-        // Update helpers must survive shutdown of the process being replaced.
-        return axiomcli::updates::command(arguments).await;
-    }
     install_descendant_cleanup();
-    let _installation_lease = axiomcli::updates::lease()?;
+    let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Update)) {
+        return axiomcli::updates::run().await;
+    }
     // The proxy owns no chat store, tools, agent configuration or system prompt.
     if let Some(Command::DesktopProxy {
         account_id,
@@ -311,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
-        Command::Update(_) => unreachable!("update is handled before agent initialization"),
+        Command::Update => unreachable!("update is handled before agent initialization"),
         Command::DesktopProxy { .. } => {
             unreachable!("desktop proxy is handled before agent initialization")
         }
@@ -516,7 +514,23 @@ async fn doctor(config: &Config, auth: &AuthManager, paths: &AxiomPaths) {
         ValidationStatus::Unavailable(message) => format!("not checked ({message})"),
     };
     println!("Axiom authorization: {auth_status}");
-    println!("web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics");
+    if config.web_search_provider == "searxng" {
+        let endpoint = format!("{}/", config.searxng_url.trim_end_matches('/'));
+        let status = reqwest::Client::new()
+            .get(endpoint)
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+            .map_or_else(
+                |error| format!("unavailable ({error})"),
+                |response| response.status().to_string(),
+            );
+        println!("SearXNG health: {status}");
+    } else {
+        println!(
+            "web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics"
+        );
+    }
     if let Some(path) = Config::user_path() {
         println!("user config: {}", path.display());
     }
@@ -676,10 +690,14 @@ async fn build_runner(
         }
     }
     let provider = build_provider(config, auth)?;
-    let mut tools = registry_with_search(
-        config.max_tool_output_bytes,
-        Arc::new(HostedSearchClient::new(auth.clone())?),
-    )?;
+    let mut tools = if config.web_search_provider == "searxng" {
+        default_registry(config.max_tool_output_bytes, &config.searxng_url)?
+    } else {
+        registry_with_search(
+            config.max_tool_output_bytes,
+            Arc::new(HostedSearchClient::new(auth.clone())?),
+        )?
+    };
     if frontend == FrontendKind::Cli {
         for tool in
             axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?

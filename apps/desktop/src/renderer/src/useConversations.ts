@@ -1,5 +1,4 @@
 import { acceptsAttachment } from "./attachments";
-import { AttachmentPreviews } from "./attachmentPreviews";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AGENT_SELECTION, type AgentControlOptions, type AgentSelection } from "./components/AgentModeControl";
@@ -41,6 +40,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
 
   if (!messageQueue.current) messageQueue.current = new MessageQueueController(browserConsentStorage(), () => setQueueRevision((value) => value + 1), setUiError);
 
+  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null);
   const threadLoads = useRef(new ThreadLoadTracker());
   const [threadLoadError, setThreadLoadError] = useState<{ id: string; detail: string; } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ kind: "thread" | "folder"; id: string; title: string; } | null>(null);
@@ -121,20 +121,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
   const folders = useMemo(() => orderFoldersByMessages(unsortedFolders, threads), [unsortedFolders, threads]);
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeSession = activeThreadId ? agentState.sessions[activeThreadId] ?? null : null;
-  // An outbox entry that is already dispatched belongs in the transcript. This
-  // also covers existing chats, retries and queued work as it starts sending.
-  const pendingUserMessage = useMemo<PendingUserMessage | null>(() => {
-    if (!agentState.connected || !activeSession) return null;
-    const sending = messageQueue.current!.list(activeThreadId, billingAccountId).find((item) => item.status === "sending"
-      && !activeSession.timeline.some((row) => row.clientItemId === item.id));
-    return sending ? { id: sending.id, sessionId: sending.threadId, text: sending.text, attachments: sending.attachments } : null;
-  }, [agentState.connected, activeSession, activeThreadId, billingAccountId, queueRevision]);
   const agentAccountScope = JSON.stringify([billingAccountId, agentState.runtimeInstanceId]);
-  const attachmentPreviews = useMemo(() => new AttachmentPreviews(), [agentAccountScope]);
-  // Restored queued messages also hand their local bytes to the transcript.
-  for (const message of messageQueue.current.list(activeThreadId, billingAccountId)) {
-    attachmentPreviews.remember(message.id, message.attachments ?? []);
-  }
   const newAgentSelection = newAgentDraft?.scope === agentAccountScope ? newAgentDraft.selection : DEFAULT_AGENT_SELECTION;
   const currentAgent = surface === "thread" ? activeSession?.desktopAgent : null;
   const agentControl: AgentControlOptions = {
@@ -172,10 +159,11 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     },
   };
 
-  const isStreaming = !!activeSession?.running || !!pendingUserMessage;
+  const isStreaming = activeSession?.running ?? false;
 
   useEffect(() => {
     threadLoads.current.reset();
+    setPendingUserMessage(null);
     setThreadLoadError(null);
     setDeleteTarget(null);
     setRenameTarget(null);
@@ -227,6 +215,16 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   }, [activeThreadId, activeThread, surface, desktopReady, agentState.connected, agentState.sessions, ensureThreadLoaded]);
 
+  useEffect(() => {
+    if (!pendingUserMessage) return;
+    const session = agentState.sessions[pendingUserMessage.sessionId];
+    if (!session) return;
+    const queued = messageQueue.current!.list(pendingUserMessage.sessionId, billingAccountId).find((item) => item.id === pendingUserMessage.id);
+    if (session.timeline.some((item) => item.clientItemId === pendingUserMessage.id) || !queued || queued.status !== "sending") {
+      setPendingUserMessage(null);
+    }
+  }, [agentState.sessions, pendingUserMessage, queueRevision, billingAccountId]);
+
   const showWelcome = useCallback(() => {
     cancelThreadPreparation();
     resetNewWeb();
@@ -268,32 +266,6 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   };
 
-  const acceptOutdatedTee = async (expectedModelId: string) => {
-    const api = window.axiomDesktop?.agent;
-    const threadId = activeThreadId;
-    const modelId = activeSession?.settings?.model;
-    const owner = billingAccountId;
-    const runtime = agentState.runtimeInstanceId;
-    if (!api || !threadId || !modelId || modelId !== expectedModelId || activeSession?.security?.state !== "outdated" || activeSession.running) return;
-    await api.verifySecurity(threadId, true, modelId);
-    const current = await api.getState();
-    const session = current.sessions[threadId];
-    if (current.runtimeInstanceId !== runtime || current.account?.account?.id !== owner
-      || activeThreadIdRef.current !== threadId || session?.settings?.model !== modelId || session.running) return;
-    if (session.security?.state !== "verified" && session.security?.state !== "degraded") return;
-    setUiError(null);
-    const queuedMessages = messageQueue.current!.list(threadId, owner);
-    const queued = queuedMessages.find((item) => item.status === "queued" && item.error?.includes("OutOfDate"));
-    if (queued) { messageQueue.current!.sendNow(queued.id); return; }
-    if (queuedMessages.length) return;
-    // Retry through local edit/regenerate, preserving the original attachments.
-    const last = session.timeline.at(-1);
-    const user = [...session.timeline].reverse().find((item) => item.kind === "user");
-    if (last?.kind === "error" && last.text.includes("OutOfDate") && user && user.turnId === last.turnId) {
-      await api.revisePrompt(threadId, user.text, user.id, session.threadRevision, webAccess.enabled, session.desktopAgent?.revision ?? 0);
-    }
-  };
-
   const submitDraft = async () => {
     const text = draft.trim();
     const api = window.axiomDesktop?.agent;
@@ -329,7 +301,6 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       return;
     } finally { savingDraft.current = false; }
     submittingDraft.current.set(submissionId, scope);
-    attachmentPreviews.remember(submissionId, files);
     // Clear only the captured draft. A navigation/account change or newer typing
     // during the disk commit must never clear another composer's text.
     writeDraft(creatingThread ? null : activeThreadId, (previous) => previous.trim() === text ? "" : previous);
@@ -339,7 +310,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     setUiError(null);
     if (creatingThread && stillSelected()) {
       // Navigation can dismiss this view without cancelling the durable submission.
-      setThreadPreparation({ id: submissionId, text, attachments: files, accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
+      setThreadPreparation({ id: submissionId, text: text || files.map((file) => file.name).join(", "), accountId: billingAccountId, runtimeId: agentState.runtimeInstanceId });
       activeThreadIdRef.current = null;
       setActiveThreadId(null);
       setThreadLoadError(null);
@@ -383,9 +354,11 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
       if (creatingThread) webAccess.adoptThread(sessionId, webEnabled, stillSelected());
       messageQueue.current!.sync(current, api);
       messageQueue.current!.ready(submissionId, sessionId);
+      const messageId = submissionId;
       if (creatingThread && stillSelected()) {
         activeThreadIdRef.current = sessionId;
         setActiveThreadId(sessionId);
+        setPendingUserMessage({ id: messageId, sessionId, text: text || files.map((file) => file.name).join(", ") });
         setNewAgentDraft(null);
         setThreadPreparation(null);
       }
@@ -437,6 +410,7 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     // sidecar publishes removal before deleteConfirm finishes its refresh.
     threadLoads.current.block(id);
     if (activeThreadIdRef.current === id) showWelcome();
+    setPendingUserMessage((current) => current?.sessionId === id ? null : current);
     try {
       const preview = await api.deletePreview([id]);
       await api.deleteConfirm(preview.confirmationToken, [id]);
@@ -448,5 +422,5 @@ export function useConversations(agentState: ClientState, navigation: ReturnType
     }
   };
 
-  return { acceptOutdatedTee, reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
+  return { reviewPreparation, attachmentDraft, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
 }

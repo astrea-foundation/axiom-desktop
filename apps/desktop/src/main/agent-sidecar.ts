@@ -16,7 +16,6 @@ import {
   type PermissionOutcome,
   type ThreadSettingsRequest,
   type SteerTurnRequest,
-  type UsageSummaryRequest,
 } from "@axiom/axiom-acp-client";
 import { RestartPolicy } from "./restart-policy";
 import { actionableAcpError } from "./agent-errors";
@@ -300,16 +299,14 @@ export class AgentSidecar {
     return this.requireClient().revokeApiKey(id).catch((error: unknown) => { throw actionableAcpError(error); });
   }
 
-  usageSummary(request: UsageSummaryRequest = {}) {
-    return this.requireClient().usageSummary(request).catch((error: unknown) => {
+  usageSummary() {
+    return this.requireClient().usageSummary().catch((error: unknown) => {
       throw actionableAcpError(error);
     });
   }
 
   async nativeLoginStart(methodHint?: LoginMethod) {
-    const result = await this.requireClient().nativeLoginStart(methodHint).catch((error: unknown) => {
-      throw actionableAcpError(error);
-    });
+    const result = await this.requireClient().nativeLoginStart(methodHint);
     const authorizationUrl = trustedNativeAuthorizationUrl(
       result.login.authorizationUrl,
       this.origins.auth,
@@ -343,8 +340,8 @@ export class AgentSidecar {
     return this.requireClient().logout();
   }
 
-  verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {
-    return this.requireClient().verifySecurity(sessionId, acceptOutdatedTee, modelId);
+  verifySecurity(sessionId: string) {
+    return this.requireClient().verifySecurity(sessionId);
   }
 
   compact(sessionId: string, focus?: string) {

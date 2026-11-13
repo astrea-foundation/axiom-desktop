@@ -2,35 +2,25 @@ import type { ClientSessionState, SecurityEvidence } from "@axiom/axiom-acp-clie
 
 export const PROOF_IDLE_AFTER_MS = 30 * 60_000;
 
-export type ProofState = "idle" | "verified" | "degraded" | "outdated" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
-
-export function outdatedTeeState(session: ClientSessionState | null, modelId: string): "outdated" | "degraded" | undefined {
-  const state = session?.security?.state;
-  if (state === "outdated" || state === "degraded") return state;
-  if (state === "verifying" && session?.securityEvidence?.modelId === modelId
-    && session.securityEvidence.status.state === "degraded") return "degraded";
-  return undefined;
-}
+export type ProofState = "idle" | "verified" | "verifying" | "failed" | "expired" | "unavailable" | "unverified" | "development";
 
 export function proofState(session: ClientSessionState, modelId: string, now: number): ProofState {
   if (session.securityVerificationPending || session.security?.state === "verifying") return "verifying";
   if (session.security?.state === "failed") return "failed";
-  if (session.security?.state === "outdated") return "outdated";
   if (session.security?.state === "unattested_development") return "development";
   if (session.needsResync) return "unavailable";
   if (session.securityVerificationError) return "unavailable";
   const evidence = session.securityEvidence;
-  if (session.security?.state !== "verified" && session.security?.state !== "degraded") return "unverified";
-  if (!evidence || evidence.modelId !== modelId || evidence.status.state !== session.security.state) return "unavailable";
+  if (session.security?.state !== "verified") return "unverified";
+  if (!evidence || evidence.modelId !== modelId || evidence.status.state !== "verified") return "unavailable";
   if (!Number.isFinite(evidence.hardExpiresAtUnixSeconds) || evidence.hardExpiresAtUnixSeconds * 1000 <= now) return "expired";
-  return session.security.state;
+  return "verified";
 }
 
 export const proofLabels: Record<ProofState, string> = {
   idle: "Idle",
-  degraded: "TEE updates needed", outdated: "TEE updates required",
   verified: "TEE verified", verifying: "Verifying TEE", failed: "TEE check failed",
-  expired: "Report needs refresh", unavailable: "Proof unavailable", unverified: "Verify TEE", development: "Unattested dev",
+  expired: "TEE proof expired", unavailable: "Proof unavailable", unverified: "Verify TEE", development: "Unattested dev",
 };
 
 export function verificationAge(at: number, now: number): string {
@@ -65,7 +55,7 @@ export function proofGroups(evidence: SecurityEvidence) {
       names: ["Model encryption key", "Model identity", nearSession ? "Attested worker TLS key" : "Live TLS endpoint"],
     },
     {
-      title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. Expiry limits reuse of this report for new requests; each reply is authenticated separately.",
+      title: "Freshness", explanation: "A fresh challenge prevents replayed evidence. The report is usable only until its expiry.",
       names: ["Fresh challenge"],
     },
   ].map((group) => ({ ...group,
@@ -74,50 +64,17 @@ export function proofGroups(evidence: SecurityEvidence) {
   }));
 }
 
-type ReplyProofState = "none" | "pending" | "verified" | "failed" | "incomplete" | "unavailable";
-type ReplyProof = { state: ReplyProofState; label: string; verified: boolean; detail: string };
-
-/** Response authentication comes from the durable reply, never the cached report or clock. */
-export function replyProof(session: ClientSessionState): ReplyProof {
-  if (session.needsResync) return { state: "unavailable", label: "Unavailable", verified: false, detail: "Reply verification will be available after the thread reconnects and synchronizes." };
-  if (session.running) {
-    if (session.security?.state === "failed") return { state: "failed", label: "Failed", verified: false, detail: "Verification failed for the current request. Its output is not a verified reply." };
-    return { state: "pending", label: "Pending", verified: false, detail: "The reply stays provisional until its complete response is authenticated. Expiry of the cached report does not decide this reply’s verification." };
-  }
-  const last = [...session.timeline].reverse().find((item) => ["user", "assistant", "reasoning", "error"].includes(item.kind));
-  // A new user turn (including one that failed before producing text) must not
-  // inherit a previous reply's verification. Legacy items may omit turn IDs.
-  let start = session.timeline.length - 1;
-  while (start >= 0 && session.timeline[start]?.kind !== "user") start--;
-  const turn = last?.turnId ? session.timeline.filter((item) => item.turnId === last.turnId) : session.timeline.slice(start + 1);
-  const parts = turn.filter((item) => ["assistant", "reasoning"].includes(item.kind));
-  if (turn.some((item) => item.kind === "error") || parts.some((item) => item.status === "failed")) return { state: "failed", label: "Failed", verified: false, detail: "No verified completion is recorded for this reply. Its text alone does not prove successful authentication." };
-  if (!parts.length) return { state: "none", label: "No reply yet", verified: false, detail: "Each reply must be authenticated to its request and verified environment. A TEE check alone does not verify a reply." };
+/** Response authentication comes from the durable reply, never the TEE report alone. */
+export function replyProof(session: ClientSessionState): { label: string; verified: boolean; detail: string } {
+  if (session.running) return { label: "Pending", verified: false, detail: "The reply stays provisional until its complete response is authenticated." };
+  const last = [...session.timeline].reverse().find((item) => item.kind === "assistant");
+  if (!last) return { label: "No reply yet", verified: false, detail: "Each reply must be authenticated to its request and verified environment. A TEE check alone does not verify a reply." };
+  const parts = last.turnId ? session.timeline.filter((item) => item.turnId === last.turnId && ["assistant", "reasoning"].includes(item.kind)) : [last];
   const verified = parts.every((item) => item.terminalVerified === true && item.status === "completed");
   return {
-    state: verified ? "verified" : "incomplete",
-    label: verified ? "Verified" : "Incomplete",
+    label: verified ? "Verified" : last.status === "failed" ? "Failed" : "Incomplete",
     verified,
     detail: verified ? "The native client authenticated the complete reply to its request and verified environment using the provider’s encrypted protocol."
       : "No verified completion is recorded for this reply. Its text alone does not prove successful authentication.",
   };
-}
-
-/** The composer summarizes the reply; report freshness remains independently inspectable. */
-export function proofBadge(session: ClientSessionState, reportState: ProofState): { label: string; tone: "success" | "danger" | "warning" | "muted" } {
-  if (outdatedTeeState(session, session.settings?.model ?? session.securityEvidence?.modelId ?? "") === "degraded") return { label: proofLabels.degraded, tone: "warning" };
-  if (reportState === "outdated") return { label: proofLabels.outdated, tone: "warning" };
-  const reply = replyProof(session);
-  if (reportState !== "idle" && reportState !== "development") {
-    switch (reply.state) {
-      case "pending": return { label: "Verifying reply", tone: "success" };
-      case "verified": return { label: "Reply verified", tone: "success" };
-      case "failed": return { label: "Reply check failed", tone: "danger" };
-      case "incomplete": return { label: "Reply incomplete", tone: "warning" };
-      case "unavailable": return { label: "Reply unavailable", tone: "muted" };
-      case "none": break;
-    }
-  }
-  return { label: proofLabels[reportState], tone: reportState === "verified" ? "success" : reportState === "failed" ? "danger"
-    : reportState === "expired" || reportState === "development" ? "warning" : "muted" };
 }

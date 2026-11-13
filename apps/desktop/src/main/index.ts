@@ -1,4 +1,3 @@
-import {prepareUpdateRestart} from './update-lifecycle';
 import { validatePrompt } from "@axiom/axiom-acp-client";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -16,7 +15,8 @@ import { installMacCli } from "./install-cli";
 import { APP_ID, APP_NAME, setLinuxDesktopIdentity } from "../../scripts/desktop-identity.mjs";
 import { UpdateService } from "./update-service";
 import { updateIdentity } from "./update-identity";
-import { nativeUpdates } from "./native-updates";
+import { FORMATS } from "../../../../packages/desktop-releases/manifest.mjs";
+import type { PackageFormat } from "../shared/updates";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -112,9 +112,6 @@ function agentHandle(channel: string, handler: AgentHandler): void {
     if (!trusted || !BrowserWindow.fromWebContents(event.sender)) {
       throw new Error("agent IPC rejected an untrusted renderer");
     }
-    if (updates?.snapshot().status === 'installing' && (channel.startsWith('agent:prompt') || channel === 'proxy:start')) {
-      throw new Error('Axiom is installing an update. Wait for it to restart.');
-    }
     return handler(event, ...args);
   });
 }
@@ -130,12 +127,10 @@ function installAgentIpc(): void {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
   agentHandle("agent:state", () => sidecar.state());
-  agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
+  agentHandle("agent:usage-summary", async (_event, accountId: unknown) => {
     const id = boundedString(accountId, "account ID", 128);
-    if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
-    const zone = boundedString(timezone, "timezone", 128);
     requirePaymentAccount(id, sidecar.state());
-    const result = await sidecar.usageSummary({ period, timezone: zone });
+    const result = await sidecar.usageSummary();
     requirePaymentAccount(id, sidecar.state());
     return result;
   });
@@ -283,9 +278,8 @@ function installAgentIpc(): void {
   );
   agentHandle("agent:account-open", () => sidecar.openAccountPortal());
   agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
-  agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
-    sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
-      acceptOutdatedTee === true ? boundedString(modelId, "model ID", 512) : undefined),
+  agentHandle("agent:security-verify", (_event, sessionId: unknown) =>
+    sidecar.verifySecurity(boundedString(sessionId, "session ID", 128)),
   );
   agentHandle("agent:compact", (_event, sessionId: unknown, focus: unknown) =>
     sidecar.compact(
@@ -543,27 +537,29 @@ if (primaryInstance) app.on("second-instance", () => {
 
 if (primaryInstance) void app.whenReady().then(async () => {
   const metadata = app.isPackaged
-    ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }
+    ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown }
     : {};
   updates = new UpdateService(updateIdentity({ version: app.getVersion(), platform: process.platform,
-    arch: process.arch, packaged: app.isPackaged && metadata.axiomUpdateChannel === 'stable', packageFormat: metadata.axiomUpdateFormat, appImage: process.env.APPIMAGE }), {
-    run: nativeUpdates(resolveSidecar),
-    parentPid: process.pid,
-    prepareRestart: prepareUpdateRestart,
-    canRestart: () => !Object.values(sidecar.state().sessions).some(session => session.running)
-      && !['running', 'starting', 'stopping'].includes(proxy.snapshot().status),
-    restart: async () => {
-      await Promise.all([proxy.dispose(), sidecar.stop()]);
-      app.quit();
+    arch: process.arch, packaged: app.isPackaged, packageFormat: metadata.axiomUpdateFormat, appImage: process.env.APPIMAGE }), {
+    chooseDestination: async (file) => {
+      const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      if (!window) return null;
+      const result = await dialog.showSaveDialog(window, { title: "Download Axiom update", buttonLabel: "Download",
+        defaultPath: join(app.getPath("downloads"), file.name) });
+      return result.canceled ? null : result.filePath ?? null;
     },
+    reveal: (path) => shell.showItemInFolder(path),
     emit: (state) => {
       for (const window of BrowserWindow.getAllWindows()) window.webContents.send("updates:state-changed", state);
     },
   });
   agentHandle("updates:state", () => updates!.snapshot());
   agentHandle("updates:check", () => updates!.check());
-  agentHandle("updates:install", () => updates!.install());
-  agentHandle("updates:cancel", () => updates!.cancel());
+  agentHandle("updates:download", (_event, format: unknown) => {
+    if (format !== undefined && (typeof format !== "string" || !Object.values(FORMATS).flat().includes(format as PackageFormat))) throw new Error("Invalid update format");
+    return updates!.download(format as PackageFormat | undefined);
+  });
+  agentHandle("updates:reveal", () => updates!.reveal());
   installAgentIpc();
   ipcMain.on("window:minimize", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();

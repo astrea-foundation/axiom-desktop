@@ -1,86 +1,163 @@
-//! One native update path for Desktop and terminal installations.
-mod apply;
-mod installation;
-mod manifest;
+//! Anonymous release discovery shared with Desktop's public release contract.
+//! Bundled CLI installations are upgraded only by their Desktop installer.
+
+use std::{collections::HashSet, path::Path, time::Duration};
 
 use anyhow::{Context as _, ensure};
-use fs2::FileExt as _;
-use installation::{Installation, cache, discover};
-use manifest::{Artifact, MAX_FEED_BYTES, Release, parse_release, verify_release, version_parts};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sha2::{Digest as _, Sha256};
-use std::{
-    fs::{File, OpenOptions},
-    io::{Read as _, Write as _},
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use serde::Deserialize;
 
-pub use installation::lease;
 const RELEASE_API: &str = "https://axiom.stream/api/releases/latest";
-const TRUSTED_KEYS: &str = match option_env!("AXIOM_UPDATE_PUBLIC_KEYS") {
-    Some(keys) => keys,
-    None => "",
-};
+const MAX_FEED_BYTES: usize = 128 * 1024;
+const MAX_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-#[derive(Debug, Default, clap::Args)]
-#[allow(clippy::struct_excessive_bools)] // Independent Clap switches; incompatible operations are rejected.
-pub struct Arguments {
-    /// Check for a newer version without installing it.
-    #[arg(long)]
-    pub check: bool,
-    /// Emit newline-delimited JSON for the Desktop update controller.
-    #[arg(long)]
-    pub json: bool,
-    #[arg(long, hide = true)]
-    pub prepare: bool,
-    #[arg(long, hide = true)]
-    pub desktop: bool,
-    #[arg(long, hide = true)]
-    pub start_job: Option<PathBuf>,
-    #[arg(long, hide = true)]
-    pub apply_job: Option<PathBuf>,
-    #[arg(long, hide = true)]
-    pub parent: Option<u32>,
-    #[arg(long, hide = true)]
-    pub trust_keys: bool,
-    #[arg(long, hide = true, requires = "apply_job")]
-    pub ready_file: bool,
+#[derive(Debug, Deserialize)]
+struct Artifact {
+    name: String,
+    platform: String,
+    arch: String,
+    bytes: u64,
+    sha256: String,
+    url: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "frontend", rename_all = "camelCase", deny_unknown_fields)]
-pub enum Restart {
-    Desktop,
-    Tui {
-        cwd: PathBuf,
-        resume: Option<String>,
-    },
+#[derive(Debug)]
+struct Release {
+    version: String,
+    cli_downloads: Vec<Artifact>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Job {
-    installation: Installation,
-    release: Release,
-    artifact: String,
-    restart: Restart,
-}
-
-fn emit(event: &serde_json::Value, machine: bool) {
-    if machine {
-        println!("{event}");
-    } else if let Some(message) = event["message"].as_str() {
-        eprintln!("{message}");
+fn version_parts(version: &str) -> anyhow::Result<[u32; 3]> {
+    let parts = version.split('.').collect::<Vec<_>>();
+    ensure!(parts.len() == 3, "Invalid release version");
+    let mut result = [0; 3];
+    for (index, part) in parts.iter().enumerate() {
+        ensure!(
+            !part.is_empty()
+                && part.len() <= 9
+                && part.bytes().all(|c| c.is_ascii_digit())
+                && (part.len() == 1 || !part.starts_with('0')),
+            "Invalid release version"
+        );
+        result[index] = part.parse()?;
     }
+    Ok(result)
 }
 
-fn release_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .build()?)
+fn compare_versions(left: &str, right: &str) -> anyhow::Result<std::cmp::Ordering> {
+    Ok(version_parts(left)?.cmp(&version_parts(right)?))
+}
+
+fn desktop_format(name: &str) -> Option<&'static str> {
+    if name.ends_with(".pkg.tar.xz") || name.ends_with(".pkg.tar.zst") {
+        return Some("pacman");
+    }
+    ["AppImage", "deb", "dmg", "pkg", "zip", "exe"]
+        .into_iter()
+        .find(|format| name.ends_with(&format!(".{format}")))
+}
+
+/// Validate the complete manifest, including artifacts not selected by this host.
+/// The same schema-1 fixtures are exercised by JavaScript and Rust tests.
+fn parse_release(bytes: &[u8]) -> anyhow::Result<Release> {
+    ensure!(bytes.len() <= MAX_FEED_BYTES, "Release feed is too large");
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let version = value["version"]
+        .as_str()
+        .context("Missing release version")?;
+    version_parts(version)?;
+    ensure!(
+        value.get("schemaVersion").is_none() || value["schemaVersion"] == 1,
+        "Invalid release schema"
+    );
+    ensure!(
+        matches!(value["signing"].as_str(), Some("signed" | "unsigned")),
+        "Invalid release signing"
+    );
+    let downloads = value["downloads"]
+        .as_array()
+        .context("Invalid release downloads")?;
+    let empty = Vec::new();
+    let cli = match value.get("cliDownloads") {
+        Some(files) => files.as_array().context("Invalid CLI downloads")?,
+        None => &empty,
+    };
+    ensure!(
+        !downloads.is_empty() && downloads.len() + cli.len() <= 100,
+        "Invalid release downloads"
+    );
+    let mut seen = HashSet::new();
+    let mut cli_downloads = Vec::new();
+    for (raw, standalone) in downloads
+        .iter()
+        .map(|f| (f, false))
+        .chain(cli.iter().map(|f| (f, true)))
+    {
+        let file: Artifact = serde_json::from_value(raw.clone())?;
+        ensure!(
+            file.name.len() <= 200
+                && file
+                    .name
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && file
+                    .name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+                && file.name.contains(&format!("-{version}-"))
+                && matches!(file.arch.as_str(), "x64" | "arm64")
+                && file.bytes > 0
+                && file.bytes <= MAX_ARTIFACT_BYTES
+                && file.sha256.len() == 64
+                && file
+                    .sha256
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                && file.url
+                    == format!("https://cdn.axiom.stream/downloads/{version}/{}", file.name),
+            "Invalid release artifact"
+        );
+        if standalone {
+            ensure!(
+                file.platform == "linux"
+                    && file.arch == "x64"
+                    && raw["format"] == "tar.gz"
+                    && file.name == format!("axiomai-{version}-x86_64-unknown-linux-gnu.tar.gz")
+                    && seen.insert("cli:linux:x64".to_owned()),
+                "Invalid CLI download"
+            );
+            cli_downloads.push(file);
+        } else {
+            let format = desktop_format(&file.name).context("Invalid installer format")?;
+            let allowed = match file.platform.as_str() {
+                "mac" => ["pkg", "dmg", "zip"].contains(&format),
+                "win" => format == "exe",
+                "linux" => ["AppImage", "deb", "pacman"].contains(&format),
+                _ => false,
+            };
+            let has_arch_marker = |arch: &str| {
+                file.name.contains(&format!("-{arch}.")) || file.name.contains(&format!("-{arch}-"))
+            };
+            let named_arch = if has_arch_marker("arm64") {
+                "arm64"
+            } else if ["x64", "x86_64", "amd64"].into_iter().any(has_arch_marker) {
+                "x64"
+            } else {
+                ""
+            };
+            ensure!(
+                allowed
+                    && named_arch == file.arch
+                    && (raw.get("format").is_none() || raw["format"] == format)
+                    && seen.insert(format!("{}:{}:{format}", file.platform, file.arch)),
+                "Invalid release download"
+            );
+        }
+    }
+    Ok(Release {
+        version: version.to_owned(),
+        cli_downloads,
+    })
 }
 
 async fn read_release(mut response: reqwest::Response) -> anyhow::Result<Release> {
@@ -91,7 +168,7 @@ async fn read_release(mut response: reqwest::Response) -> anyhow::Result<Release
     ensure!(
         response
             .content_length()
-            .is_none_or(|n| n <= MAX_FEED_BYTES as u64),
+            .is_none_or(|length| length <= MAX_FEED_BYTES as u64),
         "Release feed is too large"
     );
     let mut bytes = Vec::new();
@@ -105,386 +182,138 @@ async fn read_release(mut response: reqwest::Response) -> anyhow::Result<Release
     parse_release(&bytes)
 }
 
+fn release_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()?)
+}
+
 async fn latest_release() -> anyhow::Result<Release> {
-    let release = read_release(
+    // A fresh client carries no account headers, cookies, model traffic or API key.
+    read_release(
         release_client()?
             .get(RELEASE_API)
-            .timeout(Duration::from_secs(20))
             .header("Accept", "application/json")
             .send()
             .await?,
     )
-    .await?;
-    verify_release(&release, TRUSTED_KEYS)?;
-    Ok(release)
+    .await
 }
 
-fn accept_sequence(installation: &Installation, release: &Release) -> anyhow::Result<()> {
-    accept_sequence_with_keys(installation, release, TRUSTED_KEYS)
-}
-fn accept_sequence_with_keys(
-    installation: &Installation,
-    release: &Release,
-    trusted_keys: &str,
-) -> anyhow::Result<()> {
-    verify_release(release, trusted_keys)?;
-    let directory = cache(installation)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(directory.join("feed.lock"))?;
-    lock.lock_exclusive()?;
-    let path = directory.join("accepted.json");
-    if path.exists() {
-        let previous: Release = parse_release(&std::fs::read(&path)?)?;
-        verify_release(&previous, trusted_keys)?;
-        ensure!(
-            release.sequence >= previous.sequence
-                && version_parts(&release.version)? >= version_parts(&previous.version)?,
-            "Refusing an older update feed"
-        );
-        if release.sequence == previous.sequence || release.version == previous.version {
-            ensure!(
-                serde_json::to_value(release)? == serde_json::to_value(&previous)?,
-                "An immutable release changed"
-            );
-        }
-    }
-    let mut pending = tempfile::NamedTempFile::new_in(directory)?;
-    pending.write_all(&serde_json::to_vec(release)?)?;
-    pending.as_file().sync_all()?;
-    pending.persist(&path)?;
-    Ok(())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Installation {
+    Desktop,
+    Standalone,
+    Development,
 }
 
-fn host_platform() -> &'static str {
-    if cfg!(windows) {
-        "win"
-    } else if cfg!(target_os = "macos") {
-        "mac"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        "unsupported"
-    }
-}
-fn host_arch() -> &'static str {
-    if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else if cfg!(target_arch = "x86_64") {
-        "x64"
-    } else {
-        "unsupported"
-    }
-}
-
-fn matches_target(file: &Artifact, platform: &str, arch: &str) -> bool {
-    file.platform == platform
-        && matches!(arch, "x64" | "arm64")
-        && (file.arch == arch || (matches!(platform, "mac" | "win") && file.arch == "universal"))
-}
-
-fn select<'a>(release: &'a Release, installation: &Installation) -> anyhow::Result<&'a Artifact> {
-    let files = if installation.product == "desktop" {
-        &release.downloads
-    } else {
-        &release.cli_downloads
+fn installation_at(executable: &Path) -> Installation {
+    // Resolve PATH symlinks before inspecting the owning installation. AppImage
+    // wrappers execute the binary inside the mounted resources/bin directory.
+    let Ok(executable) = executable.canonicalize() else {
+        return Installation::Development;
     };
-    files
-        .iter()
-        .find(|f| {
-            matches_target(f, host_platform(), host_arch()) && f.format == installation.format
-        })
-        .context("No update has been published for this installation")
-}
-
-fn verify_file(path: &Path, file: &Artifact) -> anyhow::Result<()> {
-    let mut input = File::open(path)?;
-    ensure!(
-        input.metadata()?.is_file() && input.metadata()?.len() == file.bytes,
-        "Update size mismatch"
-    );
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0; 64 * 1024];
-    loop {
-        let count = input.read(&mut buffer)?;
-        if count == 0 {
-            break;
+    let Some(bin) = executable.parent() else {
+        return Installation::Development;
+    };
+    let Some(root) = bin.parent() else {
+        return Installation::Development;
+    };
+    if bin.file_name().is_some_and(|name| name == "bin") {
+        if root
+            .file_name()
+            .is_some_and(|name| name == "resources" || name == "Resources")
+            && (root.join("app.asar").is_file() || root.join("app/package.json").is_file())
+        {
+            return Installation::Desktop;
         }
-        hash.update(&buffer[..count]);
-    }
-    ensure!(
-        hex::encode(hash.finalize()) == file.sha256,
-        "Update checksum mismatch"
-    );
-    Ok(())
-}
-
-async fn download(file: &Artifact, destination: &Path, machine: bool) -> anyhow::Result<()> {
-    let mut response = release_client()?
-        .get(&file.url)
-        .timeout(Duration::from_secs(1800))
-        .send()
-        .await?;
-    ensure!(
-        response.status() == reqwest::StatusCode::OK
-            && response.content_length().is_none_or(|n| n == file.bytes),
-        "Update download is unavailable or changed"
-    );
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    let mut received = 0u64;
-    let mut last_percent = 101;
-    while let Some(chunk) = response.chunk().await? {
-        received += chunk.len() as u64;
-        ensure!(received <= file.bytes, "Update exceeds expected size");
-        output.write_all(&chunk)?;
-        let percent = received * 100 / file.bytes;
-        if percent != last_percent {
-            emit(
-                &json!({"event":"progress", "name":file.name, "received":received, "total":file.bytes,
-                "message":format!("Downloading update: {percent}%")}),
-                machine,
-            );
-            last_percent = percent;
+        if root.join("share/axiomcli/install-manifest").is_file()
+            || root.join("share/doc/axiomcli/BUILD-METADATA").is_file()
+        {
+            return Installation::Standalone;
         }
     }
-    output.sync_all()?;
-    drop(output);
-    verify_file(destination, file)?;
-    Ok(())
+    Installation::Development
 }
 
-async fn prepare(
-    installation: Installation,
-    release: Release,
-    restart: Restart,
-    machine: bool,
-) -> anyhow::Result<PathBuf> {
-    ensure!(
-        version_parts(&release.version)? > version_parts(env!("CARGO_PKG_VERSION"))?,
-        "Already up to date"
+fn installation() -> Installation {
+    std::env::current_exe().map_or(Installation::Development, |path| installation_at(&path))
+}
+
+fn update_message(release: &Release, installed: Installation, os: &str, arch: &str) -> String {
+    let intro = format!(
+        "Axiom {} is available (installed {}).",
+        release.version,
+        env!("CARGO_PKG_VERSION")
     );
-    let file = select(&release, &installation)?;
-    let directory = tempfile::Builder::new()
-        .prefix("pending-")
-        .tempdir_in(cache(&installation)?)?;
-    download(file, &directory.path().join(&file.name), machine).await?;
-    let helper = directory.path().join(if cfg!(windows) {
-        "update-helper.exe"
-    } else {
-        "update-helper"
-    });
-    std::fs::copy(std::env::current_exe()?, &helper)?;
-    #[cfg(windows)]
-    {
-        let current = std::env::current_exe()?;
-        for entry in std::fs::read_dir(current.parent().context("Missing runtime directory")?)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file()
-                && entry
-                    .path()
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
+    match installed {
+        Installation::Desktop => format!(
+            "{intro}\nOpen Axiom → Settings → Updates. The desktop installer updates Desktop and its bundled CLI together. Quit Axiom and all AxiomCLI sessions before installing."
+        ),
+        Installation::Standalone => {
+            if os == "linux"
+                && arch == "x86_64"
+                && let Some(file) = release
+                    .cli_downloads
+                    .iter()
+                    .find(|f| f.platform == "linux" && f.arch == "x64")
             {
-                std::fs::copy(entry.path(), directory.path().join(entry.file_name()))?;
+                return format!(
+                    "{intro}\nCLI + local proxy bundle: {}\nSize: {} bytes\nSHA-256: {}\nChecksum file: {}.sha256\nQuit all AxiomCLI and local proxy sessions. Download and verify the bundle, then use scripts/install-release ARCHIVE PREFIX with the same installation prefix to replace both components together.",
+                    file.url, file.bytes, file.sha256, file.url
+                );
             }
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
-    }
-    let job = Job {
-        artifact: file.name.clone(),
-        installation,
-        release,
-        restart,
-    };
-    let path = directory.path().join("job.json");
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
-    output.write_all(&serde_json::to_vec(&job)?)?;
-    output.sync_all()?;
-    let _ = directory.keep();
-    emit(
-        &json!({"event":"ready", "job":path, "message":"Update verified. Ready to install."}),
-        machine,
-    );
-    Ok(path)
-}
-
-fn read_job(path: &Path) -> anyhow::Result<Job> {
-    read_job_with_keys(path, TRUSTED_KEYS)
-}
-fn read_job_with_keys(path: &Path, trusted_keys: &str) -> anyhow::Result<Job> {
-    ensure!(
-        std::fs::metadata(path)?.len() <= 256 * 1024,
-        "Invalid update job"
-    );
-    let job: Job = serde_json::from_slice(&std::fs::read(path)?)?;
-    parse_release(&serde_json::to_vec(&job.release)?)?;
-    ensure!(
-        path.canonicalize()?.starts_with(cache(&job.installation)?),
-        "Update job is outside its private cache"
-    );
-    if let Some(image) = &job.installation.app_image {
-        ensure!(
-            image.is_absolute()
-                && image.canonicalize()? == *image
-                && *image == job.installation.root
-                && job.installation.product == "desktop"
-                && job.installation.format == "AppImage",
-            "Installation changed"
-        );
-    } else {
-        ensure!(
-            installation::discover_at(&job.installation.cli, None)? == job.installation,
-            "Installation changed"
-        );
-    }
-    ensure!(
-        !matches!(job.restart, Restart::Desktop) || job.installation.product == "desktop",
-        "Wrong restart frontend"
-    );
-    verify_release(&job.release, trusted_keys)?;
-    accept_sequence_with_keys(&job.installation, &job.release, trusted_keys)?;
-    ensure!(
-        version_parts(&job.release.version)? > version_parts(env!("CARGO_PKG_VERSION"))?,
-        "Refusing update downgrade"
-    );
-    let artifact = select(&job.release, &job.installation)?;
-    ensure!(artifact.name == job.artifact, "Update target changed");
-    verify_file(
-        &path
-            .parent()
-            .context("Invalid update job path")?
-            .join(&job.artifact),
-        artifact,
-    )?;
-    Ok(job)
-}
-
-pub async fn command(arguments: Arguments) -> anyhow::Result<()> {
-    let modes = [
-        arguments.check,
-        arguments.prepare,
-        arguments.start_job.is_some(),
-        arguments.apply_job.is_some(),
-        arguments.trust_keys,
-    ];
-    ensure!(
-        modes.into_iter().filter(|x| *x).count() <= 1,
-        "Choose one update operation"
-    );
-    ensure!(
-        arguments.parent.is_none()
-            || arguments.start_job.is_some()
-            || arguments.apply_job.is_some(),
-        "Invalid parent option"
-    );
-    ensure!(
-        !arguments.desktop || arguments.prepare,
-        "Desktop requires prepare mode"
-    );
-    if arguments.trust_keys {
-        println!("{TRUSTED_KEYS}");
-        return Ok(());
-    }
-    if let Some(path) = arguments.apply_job {
-        return apply::run(&path, arguments.parent, arguments.ready_file);
-    }
-    if let Some(path) = arguments.start_job {
-        return apply::spawn(&path, arguments.parent);
-    }
-    let installation = discover()
-        .context("Use an installed Axiom package to update; source builds must be rebuilt")?;
-    let release = latest_release().await?;
-    accept_sequence(&installation, &release)?;
-    let newer = version_parts(&release.version)? > version_parts(env!("CARGO_PKG_VERSION"))?;
-    emit(
-        &json!({"event":"checked", "release":release, "installation":installation, "available":newer, "lastError":last_error(&installation),
-        "message":if newer { format!("Axiom {} is available.", release.version) } else { "Axiom is up to date.".into() }}),
-        arguments.json,
-    );
-    if arguments.check || !newer {
-        return Ok(());
-    }
-    let restart = if arguments.desktop {
-        Restart::Desktop
-    } else {
-        Restart::Tui {
-            cwd: std::env::current_dir()?,
-            resume: None,
-        }
-    };
-    let path = prepare(installation, release, restart, arguments.json).await?;
-    if arguments.prepare {
-        return Ok(());
-    }
-    apply::handoff(&path)
-}
-
-pub async fn run_with_resume(cwd: PathBuf, resume: String) -> anyhow::Result<()> {
-    let installation = discover()?;
-    let release = latest_release().await?;
-    accept_sequence(&installation, &release)?;
-    if version_parts(&release.version)? <= version_parts(env!("CARGO_PKG_VERSION"))? {
-        eprintln!("Axiom is up to date.");
-        return Ok(());
-    }
-    let path = prepare(
-        installation,
-        release,
-        Restart::Tui {
-            cwd,
-            resume: Some(resume),
-        },
-        false,
-    )
-    .await?;
-    apply::handoff(&path)
-}
-
-pub async fn startup_notice() -> anyhow::Result<Option<String>> {
-    let Ok(installation) = discover() else {
-        return Ok(None);
-    };
-    if let Some(error) = last_error(&installation) {
-        return Ok(Some(format!(
-            "Previous update failed: {error}. Use /update to retry."
-        )));
-    }
-    let release = latest_release().await?;
-    accept_sequence(&installation, &release)?;
-    Ok(
-        (version_parts(&release.version)? > version_parts(env!("CARGO_PKG_VERSION"))?).then(|| {
             format!(
-                "Axiom {} is available. Use /update to install and restart.",
-                release.version
+                "{intro}\nNo standalone bundle has been published for this installation. Check again after the matching bundle is published."
             )
-        }),
-    )
+        }
+        Installation::Development => format!(
+            "{intro}\nThis executable has no recognized installer. Update your source checkout and rebuild Desktop and AxiomCLI together, or install a matching Axiom release."
+        ),
+    }
 }
 
-fn last_error(installation: &Installation) -> Option<String> {
-    let bytes = std::fs::read(cache(installation).ok()?.join("last-update.json")).ok()?;
-    if bytes.len() > 16 * 1024 {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    if value["success"] == false {
-        value["error"].as_str().map(str::to_owned)
+pub async fn run() -> anyhow::Result<()> {
+    let release = latest_release()
+        .await
+        .context("Could not check Axiom updates")?;
+    if compare_versions(&release.version, env!("CARGO_PKG_VERSION"))?.is_gt() {
+        println!(
+            "{}",
+            update_message(
+                &release,
+                installation(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+        );
     } else {
-        None
+        println!(
+            "Axiom {} is up to date (published {}).",
+            env!("CARGO_PKG_VERSION"),
+            release.version
+        );
     }
+    Ok(())
+}
+
+/// No account access or terminal output; callers decide how to display a notice.
+pub async fn startup_notice() -> anyhow::Result<Option<String>> {
+    let installed = installation();
+    if installed == Installation::Development {
+        return Ok(None);
+    }
+    let release = latest_release().await?;
+    if !compare_versions(&release.version, env!("CARGO_PKG_VERSION"))?.is_gt() {
+        return Ok(None);
+    }
+    Ok(Some(update_message(
+        &release,
+        installed,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )))
 }
 
 #[cfg(test)]

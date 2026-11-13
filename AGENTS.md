@@ -1,25 +1,5 @@
 # Agent Instructions
 
-## Retired repository
-
-This is the legacy `astrea-foundation/axiomai` repository. Do not start new
-development here. Native work belongs in
-[axiom-desktop](https://github.com/astrea-foundation/axiom-desktop), normally the
-sibling `../axiom-desktop` checkout. Hosted API and web work belongs in
-[axiom-platform](https://github.com/astrea-foundation/axiom-platform), normally
-`../axiom-platform`. Read the destination repository's `AGENTS.md` before editing.
-Keep this checkout and its branches/tags as historical evidence; unreleased
-legacy commits require separate review before porting to an active repository.
-
-## Explicit outdated-TEE consent
-
-A local user may accept Intel's exact `OutOfDate` TCB status for NEAR until the
-native runtime restarts. Present accepted evidence as degraded with a yellow
-warning. Default behavior remains strict. This exception never permits expired
-evidence, revocation, configuration faults, invalid signatures, nonce/key/model
-or TLS binding mismatches, GPU verification failures, or unauthenticated replies.
-Keep consent out of persisted preferences and signed trust-policy documents.
-
 ## Branch workflow
 
 Use `dev` for ongoing development and push incremental changes there. Start

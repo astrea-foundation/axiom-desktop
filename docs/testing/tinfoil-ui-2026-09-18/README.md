@@ -97,10 +97,7 @@ TUI's stopped response recorded `cancelled` immediately, but its displayed cost 
 
 **Investigation at this test revision:** The runner’s former `generate_title` method set a 128-token output budget and `ThinkingMode::ProviderDefault`, despite its comment about avoiding thinking tokens for labels. Exhausting the tiny budget on reasoning is a likely explanation; this provider accounting did not supply a separate reasoning-token counter. Use a supported title strategy with enough visible-output budget and a deterministic local fallback when normalization gets empty text.
 
-The September 18 fix used a synchronous local label. On September 22, background
-title generation was restored with a local fallback, capability-aware reasoning
-and output budgets, separate usage accounting and manual-rename protection.
-See [current Desktop behavior](../../desktop.md).
+Current titles use the synchronous [local helper](../../../apps/axiomcli/src/session_title.rs) and no provider request.
 
 [Completed Kimi reply with unchanged title](evidence/desktop-kimi-response.png).
 

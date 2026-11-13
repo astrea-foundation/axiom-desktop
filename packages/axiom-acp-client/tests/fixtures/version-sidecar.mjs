@@ -10,7 +10,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     agentCapabilities: { _meta: { axiom: { protocolVersion: '0.2', features: {
       desktopChat: 1, threadCatalog: 1, timeline: 2, modelCatalog: 1,
       profilePreferences: 1, collections: 1, account: 2, billing: 3,
-      securityEvidence: 3, webConsent: 1,
+      securityEvidence: 2, webConsent: 1,
     } } } },
   } }) + '\n');
 }

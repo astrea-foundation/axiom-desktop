@@ -24,22 +24,8 @@ response-signing key, and hard expiry. Both keys and fingerprints must agree.
 The native client independently verifies the vendor evidence and its own nonce.
 The TDX report data is `SHA256(ed25519_key_bytes || tls_spki_sha256_bytes) || nonce`.
 The measured configuration binds the exact manifest; NVIDIA verification must
-pass for the same nonce. Intel status defaults to the signed local `UpToDate` policy. A user may explicitly
-accept the exact `OutOfDate` status for NEAR until the native runtime restarts.
-The client then sends `allow_outdated_tcb=true` on establishment and independently
-permits that status only after all quote, key, nonce, workload and GPU checks pass.
-Accepted evidence is marked `degraded`, with the real Intel status and advisories;
-all other rejected statuses and authentication failures still fail closed. The
-backend records `outdated_tcb_accepted` on that account-bound worker session and
-keeps its original expiry and TLS pin. Consent never extends a lease or changes
-the signed trust-policy document.
+pass for the same nonce. Intel status must satisfy the signed local policy.
 The server's `verified` flag and supplied collateral are not trust roots.
-
-NVIDIA verdict verification independently downloads the vendor's rotating JWKS,
-bounded to 1 MiB. The verdict's key ID selects a certificate chain from that set;
-the signed-policy anchor, certificate validity, ES384 signature, passing verdict
-and challenge nonce must all verify. A larger set of published rotation keys does
-not change those checks. Documents above the bound are rejected before parsing.
 
 The native client does **not** claim to have observed the provider's TLS connection:
 its security comes from the locally attested encryption key and authenticated
@@ -86,12 +72,6 @@ For streaming, the signature covers the complete ordered raw SSE transcript,
 including its terminal marker and usage. Deltas remain provisional until the native
 client verifies the transcript and receipt; missing, changed, reordered or truncated
 responses never produce successful completion.
-
-A non-streaming result may contain authenticated encrypted reasoning without
-answer text when its generation budget ends. The relay and native client retain
-that reasoning with the provider's `length` finish reason, after the same receipt,
-request/response binding and field-authentication checks. An empty result without
-reasoning, answer text, refusal or tool calls is still rejected.
 
 Only bounded read-only receipt lookups are retried on transient failures. Invalid
 signatures fail immediately. A proven pre-send worker change returns

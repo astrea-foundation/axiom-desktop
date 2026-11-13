@@ -33,7 +33,7 @@ impl Default for TrustPolicy {
             version: "development".into(),
             expires_at_unix_seconds: u64::MAX,
             // Keep the browser, backend, CLI, and desktop on one TCB policy.
-            // A runtime user exception for OutOfDate is separate from signed policy.
+            // Advisory-bearing states require an explicit signed policy update.
             accepted_intel_statuses: vec!["UpToDate".into()],
             require_nvidia_verified: true,
             require_model_binding: true,
@@ -162,7 +162,6 @@ pub enum SecurityState {
     Unverified,
     Verifying,
     Verified,
-    Degraded,
     Rejected,
     Cancelled,
     Expired,

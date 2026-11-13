@@ -99,7 +99,7 @@ impl FeatureVersions {
             account: 2,
             billing: 3,
             usage: 1,
-            security_evidence: 3,
+            security_evidence: 2,
             web_consent: 1,
             steering: 1,
             message_revision: 1,
@@ -332,8 +332,6 @@ pub enum SecurityState {
     Verifying,
     UnattestedDevelopment,
     Verified,
-    Degraded,
-    Outdated,
     Failed,
 }
 
@@ -951,37 +949,11 @@ pub struct GiftCodeRedeemResponse {
     pub status: BillingStatus,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum UsagePeriod {
-    Week,
-    Month,
-    #[default]
-    AllTime,
-}
-
-impl UsagePeriod {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Week => "week",
-            Self::Month => "month",
-            Self::AllTime => "all_time",
-        }
-    }
-}
-
 #[derive(
     Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest,
 )]
 #[request(method = "_axiom/usage/summary", response = UsageSummaryResponse)]
-pub struct UsageSummaryRequest {
-    #[serde(default)]
-    pub period: UsagePeriod,
-    /// IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.
-    #[schemars(length(min = 1, max = 128))]
-    pub timezone: Option<String>,
-}
+pub struct UsageSummaryRequest {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1096,10 +1068,6 @@ pub struct BillingStatusResponse {
 #[serde(rename_all = "camelCase")]
 pub struct VerifySecurityRequest {
     pub thread_id: String,
-    #[serde(default)]
-    pub accept_outdated_tee: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]

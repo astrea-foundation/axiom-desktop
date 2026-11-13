@@ -8,7 +8,7 @@ stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
 
 ## Local database
 
-The current SQLite schema is **3**, application ID **`0x41584133`**,
+The current SQLite schema is **2**, application ID **`0x41584133`**,
 with the schema 1 baseline in [schema.sql](../apps/axiomcli/src/session/schema.sql)
 and the forward migration in [the initializer](../apps/axiomcli/src/session/schema.rs).
 Each authenticated account
@@ -22,11 +22,7 @@ already supplies the same index. Existing schema 1 records remain compatible.
 Pre-baseline application IDs and unsupported versions fail closed. Historical
 receipt repairs and activity backfills have been removed; local response
 verification remains required before content can be marked verified. Schema 1 upgrades to schema 2 in a transaction without resetting history, adding
-a payload table with cascading deletion from its user timeline row. Schema 2
-upgrades transactionally to schema 3 by adding a nullable title-generation
-reservation to threads. Background title results can replace only their own
-reserved fallback; a manual rename clears the reservation. Existing titles and
-conversation data are preserved. Future schema
+a payload table with cascading deletion from its user timeline row. Future schema
 changes must continue adding transactional forward migrations.
 
 For the authorized development reset, stop all processes using the account and run
@@ -65,9 +61,3 @@ and build metadata describe the produced artifact. Supported build targets and
 real-machine acceptance are separate claims; see
 [supported platforms](releasing.md#supported-platforms). No document or green
 build alone establishes that an artifact has been published or accepted.
-
-Automatic updates accept stable product versions and remember the highest signed
-release sequence/version per installation. A release version and its signed
-inventory are immutable. Desktop, bundled CLI and the standalone CLI/proxy pair
-are installed together. This initial updater has no legacy install migration;
-future storage changes must still preserve data compatibility before any rollback.

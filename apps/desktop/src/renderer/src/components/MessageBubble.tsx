@@ -2,7 +2,6 @@ import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, Lock, Pencil, Ro
 import { useState } from "react";
 import type { Message } from "../types";
 import { ChatMarkdown } from "./ChatMarkdown";
-import { DismissibleNotice } from "./DismissibleNotice";
 
 function thoughtLabel(durationMs?: number): string {
   if (durationMs === undefined) return "Thought";
@@ -10,9 +9,8 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true }: {
+export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
-  showFailureNotice?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
@@ -32,7 +30,7 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
   const isStreaming = message.status === "streaming" || message.status === "pending";
   // Stopping a reply is not a presentation error: keep its text and allow
   // copying, without changing its stored status or claiming a final receipt.
-  const terminalFailure = message.status === "failed";
+  const terminalFailure = message.status === "failed" ? "Response interrupted" : null;
   const reasoning = message.reasoningContent?.trim();
 
   const copyMessage = async () => {
@@ -46,9 +44,9 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
     return (
       <div className={`group flex min-w-0 justify-end${message.status === "pending" ? "" : " animate-fade-in-up"}`}>
         <div className="flex min-w-0 max-w-[min(80%,48rem)] flex-col items-end gap-1">
-          {message.content ? <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[var(--surface-bubble-user)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
+          <div className="shadow-glass-tile min-w-0 max-w-full overflow-hidden rounded-[19px] rounded-br-[8px] bg-[var(--surface-bubble-user)] px-4 py-2.5 text-[15px] leading-6 text-[var(--color-text-primary)]">
             <ChatMarkdown text={message.content} />
-          </div> : null}
+          </div>
           {message.status === "pending" ? (
             <div role="status" aria-label="Sending message" className="flex items-center gap-1.5 px-1 py-1 text-[11px] text-[var(--color-text-tertiary)]">
               <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -116,11 +114,11 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
             </div>
           ) : null}
           {message.finishReason === "length" && message.terminalVerified ? <div className="mt-2 text-[12px] text-[var(--color-text-tertiary)]">The model reached its output limit. You can ask it to continue.</div> : null}
-          {terminalFailure && showFailureNotice ? (
-            <DismissibleNotice key={message.id} className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
+          {terminalFailure ? (
+            <div className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
               <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />
-              <span className="min-w-0">This reply couldn't be verified. Try again.</span>
-            </DismissibleNotice>
+              <span>{terminalFailure}. The final response could not be verified.</span>
+            </div>
           ) : null}
         </div>
       </div>

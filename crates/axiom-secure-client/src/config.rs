@@ -1,12 +1,4 @@
-use std::{
-    net::IpAddr,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use url::Url;
 
@@ -14,8 +6,6 @@ use crate::{Result, SecureClientError};
 
 #[derive(Clone, Debug)]
 pub struct SecureClientConfig {
-    // Shared by this runtime's client clones, never serialized or written to disk.
-    accept_outdated_near_tcb: Arc<AtomicBool>,
     pub relay_base_url: Url,
     pub request_timeout: Duration,
     pub attestation_timeout: Duration,
@@ -42,7 +32,6 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
-            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
@@ -72,7 +61,6 @@ impl SecureClientConfig {
             ));
         }
         Ok(Self {
-            accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
             relay_base_url,
             request_timeout: Duration::from_secs(15),
             attestation_timeout: Duration::from_secs(10),
@@ -93,22 +81,6 @@ impl SecureClientConfig {
     #[cfg(feature = "test-fixture")]
     pub(crate) const fn uses_test_fixture(&self) -> bool {
         self.test_fixture
-    }
-
-    /// Explicit local-user consent for missing Intel updates, for this runtime only.
-    /// This cannot relax any cryptographic, identity, freshness or GPU check.
-    pub fn accept_outdated_tee_for_provider(&self, provider: &str) -> Result<()> {
-        if provider != "near" {
-            return Err(SecureClientError::configuration(
-                "this provider has no supported outdated-TEE exception",
-            ));
-        }
-        self.accept_outdated_near_tcb.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-
-    pub(crate) fn accepts_outdated_tcb(&self, provider: &str) -> bool {
-        provider == "near" && self.accept_outdated_near_tcb.load(Ordering::SeqCst)
     }
 }
 
@@ -139,9 +111,7 @@ impl Default for SecureClientLimits {
             attestation_quote_bytes: 256 * 1024,
             nvidia_evidence_bytes: 1024 * 1024,
             nvidia_jwt_bytes: 256 * 1024,
-            // NVIDIA publishes a rotating multi-key certificate set. Keep its
-            // download bounded while allowing the vendor's >512 KiB key set.
-            nvidia_jwks_bytes: 1024 * 1024,
+            nvidia_jwks_bytes: 256 * 1024,
             intel_collateral_bytes: 2 * 1024 * 1024,
             relay_error_bytes: 4 * 1024,
             // A completion receipt contains the bounded 32 MiB provider

@@ -2198,30 +2198,7 @@
       ]
     },
     "UsageSummaryRequest": {
-      "type": "object",
-      "properties": {
-        "period": {
-          "$ref": "#/$defs/UsagePeriod",
-          "default": "all_time"
-        },
-        "timezone": {
-          "description": "IANA timezone for calendar boundaries. Omitted clients retain UTC/all-time behavior.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1,
-          "maxLength": 128
-        }
-      }
-    },
-    "UsagePeriod": {
-      "type": "string",
-      "enum": [
-        "week",
-        "month",
-        "all_time"
-      ]
+      "type": "object"
     },
     "UsageSummaryResponse": {
       "type": "object",
@@ -2430,16 +2407,6 @@
       "properties": {
         "threadId": {
           "type": "string"
-        },
-        "acceptOutdatedTee": {
-          "type": "boolean",
-          "default": false
-        },
-        "modelId": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -2580,8 +2547,6 @@
         "verifying",
         "unattested_development",
         "verified",
-        "degraded",
-        "outdated",
         "failed"
       ]
     },

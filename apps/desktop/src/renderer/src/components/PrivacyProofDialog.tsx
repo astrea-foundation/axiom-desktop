@@ -1,4 +1,4 @@
-import { Check, ChevronRight, CircleHelp, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
+import { Check, ChevronRight, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { ProviderModel } from "../types";
@@ -7,56 +7,13 @@ import { proofGroups, proofLabels, replyProof, verificationAge, type ProofState 
 const explanation: Record<ProofState, string> = {
   idle: "Verification is paused after 30 minutes without activity. It resumes when you return; model traffic still requires fresh evidence.",
   verified: "Model messages are encrypted on your device to a key verified through hardware attestation.",
-  outdated: "The provider’s TEE is missing security updates. Generation is paused until you accept this warning or choose another provider.",
-  degraded: "You accepted this provider’s outdated TEE until Axiom restarts. Messages are still encrypted and authenticated, but the environment is missing security updates and may be vulnerable.",
   verifying: "Checking the model’s confidential-computing evidence on this device.",
   failed: "Verification failed. Model traffic requires valid evidence before it can be sent.",
-  expired: "This cached report has expired. Axiom requires fresh evidence for new model requests. Ongoing replies still require authentication against the evidence accepted when each request started.",
+  expired: "Report expired. Refresh to check again.",
   unavailable: "A current verification report isn’t available. Refresh to inspect the model’s proof.",
   unverified: "Check the model’s hardware evidence and encryption key before sending model messages.",
   development: "This development session has no production TEE proof.",
 };
-
-function VerifiedStatus() {
-  const id = useId();
-  const root = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    const dismissOutside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
-    };
-    const dismissEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-    };
-    document.addEventListener("pointerdown", dismissOutside);
-    document.addEventListener("keydown", dismissEscape, true);
-    return () => {
-      document.removeEventListener("pointerdown", dismissOutside);
-      document.removeEventListener("keydown", dismissEscape, true);
-    };
-  }, [open]);
-  return <div ref={root} className="relative flex items-center gap-1.5"
-    onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setOpen(false); }}
-    onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
-    <p role="status" className="text-[15px] font-medium">{proofLabels.verified}</p>
-    <button type="button" aria-label="What does TEE verified mean?" aria-describedby={open ? id : undefined}
-      onMouseEnter={() => setOpen(true)} onFocus={() => setOpen(true)} onClick={() => setOpen(true)}
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]">
-      <CircleHelp size={14} aria-hidden="true" />
-    </button>
-    <div id={id} role="tooltip" aria-hidden={!open}
-      className={`absolute left-0 top-full z-50 w-[340px] max-w-full pt-2 transition-[opacity,transform,visibility] duration-150 motion-reduce:transition-none ${open ? "visible translate-y-0 opacity-100" : "pointer-events-none invisible -translate-y-1 opacity-0"}`}>
-      <div className="glass-panel-solid shadow-glass-pop rounded-xl border border-[var(--color-border)] p-3.5 text-[12px] leading-[19px] text-[var(--color-text-secondary)]">
-        <p className="mb-1 font-medium text-[var(--color-text-primary)]">What does TEE verified mean?</p>
-        <p>A TEE (Trusted Execution Environment) is a protected space on the provider’s servers. Axiom checks security evidence from the server’s hardware before sending your encrypted messages there. This helps keep your messages private while the AI processes them.</p>
-      </div>
-    </div>
-  </div>;
-}
 
 function Disclosure({ title, value, children, verified = false }: {
   title: string; value?: string; children: ReactNode; verified?: boolean;
@@ -156,22 +113,18 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           className="-mr-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"><X size={16} /></button>
       </header>
       <div className="min-h-0 overflow-y-auto px-6 pb-5 sm:px-7">
-        <div className="-mx-3 mb-4">
-          <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
-        </div>
-        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Cached attestation report</h3>
         <div className="flex items-center gap-3">
           <div className={`shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] ${verified ? "text-[var(--color-success)]" : state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]"}`}>
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}
           </div>
-          <div className="min-w-0 flex-1">
-            {verified ? <VerifiedStatus /> : <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>}
+          <div className="min-w-0">
+            <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>
             <p className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]"><span>{model?.shortLabel ?? modelId}</span>{providerLabel ? <span>{providerLabel}</span> : null}</p>
           </div>
         </div>
         <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{explanation[state]}</p>
         {evidence ? <p className="mb-4 text-[11.5px] text-[var(--color-text-tertiary)]">
-          {verified || state === "degraded" ? "Report checked locally" : "Previous report checked"}{" "}
+          {verified ? "Report checked locally" : "Previous report checked"}{" "}
           <time dateTime={new Date(evidence.verifiedAtUnixSeconds * 1000).toISOString()} title={new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}>{verificationAge(evidence.verifiedAtUnixSeconds, now)}</time>
         </p> : null}
         {evidence ? <div className="-mx-3">
@@ -182,6 +135,9 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
             {group.title === "Freshness" ? <p className="mt-2">{evidence.hardExpiresAtUnixSeconds * 1000 <= now ? "Expired" : "Expires"} {new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</p> : null}
           </Disclosure>)}
         </div> : <p className="mb-3 mt-4 rounded-[11px] bg-[var(--wash-row)] px-3 py-3 text-[12px] text-[var(--color-text-tertiary)]">{state === "verifying" ? "The report will appear when verification finishes." : "No report available for this model."}</p>}
+        <div className="-mx-3 mt-1">
+          <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
+        </div>
         {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3">
           <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] [&::-webkit-details-marker]:hidden">
             <FileCode2 size={14} aria-hidden="true" /><span className="flex-1">Technical details</span><ChevronRight size={13} className="transition-transform group-open/technical:rotate-90 motion-reduce:transition-none" aria-hidden="true" />

@@ -60,138 +60,6 @@ fn routed_store() -> (tempfile::TempDir, SessionStore) {
 }
 
 #[test]
-fn title_generation_survives_activity_but_never_overwrites_a_manual_rename() {
-    let store = SessionStore::in_memory().unwrap();
-    let id = SessionId::new();
-    create(&store, &id);
-    let generation = store
-        .begin_title_generation(&id, "First prompt")
-        .unwrap()
-        .unwrap();
-    assert!(
-        store
-            .begin_title_generation(&id, "Duplicate")
-            .unwrap()
-            .is_none()
-    );
-    store
-        .record_request_usage(
-            &id,
-            &axiom_inference::RequestUsage {
-                request_id: "title-request".into(),
-                purpose: axiom_inference::InvocationPurpose::Title,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(
-        store
-            .finish_title_generation(&id, &generation, Some("Generated title"))
-            .unwrap()
-    );
-    assert_eq!(
-        store.thread_summary(&id).unwrap().title.as_deref(),
-        Some("Generated title")
-    );
-    assert!(
-        !store
-            .finish_title_generation(&id, &generation, Some("Duplicate result"))
-            .unwrap()
-    );
-
-    for manual in ["First prompt", "My custom title"] {
-        let id = SessionId::new();
-        create(&store, &id);
-        let generation = store
-            .begin_title_generation(&id, "First prompt")
-            .unwrap()
-            .unwrap();
-        store.rename(&id, manual).unwrap();
-        assert!(!store.title_generation_pending(&id, &generation).unwrap());
-        assert!(
-            !store
-                .finish_title_generation(&id, &generation, Some("Late result"))
-                .unwrap()
-        );
-        assert_eq!(
-            store.thread_summary(&id).unwrap().title.as_deref(),
-            Some(manual)
-        );
-    }
-}
-
-#[test]
-fn title_generation_is_account_bound_and_cannot_recreate_a_deleted_thread() {
-    let (_root, store) = routed_store();
-    store.activate_account("account-a").unwrap();
-    let id = SessionId::new();
-    create(&store, &id);
-    let bound = store.bind_active_account().unwrap();
-    let generation = bound
-        .begin_title_generation(&id, "Fallback")
-        .unwrap()
-        .unwrap();
-    store.activate_account("account-b").unwrap();
-    assert!(
-        bound
-            .finish_title_generation(&id, &generation, Some("Late title"))
-            .is_err()
-    );
-    store.activate_account("account-a").unwrap();
-    assert_eq!(
-        store.thread_summary(&id).unwrap().title.as_deref(),
-        Some("Fallback")
-    );
-    store.delete_sessions(std::slice::from_ref(&id)).unwrap();
-    assert!(
-        !store
-            .finish_title_generation(&id, &generation, Some("Late title"))
-            .unwrap()
-    );
-    assert!(store.thread_summary(&id).is_err());
-}
-
-#[test]
-fn version_two_store_upgrades_preserving_titles_and_history() {
-    let root = tempdir().unwrap();
-    let path = root.path().join("history.sqlite3");
-    let store = SessionStore::open(&path).unwrap();
-    let id = SessionId::new();
-    create(&store, &id);
-    store.rename(&id, "Existing name").unwrap();
-    let history = store.load(&id).unwrap();
-    // Reproduce a schema-2 database with its original data, then reopen it.
-    store
-        .lock()
-        .unwrap()
-        .execute_batch(
-            "ALTER TABLE threads DROP COLUMN title_generation_id; PRAGMA user_version=2;",
-        )
-        .unwrap();
-    drop(store);
-    let upgraded = SessionStore::open(&path).unwrap();
-    assert_eq!(
-        upgraded.thread_summary(&id).unwrap().title.as_deref(),
-        Some("Existing name")
-    );
-    assert_eq!(upgraded.load(&id).unwrap().len(), history.len());
-    assert!(
-        upgraded
-            .begin_title_generation(&id, "Replacement")
-            .unwrap()
-            .is_none()
-    );
-    let fresh = SessionId::new();
-    create(&upgraded, &fresh);
-    assert!(
-        upgraded
-            .begin_title_generation(&fresh, "Fresh prompt")
-            .unwrap()
-            .is_some()
-    );
-}
-
-#[test]
 fn request_accounting_recovery_is_idempotent_account_scoped_and_never_verifies() {
     use axiom_inference::{InvocationState, RequestUsage, UsageCompleteness};
     let (_root, store) = routed_store();
@@ -1939,7 +1807,7 @@ fn version_one_store_upgrades_without_replacing_existing_history() {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, SCHEMA_VERSION);
+    assert_eq!(version, 2);
     drop(connection);
     assert!(!store.load(&id).unwrap().is_empty());
 }

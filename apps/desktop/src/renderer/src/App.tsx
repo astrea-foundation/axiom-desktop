@@ -3,9 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
 import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
-import { DismissibleNotice } from "./components/DismissibleNotice";
 import { MessageQueue } from "./components/MessageQueue";
 import { OverflowTitle } from "./components/OverflowTitle";
+import { PreparingThreadView } from "./components/PreparingThreadView";
 import { ProxyView } from "./components/ProxyView";
 import { RenameDialog } from "./components/RenameDialog";
 import type { SettingsCategory } from "./components/SettingsPanel";
@@ -20,7 +20,6 @@ import { WindowControls } from "./components/WindowControls";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import { useDesktopUpdates } from "./useDesktopUpdates";
-import { useChatFileDrop } from "./useChatFileDrop";
 
 import { useConversationNavigation } from "./useConversationNavigation";
 import { useConversations } from "./useConversations";
@@ -43,7 +42,7 @@ export function App() {
   const accountScreenReturnFocus = useRef<HTMLElement | null>(null);
   const [proxyInspecting, setProxyInspecting] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
-  const { agentState, errorRevision } = useDesktopState(setUiError);
+  const { agentState } = useDesktopState(setUiError);
   const navigation = useConversationNavigation();
   const { surface, setSurface, activeThreadId, cancelThreadPreparation } = navigation;
   const catalog = useModelCatalog(agentState, navigation, setUiError);
@@ -57,17 +56,6 @@ export function App() {
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
     ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread,
     messageQueue, threadLoads } = conversations;
-  const preparation = threadPreparation?.accountId === billingAccountId
-    && threadPreparation?.runtimeId === agentState.runtimeInstanceId ? threadPreparation : null;
-  const errorNotice = uiError ? { source: "ui", text: uiError }
-    : webAccess.error ? { source: "web", text: webAccess.error }
-    : agentState.error ? { source: "agent", text: agentState.error }
-    : modelCatalogError ? { source: "catalog", text: modelCatalogError } : null;
-  const fileDrop = useChatFileDrop(
-    !accountScreenOpen && !preparation && (surface === "welcome" || (surface === "thread" && !!activeSession)) && !attachmentDraft.attachmentsBusy,
-    attachmentDraft.attachmentScope + surface,
-    (files) => void attachmentDraft.addFiles(files),
-  );
 
   const showProxy = useCallback(() => {
     cancelThreadPreparation();
@@ -223,10 +211,7 @@ export function App() {
       >
         <div className="stage-shadow pointer-events-none absolute inset-0 rounded-[22px]" aria-hidden="true" />
         <div className="stage-ring pointer-events-none absolute inset-0" aria-hidden="true" />
-        <section data-chat-drop-zone {...fileDrop.handlers} className="stage-card absolute inset-px flex flex-col overflow-hidden rounded-[21px] bg-[var(--surface-stage)]">
-          {fileDrop.dragging ? <div data-file-drop-overlay className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-[16px] border-2 border-dashed border-[var(--color-cherry)] bg-[var(--surface-stage)]/90">
-            <div className="rounded-xl bg-[var(--surface-float)] px-6 py-4 text-center text-[15px] font-medium text-[var(--color-text-primary)]">Drop files to attach</div>
-          </div> : null}
+        <section className="stage-card absolute inset-px flex flex-col overflow-hidden rounded-[21px] bg-[var(--surface-stage)]">
           <header
             className={[
               "drag-region absolute left-0 top-0 z-30 flex h-11 items-center bg-transparent",
@@ -261,24 +246,22 @@ export function App() {
             </div>
           ) : null}
 
-          {errorNotice ? (
-            <DismissibleNotice key={JSON.stringify([billingAccountId, agentState.runtimeInstanceId, errorNotice.source, errorNotice.text, errorNotice.source === "agent" ? errorRevision : 0])}
-              onDismiss={errorNotice.source === "ui" ? () => setUiError(null) : undefined}
-              className={`shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 rounded-xl bg-[var(--surface-float)] px-4 py-2 text-[12.5px] ${errorNotice.source === "catalog" ? "text-[var(--color-text-secondary)]" : "text-[var(--color-danger-strong)]"} backdrop-blur`}>
-              <span className="min-w-0 break-words">{errorNotice.text}</span>
-            </DismissibleNotice>
+          {uiError || webAccess.error || agentState.error ? (
+            <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-danger-strong)] backdrop-blur">{uiError ?? webAccess.error ?? agentState.error}</div>
+          ) : modelCatalogError ? (
+            <div role="alert" className="shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 truncate rounded-full bg-[var(--surface-float)] px-4 py-2 text-[12.5px] text-[var(--color-text-secondary)] backdrop-blur">{modelCatalogError}</div>
           ) : null}
 
           <div className="relative min-h-0 flex-1">
-            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && (preparation || activeSession) ? (
+            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && threadPreparation && threadPreparation.accountId === billingAccountId && threadPreparation.runtimeId === agentState.runtimeInstanceId ? (
+              <PreparingThreadView id={threadPreparation.id} text={threadPreparation.text} />
+            ) : surface === "thread" && activeSession ? (
               <ChatView
-                preparation={preparation}
-                attachmentPreviews={conversations.attachmentPreviews}
-                onRevise={!isStreaming && agentState.account?.state === "valid" ? reviseMessage : undefined}
+                onRevise={!activeSession?.running && agentState.account?.state === "valid" ? reviseMessage : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}
-                  canSend={agentState.connected && !!billingAccountId && !messageQueue.isStopping(activeThreadId!)}
+                  canSteer={agentState.connected && (!activeSession.running || !!activeSession.activeTurnId)}
                   onSendNow={(id) => messageQueue?.sendNow(id)} onRemove={(id) => messageQueue?.remove(id)} />}
                 webEnabled={webAccess.enabled}
                 webDisabled={!billingAccountId || !agentState.connected}
@@ -305,7 +288,6 @@ export function App() {
                   if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
                   await window.axiomDesktop.agent.verifySecurity(activeThreadId);
                 }}
-                onAcceptOutdatedTee={() => conversations.acceptOutdatedTee(modelId)}
               />
             ) : surface === "thread" ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--color-text-tertiary)]">
@@ -323,7 +305,7 @@ export function App() {
               </div>
             ) : (
               <WelcomeView
-                savedMessages={<MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSend={agentState.connected && !draft.trim()}
+                savedMessages={<MessageQueue messages={messageQueue.preparations(billingAccountId)} paused canSteer={agentState.connected && !draft.trim()}
                   onSendNow={(id) => void reviewPreparation(id)} onRemove={(id) => messageQueue?.remove(id)} />}
                 agentControl={agentControl}
                 webEnabled={webAccess.enabled}

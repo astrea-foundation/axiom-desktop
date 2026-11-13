@@ -20,16 +20,8 @@ Sidebar recency follows the latest **user submission** (`lastUserMessageAt`), so
 concurrent assistant streams do not continually reorder the list. `lastMessageAt`
 remains message activity metadata. Folder ordering derives from its member threads.
 
-New threads immediately show a short label from the first prompt. One background
-request to the selected model replaces that label with a generated title. This
-uses the same attested provider-E2EE path as chat and records its normal model
-charge as title usage, separately from conversation context usage. Reasoning is
-disabled when supported; otherwise the request uses the lowest supported effort
-and allows room for reasoning. Title requests use only bounded first-prompt text,
-without tools or attachments, and time out after 60 seconds. Failed or empty
-results retain the local label. Manual renames always win, and existing named
-threads are not regenerated. Titles update in the sidebar even after the answer
-finishes. Drafts are scoped to account/thread, with a separate new-chat
+Titles are generated locally from the first prompt without a separate model
+request or charge. Drafts are scoped to account/thread, with a separate new-chat
 draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
@@ -37,9 +29,7 @@ identity, so navigating away does not silently discard or redirect it.
 ## Balance and gift credit
 
 Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. The reusable address and QR code appear once; automatic and manual balance
-refreshes update that panel in place without clearing an entered gift code.
-**Redeem a gift code** adds its USD value to the signed-in account. Code
+Zcash. **Redeem a gift code** adds its USD value to the signed-in account. Code
 entry is masked and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
 be retried with the same code without duplicate credit; a code already redeemed
@@ -71,36 +61,21 @@ See [process boundaries](threat-model.md#local-tools-and-processes).
 
 Web independently controls Axiom's search and page-fetch tools. Enabling it
 shows a privacy disclosure: queries and fetched URLs are shared with external
-services and are not provider E2EE. The warning explains that Web searches run
-outside Axiom’s verified private environment while model conversations remain
-end-to-end encrypted; **Yes, I understand** confirms enabling Web. Each existing
-thread remembers its explicit choice locally; warning acknowledgement is a
-separate per-account preference.
+services and are not provider E2EE. Each existing thread remembers its explicit
+choice locally; warning acknowledgement is a separate per-account preference.
 Every prompt passes an explicit boolean, and the native runtime rejects Web
 execution without consent. Changing Web access requires the active response to stop.
 On platforms without process network isolation, turning Web off does not disable
 networking by approved local programs.
 
-## Sending and queues
+## Sending, queues and steering
 
-The first message appears immediately while its thread is created and configured.
-The composer stays visible at the bottom during setup, with input and controls
-temporarily disabled until the thread is ready. It becomes usable as soon as the
-message is dispatched, without waiting for the provider's reply.
-
-Enter sends when idle. A dispatched message appears in the conversation with
-**Sending…** until the native transcript acknowledges it, including while
-attestation checks finish. It is not displayed as a queued follow-up. Stop is
-available during this wait, and another message waits in the FIFO queue until
-the active request finishes. This applies to existing chats, first messages,
-retries and queued messages when their turn arrives.
-During a response, Enter adds input to the same FIFO queue.
-**Send now** stops the current reply, waits for its cleanup, then sends the
-selected message as a new turn. Its text, attachments, Web choice and Agent
-settings are preserved. Other queued messages retain their order. The cancel
-button removes a queued message, including while Send now is stopping a reply.
-Cancelling that pending send leaves the remaining queue paused. Once a message
-has been sent, use Stop on its reply.
+Enter sends when idle. During a response, it adds input to a FIFO queue.
+**Send now** steers the active turn at the next safe model/tool/compaction
+boundary. It does not cancel an in-flight provider stream or repeat completed
+tools; unstarted tool calls are explicitly skipped. Model and Web authority
+remain those of the active turn. Steering remains bounded to 64 KiB; larger
+messages and attachments wait for a new turn without dropping any content.
 
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
@@ -112,18 +87,15 @@ queue delivery. Restored or uncertain submissions require review; disconnect,
 restart or account changes never justify silently resending them. A fresh prompt
 after Stop can start normally when no older queued message needs review.
 
-Follow-up messages include the available text from an incomplete reply, along
-with any completed tool results. The generator receives a notice that the earlier
-turn did not finish; retaining this context does not mark the reply verified or
-assume unfinished actions succeeded. Partial reasoning is retained and sent only
-when the selected model supports reasoning replay. This applies after Stop,
-stream failures and runtime limits, including when the conversation is reopened.
+Stopping during reasoning keeps the unfinished reasoning visible in the transcript.
+When preparing a follow-up or reopening the chat, the native client excludes
+reasoning-only assistant entries from model history: they have no answer or tool
+call to replay. Actual partial answers and completed tool results remain as
+interrupted context. This also applies to failed or disconnected turns.
 
 ## Images and files
 
-Use Attach, paste an image, or drop files anywhere in the main chat panel,
-including its empty space and transcript. A drop indicator marks the panel;
-the sidebar and Proxy view do not attach files. Image and file icons
+Use Attach, paste an image, or drop files onto the composer. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
 the accessible label for their meaning. See [catalog discovery](provider-catalogs.md)
 for refreshes and unavailable models.
@@ -143,13 +115,7 @@ truncated. Audio/video and remote URLs are unsupported.
 
 Original bytes and filenames reach the provider inside its authenticated E2EE
 request. Attachments remain in account-local history, survive edit/regeneration,
-and appear as wrapping cards in the draft, queue, and transcript. Image cards
-show local previews. Click an image card to view the full image in a larger
-overlay; close it with Escape, the close button, or a click outside the viewer.
-Sending retains these cards through thread setup and native
-acknowledgement, without waiting for the provider or reloading the original
-files. Saved image previews load from local history as they come into view.
-Compaction sends original image/file
+and appear by filename in the transcript. Compaction sends original image/file
 parts to a capable model and retains a textual successor summary; it never
 inserts encoded file bytes as message text. Older extracted-text attachments are
 readable in saved history but cannot be submitted as new uploads.
@@ -191,27 +157,14 @@ subsets, settlement state, elapsed time and other thread charges. Tab reaches th
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
 unavailable usage and reports from a different model remain visible above it.
 
-The privacy badge summarizes the latest reply: **Verifying reply** with a green
-shield while streaming, **Reply verified** with a checkmark only after native authenticated completion,
-or **Reply incomplete** / **Reply check failed** when completion is absent
-or fails. A newer turn cannot inherit an older reply's verification. Expiry or
-renewal of the cached attestation report does not change a reply's verification.
-Before any reply, the badge summarizes the report instead; an expired report
-shows **Report needs refresh**.
-
-Click the badge to inspect **Latest reply verification** separately from the
-**Cached attestation report**. The question-mark button beside **TEE verified**
-in the report explains TEE protection and the check of the
-server’s hardware in plain language. Hover, focus or click it to show the help;
-Escape dismisses the help before closing the report. Refresh requests
+Click the TEE badge for the last local verification report; Refresh requests
 fresh evidence when allowed. While active and connected, the badge automatically
 renews within 60 seconds of expiry, between replies. Checks are deduplicated and retries back off
 from 30 seconds to at most five minutes; even a successful short lease is paced.
 After 30 minutes without user interaction or a running reply, it shows neutral
 `Idle` and stops automatic checks. Keyboard/pointer activity or returning to the
 window resumes verification. Background checks and network events do not reset
-inactivity. Reply verification remains available in the inspector while idle.
-A failed or blocked refresh cannot extend a report or mark it verified;
+inactivity. A failed or blocked refresh cannot extend a report or mark it verified;
 native inference always enforces fresh proof independently of this display.
 Reports show hardware, encryption-key, freshness and source-provenance checks
 for the selected provider. Tinfoil reports router
@@ -219,14 +172,6 @@ verification, and NEAR v3 identifies an attested
 worker TLS key rather than claiming the client observed the backend's socket.
 Provisional streamed text becomes verified only after authenticated completion;
 cancelled/incomplete output retains that status even if billing later settles.
-Unexpected stream endings show one short notice, with the technical reason under
-**Details**. A turn's error notice replaces the duplicate warning below its reply.
-Stopping a reply yourself does not show an error banner. These presentation
-choices do not change completion verification or mark partial replies successful.
-Reply notices and the top error banners have an **×** button to dismiss them.
-Dismissal hides the current notice in the open view; a new or changed error is
-shown again. It does not delete conversation records or change a failed reply's
-status.
 See [security](threat-model.md).
 
 ## Account credit and usage
@@ -240,15 +185,9 @@ Testnet or inconsistent valuation responses are rejected. Only mainnet deposits
 are supported; invoice checkout is removed.
 
 Settings → Usage shows posted account-ledger inference charges, including other
-clients/devices. **This week**, **This month** and **All time** tabs update the total,
-pie chart and model breakdown together; All time is the initial selection. Weeks
-start Monday and months start on the first, using the device's IANA timezone and
-calendar boundaries (including DST). Charges count when posted to the ledger.
-Top-ups, pending holds and unbilled estimates are excluded. Empty periods show
-zero spending; failed loads show an error with retry. Arrow keys, Home and End
-switch the period tabs. Account/period changes discard stale responses, and a
-backend or sidecar that returns a different period fails without showing mislabeled
-totals. Inconsistent model attribution remains an explicit error.
+clients/devices. Top-ups, pending holds and unbilled estimates are excluded.
+Unknown historical model attribution stays in Other models. Account changes
+invalidate stale requests and projections.
 
 Settings → API keys lists, creates and revokes named automation keys and shows
 usage attribution. Creation can require recent sign-in; the newly created key
@@ -260,26 +199,15 @@ Desktop login credential.
 
 Tool activity appears at its execution point between assistant segments, with
 stable IDs for live/snapshot reconciliation. Markdown, code and KaTeX render
-locally with bundled fonts. Code blocks use bundled syntax grammars and light/dark
-token colours; language-labelled fences and common unlabelled code are highlighted.
-Inline code, explicit text/log/output fences and unknown languages remain literal.
-Highlighting preserves all whitespace and never executes code or loads remote assets.
-To keep streamed replies responsive, blocks over 50,000 characters (10,000 for
-automatic language detection), or beyond a 100,000-character per-message highlighting
-budget, remain plain text without truncation. Scrolling up or selecting transcript content pauses
+locally with bundled fonts. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
-Enabled Web and Agent controls, Agent selection indicators, and the composer's
-Send/Stop button use Axiom signal orange (`#FF7653`) in light mode. Dark mode uses
-neutral white/gray selections and buttons. Filled controls use dark labels and
-icons, and disabled controls retain their muted state.
 
 The Proxy screen starts the optional authenticated local integration explicitly.
 See [Local proxy](proxy.md) for its separate credential and lifecycle. Updates
-use the signed release feed shared with AxiomCLI. **Update and restart** downloads,
-verifies, waits for active chats/proxy work, commits drafts and applies the owning
-installer before reopening. Cancel is available before installation starts. Other
-installed CLI/proxy processes must close before replacement; they are never killed.
-Desktop requires its CLI to report the exact same
+use one release feed with AxiomCLI and are downloaded and checked before user
+installation. The Updates panel shows the installed version, with platform,
+architecture and package format under **Installation details**. Quit Axiom and
+AxiomCLI before installing. Desktop requires its CLI to report the exact same
 product version at ACP initialization; a mismatch blocks bootstrap with
 reinstall/rebuild guidance.
 See
@@ -293,16 +221,3 @@ Source and regression evidence:
 [ordering](../apps/desktop/tests/thread-ordering.test.ts),
 [context reports](../apps/desktop/tests/context-usage.test.ts), and
 [deposit validation](../apps/axiomcli/src/billing.rs).
-
-## Outdated provider security updates
-
-A provider with Intel TDX `OutOfDate` evidence shows a yellow warning and
-**Continue generation**. Accepting remembers the choice for that provider until
-Axiom restarts, rechecks its evidence, and retries the blocked message through
-the normal local edit/regenerate flow, preserving attachments. Switching model,
-thread, account or runtime while the check runs prevents an unintended retry.
-A yellow **TEE updates needed** badge remains after acceptance; messages are
-still encrypted and replies authenticated, but the missing security updates
-may leave the environment vulnerable. Other attestation failures cannot be
-accepted. The backend must also support the explicit consent parameter; an
-older backend continues blocking the request.

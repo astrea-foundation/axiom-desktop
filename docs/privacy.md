@@ -17,22 +17,16 @@ Provider-specific verification and its limits are documented in
 Authenticated streaming deltas can appear provisionally. A missing or invalid
 terminal authentication fails the response; partial output may remain locally
 as incomplete history. Later accounting reconciliation cannot upgrade it to a
-verified reply. NEAR uses receipts; Tinfoil uses request-bound AEAD and
+verified reply. NEAR use receipts; Tinfoil uses request-bound AEAD and
 an encrypted authenticated terminal marker, without claiming a signed receipt.
-
-Cached attestation reports and reply authentication have separate lifetimes.
-Report expiry prevents reuse of stale evidence for new requests; it does not
-by itself fail an ongoing reply or revoke a reply's authenticated completion.
-Each ongoing response still requires its protocol's authentication against the
-environment and request accepted at its start. See the [Desktop privacy badge](desktop.md#usage-and-verification)
-for the separate reply and report displays.
 
 ## Web tools and local integrations
 
 Web starts off for a new conversation. Opting in permits search queries and URL
-fetches to leave the device outside provider E2EE. Hosted search sends
+fetches to leave the device outside provider E2EE. Default hosted search sends
 only a bounded query to Axiom's authenticated search endpoint and Decodo. The
-hosted contract prohibits retaining/logging query or result text. Page fetching
+hosted contract prohibits retaining/logging query or result text. Explicit
+SearXNG configuration sends searches to that service instead. Page fetching
 runs in the native client with public-address/redirect checks. Results are
 locally encrypted when included in later inference.
 
@@ -54,12 +48,7 @@ Installed Desktop and TUI processes request the public
 `axiomcli update` checks on demand. These are ordinary HTTPS metadata requests,
 not inference. They contain no account headers, cookies, API keys, conversation
 content, or installed-version query parameters. The website/CDN still observes
-normal network metadata such as the source IP. Update notices remain UI-only. Selecting Update downloads the signed installer
-from the CDN with the same anonymous transport. Private local staging contains
-installer bytes, signed release metadata, installation paths and a restart
-workspace/session identifier; it contains no credentials or message text. The
-helper verifies the signature and bytes before executing the installer. Public
-GitHub links offer identical installers without embedding GitHub credentials.
+normal network metadata such as the source IP. Update notices remain UI-only.
 
 ## Local data and credentials
 
