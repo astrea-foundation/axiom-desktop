@@ -94,7 +94,7 @@ export function VaultScreen(props: VaultScreenProps) {
   return <div className="flex h-full min-h-0 flex-col overflow-y-auto px-5 py-8">
     <section className="glass-panel-solid shadow-glass-card m-auto w-full max-w-[440px] shrink-0 rounded-[22px] border border-[var(--color-border)] p-6 sm:p-8" aria-labelledby="vault-title" aria-busy={busy}>
       <LockKeyhole size={24} className="mb-5 text-[var(--color-cherry)]" aria-hidden="true" />
-      {newPassword && <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">Step {code ? '2' : '1'} of 2 · {code ? 'Recovery code' : 'Password'}</p>}
+      {newPassword && <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">Step {code ? '2' : '1'} of 2: {code ? 'Recovery code' : 'Password'}</p>}
       <h1 id="vault-title" className="text-[23px] font-medium tracking-tight">{title}</h1>
       <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">Signed in as {props.accountLabel}</p>
       {!code && description && <p className="mt-4 text-[13px] leading-5 text-[var(--color-text-secondary)]">{description}</p>}
