@@ -1630,11 +1630,17 @@ impl StreamState {
                     .map(|value| decrypt(identity, value))
                     .transpose()?,
             };
+            let first = self.tool_calls.is_empty();
             self.tool_calls
                 .push(delta.clone())
                 .map_err(|_| invalid("relay tool-call fragments are invalid"))?;
             self.verified_events
                 .push(ProviderEvent::ToolCallDelta(delta));
+            if first {
+                // Progress only: names and arguments stay gated on the signed
+                // transcript like every other tool-call delta.
+                send(sink, ProviderEvent::ToolCallStarted, cancellation).await?;
+            }
         }
         Ok(())
     }
@@ -2911,6 +2917,12 @@ mod tests {
         assert!(matches!(
             output.try_recv(),
             Ok(ProviderEvent::TextDelta(value)) if value == "working "
+        ));
+        // Only content-free progress may precede verification; names and
+        // arguments stay in the verified events below.
+        assert!(matches!(
+            output.try_recv(),
+            Ok(ProviderEvent::ToolCallStarted)
         ));
         assert!(output.try_recv().is_err(), "tools must await verification");
         state

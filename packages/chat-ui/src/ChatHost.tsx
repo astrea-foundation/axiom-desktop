@@ -2,10 +2,20 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import type { PromptAttachment, PermissionOutcome, ElicitationOutcome, UsageSummary, UsageSummaryRequest } from '@axiom/chat-core/viewTypes';
 
+export interface ConversationImage {
+  imageId: string;
+  origin: string;
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
 export interface ChatHost {
   chrome?: { isMac: boolean; fullScreen: boolean; trafficLightInsetClass: string };
   getAttachments?(threadId: string, userItemId: string): Promise<{ attachments: PromptAttachment[] }>;
   regenerateImage?(threadId: string, callId: string): Promise<{ callId: string }>;
+  /** Resolve a conversation-local `img_…` ID to the exact image that image tools receive. */
+  resolveImage?(threadId: string, imageId: string): Promise<ConversationImage>;
   loadGeneratedImage?(assetId: string): Promise<{ imageUrl: string; width: number; height: number }>;
   releaseGeneratedImage?(assetId: string): void;
   usageSummary?(accountId: string, request: Pick<UsageSummaryRequest, 'period' | 'timezone'>): Promise<{ summary: UsageSummary }>;
