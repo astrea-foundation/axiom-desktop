@@ -11,6 +11,9 @@ Weekly balances display whole credits while usage retains fractions; a positive
 remainder below one displays as **Less than 1**. Money uses fixed precision of
 100,000,000 units per dollar; a positive balance below one cent displays as
 **Less than $0.01**. Held amounts and usage retain exact fractions.
+While a request is running, its reservation can reduce available dollars below
+the posted balance. Billing refreshes and gift redemption still report the valid
+available balance during these holds.
 Eligible trial credits are separate. The spending order is weekly, eligible trial,
 then purchased dollars when fallback is enabled. The two balances are never summed.
 

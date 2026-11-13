@@ -3928,6 +3928,14 @@
         "plan_key": {
           "type": "string"
         },
+        "amount_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "weekly_units": {
+          "type": "string"
+        },
         "state": {
           "type": "string"
         },
@@ -3951,6 +3959,8 @@
       "required": [
         "id",
         "plan_key",
+        "amount_cents",
+        "weekly_units",
         "state",
         "cancel_at_period_end"
       ]

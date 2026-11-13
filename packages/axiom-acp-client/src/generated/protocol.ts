@@ -1172,6 +1172,8 @@ export interface WeeklyCredits {
 export interface CreditSubscription {
   id: string;
   plan_key: string;
+  amount_cents: number;
+  weekly_units: string;
   state: string;
   paid_through_at?: string | null;
   cancel_at_period_end: boolean;

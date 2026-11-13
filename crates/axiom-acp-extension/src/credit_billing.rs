@@ -53,6 +53,8 @@ pub struct WeeklyCredits {
 pub struct CreditSubscription {
     pub id: String,
     pub plan_key: String,
+    pub amount_cents: u64,
+    pub weekly_units: String,
     pub state: String,
     pub paid_through_at: Option<String>,
     pub cancel_at_period_end: bool,
