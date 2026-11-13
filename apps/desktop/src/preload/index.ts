@@ -50,6 +50,7 @@ const api: DesktopApi = {
     };
     ipcRenderer.on("local-state:prepare", prepare);
     ipcRenderer.on("local-state:release", release);
+    ipcRenderer.send("local-state:ready");
     return () => {
       ipcRenderer.removeListener("local-state:prepare", prepare);
       ipcRenderer.removeListener("local-state:release", release);

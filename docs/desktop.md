@@ -43,6 +43,12 @@ fresh sign-in. This also removes local data shared with AxiomCLI. Online account
 balances, hosted API keys and files outside Axiom are kept. Close other CLI
 windows first. See [recovery and deletion scope](troubleshooting.md#completely-reset-local-data).
 
+The Account pane keeps the avatar, name, email and current status together in a
+compact column. Linked sign-in methods have their own row. **Manage account**
+opens the hosted account app; **Sign out** stays available as a separate action.
+Factory reset is below the identity card. Settings tabs keep keyboard focus
+inside their selected shape so the scrolling navigation does not clip it.
+
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Rename and Delete use in-app dialogs; batch deletion is confirmed against
 the exact native selection. Deleting a conversation does not remove workspace files.
@@ -227,6 +233,11 @@ Normal window close, quit and explicit account changes wait for pending native
 draft/outbox writes. A failed save keeps Axiom open for retry. Text edits are
 debounced; an abrupt process kill or raw page reload before acknowledgement can
 lose an uncommitted edit.
+
+A new window whose application never mounted has no in-memory draft writer and
+can close immediately. Once the app registers its writer, it must acknowledge
+saves even after a renderer failure or reload; losing the renderer cannot bypass
+that protection.
 
 ## Images and files
 

@@ -11,7 +11,7 @@ import { checkFactoryResetSupport, factoryResetError, factoryResetRelaunch } fro
 
 const binary = process.env.AXIOM_RESET_TEST_BINARY;
 
-test("real Electron exits, launches the native cleanup helper, then reopens with a visible failure result", {
+for (const development of [false, true]) test(`real Electron exits and native cleanup reopens ${development ? "the development launcher" : "the app"} with its failure result`, {
   // Opt in: this starts a separate, windowless Electron with a temporary
   // profile. An invalid deletion path forces failure BEFORE credentials/files
   // are accessed. Never run a real factory reset against the developer's data.
@@ -25,14 +25,15 @@ test("real Electron exits, launches the native cleanup helper, then reopens with
   const resultPath = join(root, "result.json");
   const userData = join(root, "unowned-profile");
   await mkdir(userData);
-  const relaunch = factoryResetRelaunch({ sidecar: resolve(binary!), executable: process.execPath,
-    argv: [electron, restarted, root], userData, profile: "system" });
   await writeFile(restarted, `const fs = require('node:fs'), path = require('node:path');
-const root = process.argv[2];
+const root = process.argv[${development ? 4 : 2}];
 const pid = Number(fs.readFileSync(path.join(root, 'parent'), 'utf8'));
 let parentAlive = true; try { process.kill(pid, 0); } catch { parentAlive = false; }
-fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({parentAlive, argv: process.argv}));
+fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({parentAlive, argv: process.argv, nodeLauncher: !process.versions.electron}));
 `);
+  const relaunch = factoryResetRelaunch({ sidecar: resolve(binary!), executable: development ? electron : process.execPath,
+    argv: [electron, restarted, root], userData, profile: "system", development,
+    developmentRestart: development ? JSON.stringify({executable: process.execPath, args: [restarted, "vite", "dev", root]}) : undefined });
   await writeFile(entry, `const {app} = require('electron'), fs = require('node:fs');
 app.setName('Axiom Factory Reset Test');
 app.setPath('userData', ${JSON.stringify(userData)});
@@ -57,6 +58,10 @@ app.whenReady().then(() => {
     assert.equal(existsSync(resultPath), true, `native cleanup did not reopen the fixture: ${diagnostics}`);
     const result = JSON.parse(await readFile(resultPath, "utf8"));
     assert.equal(result.parentAlive, false, "cleanup/restart must happen after Electron exits");
+    if (development) {
+      assert.equal(result.nodeLauncher, true, "development must restart Node and its UI server rather than bare Electron");
+      assert.deepEqual(result.argv.slice(2, 4), ["vite", "dev"]);
+    }
     assert.match(factoryResetError(result.argv) ?? "", /not a standard Axiom profile/);
     assert.equal(existsSync(userData), true, "validation failure must not delete the temporary profile");
   } finally {

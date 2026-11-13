@@ -80,6 +80,7 @@ const factoryReset = new FactoryResetController({
     const relaunch = factoryResetRelaunch({
       sidecar: executable, executable: process.env.APPIMAGE || app.getPath("exe"),
       argv: process.argv, userData: app.getPath("userData"),
+      development: Boolean(developmentRendererUrl()), developmentRestart: process.env.AXIOM_DESKTOP_DEV_RESTART,
       profile: IS_STAGING_PROFILE ? "staging" : LOCAL_PROFILE.userDataName ? "local" : "system",
       profileName: IS_STAGING_PROFILE ? process.env.AXIOM_DESKTOP_STAGING_PROFILE_NAME
         : LOCAL_PROFILE.userDataName ? process.env.AXIOM_DESKTOP_LOCAL_PROFILE_NAME : undefined,

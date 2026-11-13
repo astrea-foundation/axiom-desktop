@@ -271,6 +271,13 @@ button {
   border-radius: 8px;
 }
 
+/* Settings tabs live in a scrolling list that would clip an outset ring to
+   top and bottom bars; an inset ring follows the tab's own shape instead. */
+[role="tab"].settings-tab:focus-visible {
+  outline-offset: -2px;
+  border-radius: 9px;
+}
+
 textarea,
 input {
   font-family: inherit;

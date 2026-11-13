@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { accessSync, constants, statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { createChildEnvironment, DESKTOP_SIDECAR_INHERITED_ENV } from "@axiom/axiom-acp-client";
 
 export const FACTORY_RESET_CONFIRMATION = "RESET";
@@ -29,16 +31,37 @@ export function factoryResetRelaunch(options: {
   userData: string;
   profile: "system" | "staging" | "local";
   profileName?: string;
+  development?: boolean;
+  developmentRestart?: string;
 }): { execPath: string; args: string[] } {
+  let executable = options.executable;
+  let restartArgs = options.argv.slice(1).filter((arg) => !arg.startsWith(ERROR_ARGUMENT));
+  if (options.development) {
+    // electron-vite exits with Electron and takes the UI server with it.
+    // Reopening Electron alone would leave it pointing at that dead server.
+    try {
+      const launcher = JSON.parse(options.developmentRestart ?? "null");
+      if (!launcher || typeof launcher.executable !== "string" || !isAbsolute(launcher.executable)
+        || !Array.isArray(launcher.args) || launcher.args.length < 3 || launcher.args.length > 128
+        || !launcher.args.every((arg: unknown) => typeof arg === "string" && arg.length <= 8192)
+        || !isAbsolute(launcher.args[0]) || !["vite", "staging"].includes(launcher.args[1]) || launcher.args[2] !== "dev"
+        || !statSync(launcher.executable).isFile() || !statSync(launcher.args[0]).isFile()) throw new Error("Invalid launcher");
+      accessSync(launcher.executable, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+      accessSync(launcher.args[0], constants.R_OK);
+      executable = launcher.executable;
+      restartArgs = launcher.args;
+    } catch {
+      throw new Error("The development restart command is unavailable. Restart Axiom with pnpm desktop before resetting it.");
+    }
+  }
   // Electron starts this native helper only after the current process exits.
   // No Chromium session, SQLite database or credential writer remains open.
   return {
     execPath: options.sidecar,
     args: ["factory-reset", "--confirm", "--profile", options.profile,
       ...(options.profileName ? ["--profile-name", options.profileName] : []),
-      "--desktop-user-data", options.userData, "--restart-executable", options.executable,
-      ...options.argv.slice(1).filter((arg) => !arg.startsWith(ERROR_ARGUMENT))
-        .map((arg) => `--restart-arg=${arg}`)],
+      "--desktop-user-data", options.userData, "--restart-executable", executable,
+      ...restartArgs.map((arg) => `--restart-arg=${arg}`)],
   };
 }
 

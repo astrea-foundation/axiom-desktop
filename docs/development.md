@@ -20,6 +20,15 @@ selects the staging API/auth pair. `pnpm desktop:install` installs the Linux
 checkout launcher; it is a development convenience, not a release package.
 CLI alternatives are in [the CLI guide](cli.md).
 
+The development launcher records its Node executable and launch arguments for
+factory-reset recovery. After cleanup, reset starts that launcher so both Vite
+and Electron come back together. Reopening Electron by itself would retain a
+renderer URL whose server exited with the old app. Missing or invalid launcher
+metadata refuses reset before native processes stop; start again with
+`pnpm desktop` or `pnpm desktop:staging`. Preview and packaged builds reopen their
+built renderer directly. Native reset failures are forwarded to Electron without
+becoming Vite flags or persisting through a later successful reset.
+
 For Windows work, install the MSVC C++ Build Tools and Windows SDK in the test VM
 and use the same pinned Rust, Node.js and pnpm versions there. Build and test from
 `dev` inside the VM with the current app version. `pnpm desktop` runs the native
@@ -80,6 +89,21 @@ Broken-pipe fixtures close the child's read end on Unix and the parent's writabl
 pipe on Windows, where [libuv deliberately leaves descriptors 0-2 open](https://github.com/nodejs/node/blob/v22.23.2/deps/uv/src/win/fs.c#L633). Both
 paths assert request/notification rejection, safe permission-response shutdown,
 and child cleanup; they do not skip the error-handling assertions on Windows.
+
+For native reset/restart and draft-save acknowledgement regressions, build
+Desktop and the debug CLI, then opt into the separate hidden Electron fixtures:
+
+```sh
+AXIOM_RESET_TEST_BINARY="$PWD/target/debug/axiomcli" AXIOM_NATIVE_LIFECYCLE_TEST=1 \
+  pnpm --filter axiom-desktop exec tsx --test --test-concurrency=1 \
+  tests/native-reset-relaunch.test.ts tests/native-local-state.test.ts
+```
+
+These fixtures use temporary Electron profiles. Native cleanup receives an
+invalid deletion path and must reject it before accessing credentials or deleting
+files. The lifecycle fixture loads only a local test page, with no native
+sidecar. It checks never-mounted windows, real renderer acknowledgements, failed
+saves, and a lost save handler after reload.
 The failing-request fixture has a five-second RPC deadline instead of retaining
 the normal two-minute timeout after a test has already failed.
 

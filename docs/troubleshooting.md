@@ -88,6 +88,15 @@ The control works while signed out or disconnected. Close other AxiomCLI windows
 first. See [configuration](configuration.md#paths-and-local-state) for the full
 deletion scope and the offline `axiomcli factory-reset --confirm` command.
 
+In a source development build, reset restarts the development launcher as well
+as Electron. If an older build reopens to a blank window, restart `pnpm desktop`
+to restore its local UI server. A later **Your drafts could not be saved** dialog
+can be the close request timing out because that blank window never loaded its
+save handler. That dialog alone does not establish a locked credential store or
+whether cleanup completed. Native cleanup failures have their own **Factory reset
+did not finish** message. Current builds let a never-loaded window close without
+waiting for an acknowledgement; loaded windows retain draft-save protection.
+
 On older versions without factory reset, quit Desktop, CLI and local proxies,
 then remove the application's directories and its saved credentials. This
 permanently removes local history for every account. These are the default paths;

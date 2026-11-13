@@ -24,6 +24,13 @@ test("main flush accepts only its window/main-frame/token ACK and times out with
     setTimeout: (callback: () => void, delay: number) => { assert.equal(delay, 10_000); timeout = callback; return 1; },
     clearTimeout: () => { cleared++; },
   });
+  await exports.prepareLocalState();
+  await exports.prepareUpdateRestart();
+  assert.deepEqual(sent, [], "a never-mounted window has no in-memory draft writer");
+  ipc.emit("local-state:ready", { sender: contents, senderFrame: {} });
+  await exports.prepareLocalState();
+  assert.deepEqual(sent, [], "a subframe cannot register a writer for the main app");
+  ipc.emit("local-state:ready", { sender: contents, senderFrame: frame });
   let completed = false;
   const save = exports.prepareLocalState("account").then(() => { completed = true; });
   assert.deepEqual(sent, [["local-state:prepare", "token", "account"]]);
@@ -57,6 +64,8 @@ test("preload sends a local flush ACK only after completion and releases on canc
   const unsubscribe = api.onBeforeLocalStateChange((reason: string) => {
     assert.equal(reason, "close"); return new Promise<void>(resolve => { finish = resolve; });
   }, () => { releases++; });
+  assert.deepEqual(sent, [["local-state:ready"]], "register readiness only after the save listeners exist");
+  sent.length = 0;
   ipc.emit("local-state:prepare", null, "token", "close");
   await tick(); assert.deepEqual(sent, []);
   finish(); await tick(); assert.deepEqual(sent, [["local-state:flushed", "token", null]]);

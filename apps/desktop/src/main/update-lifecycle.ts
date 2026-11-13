@@ -1,6 +1,14 @@
 import {BrowserWindow, ipcMain} from 'electron';
 import {randomUUID} from 'node:crypto';
 
+// A new window that never mounted the app has no in-memory drafts to flush.
+// Once registered, it must keep acknowledging saves, including after a crash
+// or reload; losing that renderer must never silently bypass draft protection.
+const localStateWriters = new WeakSet<Electron.WebContents>();
+ipcMain.on('local-state:ready', event => {
+  if (event.senderFrame === event.sender.mainFrame) localStateWriters.add(event.sender);
+});
+
 /** The renderer must commit its local drafts before the installer may start. */
 export async function prepareUpdateRestart(): Promise<void> {
   return prepare('updates:prepare-restart', 'updates:flushed');
@@ -17,7 +25,7 @@ export function releaseLocalState(): void {
 }
 
 async function prepare(requestChannel: string, responseChannel: string, reason?: "close" | "account"): Promise<void> {
-  await Promise.all(BrowserWindow.getAllWindows().map(window => new Promise<void>((resolve,reject) => {
+  await Promise.all(BrowserWindow.getAllWindows().filter(window => !window.isDestroyed() && localStateWriters.has(window.webContents)).map(window => new Promise<void>((resolve,reject) => {
     const token = randomUUID();
     const cleanup = () => { clearTimeout(timer); ipcMain.removeListener(responseChannel,acknowledge); };
     const acknowledge = (event: Electron.IpcMainEvent, id: unknown, error: unknown) => {
