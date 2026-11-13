@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import lockup from "../assets/astrea/astrea-lockup.svg";
 import field from "../assets/astrea/field-banner.webm";
 import poster from "../assets/astrea/field-banner-poster.png";
@@ -11,14 +11,18 @@ export function AstreaBanner() {
   const [ready, setReady] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const [closing, setClosing] = useState(false);
+  const claim = useRef<Promise<boolean> | null>(null);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
   useEffect(() => {
     let active = true;
     const api = window.axiomDesktop?.astreaBanner;
     if (!api) return;
-    void api.isDismissed().then((hidden) => {
-      if (active) { setDismissed(hidden); setReady(true); }
+    // Reuse the claim across StrictMode's effect replay. A renderer reload or
+    // later launch gets a fresh claim and cannot repeat the introduction.
+    claim.current ??= api.claim();
+    void claim.current.then((show) => {
+      if (active) { setDismissed(!show); setReady(true); }
     }).catch(() => { /* Keep the banner hidden if desktop state is unavailable. */ });
     return () => { active = false; };
   }, []);
@@ -40,7 +44,6 @@ export function AstreaBanner() {
 
   const close = () => {
     setClosing(true);
-    void window.axiomDesktop?.astreaBanner.dismiss().catch(() => undefined);
   };
 
   return (
@@ -62,7 +65,7 @@ export function AstreaBanner() {
         <span className="astrea-banner__copy">RUNS ON</span>
         <img className="astrea-banner__lockup" src={lockup} alt="Astrea" width="60" height="18" draggable={false} />
       </a>
-      <button className="astrea-banner__close" type="button" onClick={close} aria-label="Close Astrea banner until next launch" title="Hide until next launch">
+      <button className="astrea-banner__close" type="button" onClick={close} aria-label="Dismiss Astrea message" title="Dismiss">
         <X size={12} strokeWidth={1.25} aria-hidden="true" />
       </button>
     </aside>

@@ -230,6 +230,8 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
 
   const modelStatusLabel = models.length && modelId && !selectedModel ? "Model unavailable" : !agentState.connected || !desktopReady
     ? "Starting…"
+    : !agentState.account || agentState.account.state === "starting"
+      ? "Preparing your account…"
     : modelCatalogError
       ? "Models unavailable"
       : agentState.account?.state === "expired"

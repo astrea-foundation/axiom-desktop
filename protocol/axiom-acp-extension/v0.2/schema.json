@@ -2611,6 +2611,17 @@
             "null"
           ]
         },
+        "preparationPhase": {
+          "description": "Current native preparation work; never inferred from an error string.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountPreparationPhase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "storageMigration": {
           "description": "Local storage work must finish before this account becomes usable.",
           "anyOf": [
@@ -2696,6 +2707,15 @@
       "required": [
         "expiresAt",
         "credentialStore"
+      ]
+    },
+    "AccountPreparationPhase": {
+      "type": "string",
+      "enum": [
+        "checking_sign_in",
+        "opening_chats",
+        "decrypting_chats",
+        "switching_account"
       ]
     },
     "StorageMigrationProgress": {

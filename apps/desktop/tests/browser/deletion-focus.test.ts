@@ -47,7 +47,7 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model", recoverLegacy = false) {
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model", recoverLegacy = false, initialAccount?: AccountStatus) {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
   // Synthetic native persistence lives in the test process, survives renderer
   // reloads, and never writes draft/outbox data into browser storage.
@@ -82,7 +82,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string; recoverLegacy: boolean }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string; recoverLegacy: boolean; initialAccount?: AccountStatus }) => {
     if (recoverLegacy) localStorage.setItem("axiom.draft.v1:anonymous:new", "Recovered draft from before sign-in. Review before sending.");
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
@@ -113,9 +113,9 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const state = {
       connected: true, runtimeInstanceId: "test-runtime", lastSequence: 0,
       sessions: {} as Record<string, ReturnType<typeof session>>,
-      catalog: [summary("old-thread")],
-      collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
-      preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
+      catalog: initialAccount && initialAccount.state !== "valid" ? [] : [summary("old-thread")],
+      collections: { revision: 1, collections: initialAccount && initialAccount.state !== "valid" ? [] : [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
+      preferences: null, account: initialAccount ?? { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
       billing: null as BillingStatus | null, diagnostic: "", error: null as string | null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
@@ -406,10 +406,11 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount })});` });
   await page.goto(origin);
   try {
-    if (modelCatalog) await page.locator("textarea[data-chat-input]").waitFor();
+    if (initialAccount?.state === "starting") await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+    else if (modelCatalog || initialAccount) await page.locator("textarea[data-chat-input]").waitFor();
     else await page.getByRole("button", { name: "Test model" }).waitFor();
   } catch (error) {
     console.error("Renderer startup failed", errors, await page.locator("body").innerText());
@@ -663,8 +664,8 @@ test("a loaded thread also corrects stale thinking before its next message", asy
 
 async function enableDraftAgent(page: Page) {
   await page.getByRole("button", { name: "Agent", exact: true }).click();
-  await page.getByRole("switch", { name: "Enable agent mode" }).click();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByText("Ask for permission", { exact: true }).click();
+  await page.getByRole("button", { name: "Close Agent settings", exact: true }).click();
   await page.getByRole("dialog", { name: "Agent settings" }).waitFor({ state: "hidden" });
 }
 
@@ -815,12 +816,16 @@ for (const batched of [false, true]) for (const change of ["disconnect", "runtim
         else app.setRuntime(change === "runtime" ? "another-runtime" : "test-runtime", change !== "disconnect");
         if (batched) { app.setAccount("test-account"); app.setRuntime("test-runtime"); }
       }, { change, batched });
-      await input.waitFor({ state: "visible" });
+      if (!batched && change === "disconnect") {
+        await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+        assert.equal(await input.count(), 0, "the composer is replaced while the runtime reconnects");
+      } else await input.waitFor({ state: "visible" });
       await page.waitForFunction(() => !document.querySelector('[aria-label="Sending message"]'));
       if (!batched) await page.evaluate(() => {
         const app = (window as any).__deletionTest;
         app.setAccount("test-account"); app.setRuntime("test-runtime");
       });
+      await input.waitFor({ state: "visible" });
       const queue = page.getByRole("region", { name: "Message queue" });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
@@ -1086,7 +1091,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`Agent controls save per-thread permissions and folders, with safe new-thread defaults (${platform})`, async () => {
+  test(`Agent levels save on every dismissal and preserve per-thread folders and safe defaults (${platform})`, async () => {
     const { page, errors, nativeDialogs } = await openApp(platform);
     const agent = page.getByRole("button", { name: "Agent", exact: true });
     try {
@@ -1101,11 +1106,14 @@ for (const platform of ["linux", "win32", "darwin"]) {
           && Math.abs(rect.top + rect.height / 2 - innerHeight / 2) < 2;
       });
       if (platform === "linux" && process.env.AXIOM_AGENT_SCREENSHOT) {
+        await page.setViewportSize({ width: 1320, height: 900 });
         await page.screenshot({ path: `${process.env.AXIOM_AGENT_SCREENSHOT}.light.png` });
         await page.emulateMedia({ colorScheme: "dark" });
         await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
         await page.waitForTimeout(350); // Settle the theme transition for visual inspection.
         await page.screenshot({ path: process.env.AXIOM_AGENT_SCREENSHOT });
+        await dialog.screenshot({ path: process.env.AXIOM_AGENT_SCREENSHOT.replace(/\.png$/, "-dialog.png"), animations: "disabled" });
+        await page.setViewportSize({ width: 960, height: 640 });
       }
       assert.equal(await page.locator("dialog:modal").count(), 1);
       // The native HTML modal makes the composer inert, rather than merely
@@ -1113,50 +1121,68 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.locator("textarea[data-chat-input]").evaluate((element: HTMLTextAreaElement) => element.focus());
       assert.equal(await dialog.evaluate((element) => element.contains(document.activeElement)), true);
       const close = dialog.getByRole("button", { name: "Close Agent settings" });
-      const save = dialog.getByRole("button", { name: "Save changes" });
+      assert.equal(await dialog.getByRole("radio").count(), 3);
+      assert.equal(await dialog.getByRole("switch").count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Save changes" }).count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Cancel", exact: true }).count(), 0);
+      const browse = dialog.getByRole("button", { name: "Choose working directory" });
       await close.focus(); await page.keyboard.press("Shift+Tab");
-      assert.equal(await save.evaluate((element) => element === document.activeElement), true);
+      assert.equal(await browse.evaluate((element) => element === document.activeElement), true);
       await page.keyboard.press("Tab");
       assert.equal(await close.evaluate((element) => element === document.activeElement), true);
       await page.setViewportSize({ width: 1320, height: 900 });
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      assert.equal(await agent.getAttribute("aria-pressed"), "false");
+      assert.equal(await dialog.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+      await dialog.getByRole("radio", { name: "Off", exact: true }).focus();
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await dialog.getByRole("radio", { name: "Ask for permission", exact: true }).isChecked(), true);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await agent.getAttribute("aria-pressed"), "true", "Escape saves the draft access level");
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await agent.click();
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
       await dialog.getByText("Full access", { exact: true }).click();
       await dialog.getByRole("button", { name: "Choose working directory" }).click();
       const custom = platform === "win32" ? "C:\\Projects\\My Project 日本語" : "/Projects/My Project 日本語";
       assert.equal(await dialog.getByLabel("Working directory", { exact: true }).inputValue(), custom);
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+      await close.click();
       await dialog.waitFor({ state: "hidden" });
       assert.equal(await agent.getAttribute("aria-pressed"), "true");
+      let applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.permission, "full_access");
+      assert.equal(applied.workingDirectory, custom);
       await page.reload();
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await agent.click();
       assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
       assert.equal(await dialog.getByLabel("Working directory", { exact: true }).inputValue(), custom);
       await dialog.getByRole("button", { name: "Use default thread folder" }).click();
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
-      await dialog.waitFor({ state: "hidden" });
-      assert.equal(await agent.getAttribute("aria-pressed"), "false");
-      await agent.click();
+      await dialog.getByText("Ask for permission", { exact: true }).click();
       await page.keyboard.press("Escape");
-      assert.equal(await dialog.count(), 0);
+      await dialog.waitFor({ state: "hidden" });
+      applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.enabled, true);
+      assert.equal(applied.permission, "approve_commands");
+      assert.equal(applied.usesDefaultDirectory, true);
       await agent.click();
+      assert.equal(await dialog.getByRole("radio", { name: "Ask for permission", exact: true }).isChecked(), true);
+      await dialog.getByText("Off", { exact: true }).click();
       await page.mouse.click(12, 12);
-      assert.equal(await dialog.count(), 0, "clicking the modal backdrop closes settings");
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await agent.getAttribute("aria-pressed"), "false", "clicking the backdrop saves Off");
+      applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.enabled, false);
+      assert.equal(applied.permission, "approve_commands");
       assert.equal(await agent.evaluate((element) => element === document.activeElement), true);
+      const savedCalls = (await calls(page)).filter(call => call.method === "configureAgent").length;
+      await agent.click();
+      await close.click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, savedCalls, "closing unchanged settings makes no write");
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       await agent.click();
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+      assert.equal(await dialog.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+      await dialog.getByText("Ask for permission", { exact: true }).click();
+      await close.click();
       await dialog.waitFor({ state: "hidden" });
       await page.locator("textarea[data-chat-input]").fill("Work in this thread folder");
       await page.locator("textarea[data-chat-input]").press("Enter");
@@ -1173,8 +1199,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Agent", exact: true }).click();
-      await page.getByRole("switch", { name: "Enable agent mode" }).click();
-      await page.getByRole("button", { name: "Save changes", exact: true }).click();
+      await page.getByText("Ask for permission", { exact: true }).click();
+      await page.getByRole("button", { name: "Close Agent settings", exact: true }).click();
       await page.getByRole("dialog", { name: "Agent settings" }).waitFor({ state: "hidden" });
       await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
       await page.locator("textarea[data-chat-input]").fill("Keep my draft");
@@ -1190,13 +1216,12 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`Agent modal keeps failed edits local and restores focus on cancellation (${platform})`, async () => {
+  test(`Agent modal retains failed autosaves for retry and supports explicit discard (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await page.getByRole("button", { name: "Agent", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Agent settings" });
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
       await dialog.getByText("Full access", { exact: true }).click();
       const input = dialog.getByLabel("Working directory", { exact: true });
       await input.fill("/unavailable/project");
@@ -1209,11 +1234,23 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "false");
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
       await page.keyboard.press("Escape");
-      assert.equal(await page.locator("dialog:modal").count(), 0);
+      await dialog.getByRole("alert").waitFor();
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true, "failed Escape never discards the selection");
+      await page.evaluate(() => (window as any).__deletionTest.failAgent(false));
+      await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "true");
       assert.equal(await page.locator("[data-agent-toggle]").evaluate((element) => document.activeElement === element), true);
       await page.keyboard.press("Enter");
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
+      await dialog.getByText("Ask for permission", { exact: true }).click();
+      await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
+      await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+      await dialog.getByRole("alert").waitFor();
+      await dialog.getByRole("button", { name: "Discard changes", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      await page.keyboard.press("Enter");
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
       assert.equal(await dialog.getByRole("alert").count(), 0);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -1634,7 +1671,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt" && call.webEnabled === true));
 
       await page.evaluate(() => (window as any).__deletionTest.setRuntime("restarted-runtime", false));
-      await expectWeb(false); // A disconnected runtime cannot inherit permission.
+      await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+      assert.equal(await web.count(), 0, "a disconnected runtime has no composer or Web control");
       await page.evaluate(() => (window as any).__deletionTest.setRuntime("restarted-runtime"));
       await expectWeb(true);
       await page.evaluate(() => (window as any).__deletionTest.setAccount("another-account"));
@@ -2597,6 +2635,107 @@ test("sign in opens browser authorization directly and leaves the composer usabl
   } finally { await page.close(); }
 });
 
+test("decryption screen replaces the composer, preserves drafts and keeps Settings accessible", async () => {
+  const { page, errors } = await openApp("darwin");
+  try {
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft while my chats open");
+    const starting = (phase: string, revision: number) => page.evaluate(({ phase, revision }) => {
+      const bridge = (window as any).__deletionTest;
+      bridge.setAccountState({ revision, state: "starting", preparationPhase: phase });
+    }, { phase, revision });
+    await starting("checking_sign_in", 2);
+    const status = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await status.waitFor();
+    await status.getByRole("heading", { name: "Checking your sign-in", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Sign in", exact: true }).count(), 0);
+    await starting("opening_chats", 3);
+    await status.getByRole("heading", { name: "Unlocking your chats", exact: true }).waitFor();
+    assert.match(await status.innerText(), /key for your encrypted chats/);
+    assert.doesNotMatch(await status.innerText(), /unavailable|decrypting/i);
+    await starting("decrypting_chats", 4);
+    await status.getByRole("heading", { name: "Decrypting your chats", exact: true }).waitFor();
+    assert.equal(await status.locator('li[aria-current="step"]').innerText(), "Decrypt chats\nIn progress");
+    assert.match(await status.innerText(), /on this device/);
+    assert.equal(await page.getByRole("alert").count(), 0, (await page.getByRole("alert").allTextContents()).join("; "));
+    assert.equal(await page.getByRole("progressbar").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+    assert.equal(await page.locator(".astrea-banner").count(), 0);
+    for (const theme of ["dark", "light"] as const) {
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+      await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
+      if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-${theme}.png`, animations: "disabled" });
+    }
+    await page.setViewportSize({ width: 720, height: 740 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.locator(".chat-preparation-activity span").evaluate(element => getComputedStyle(element).animationName), "none");
+    if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-narrow.png`, animations: "disabled" });
+    await page.setViewportSize({ width: 1320, height: 900 });
+    await page.getByRole("button", { name: "Account menu", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    const settings = page.getByRole("region", { name: "Settings", exact: true });
+    await settings.waitFor();
+    await settings.getByRole("tab", { name: "Account", exact: true }).click();
+    await settings.getByText("Decrypting your chats", { exact: true }).waitFor();
+    assert.equal(await settings.getByRole("button", { name: "Getting ready…", exact: true }).isEnabled(), false);
+    await page.setViewportSize({ width: 720, height: 740 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 5, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } }));
+    await page.waitForFunction(() => document.querySelector('textarea[data-chat-input]'));
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft while my chats open");
+    assert.equal(await settings.evaluate(element => element.contains(document.activeElement)), true, "ready does not steal focus from Settings");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a real chat-storage failure stays in the preparation screen with retry and diagnostics", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "unavailable", preparationPhase: "opening_chats", detail: "Synthetic key access was denied" }));
+    const screen = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await screen.getByRole("heading", { name: "Couldn’t open your chats", exact: true }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.equal(await screen.getByText("In progress", { exact: true }).count(), 0);
+    await screen.getByRole("button", { name: "Try again", exact: true }).waitFor();
+    await screen.getByText("Details", { exact: true }).click();
+    await screen.getByText(/Synthetic key access was denied/).waitFor();
+    if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-failure.png`, animations: "disabled" });
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.accountStatus = async () => { throw new Error("Synthetic fresh retry failure"); };
+    });
+    await screen.getByRole("button", { name: "Try again", exact: true }).click();
+    await screen.getByText(/Synthetic fresh retry failure/).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Dismiss notice", exact: true }).count(), 0, "retry errors stay in the preparation screen");
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.accountStatus = async () => {
+        (window as any).__deletionTest.setAccountState({ revision: 3, state: "starting", preparationPhase: "checking_sign_in" });
+        return { status: { revision: 3, state: "starting", preparationPhase: "checking_sign_in" } };
+      };
+    });
+    await screen.getByRole("button", { name: "Try again", exact: true }).click();
+    await screen.getByRole("heading", { name: "Checking your sign-in", exact: true }).waitFor();
+    assert.equal(await screen.getByText("Done", { exact: true }).count(), 0, "a failed stage never becomes a completed stage on retry");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a decryption observation shows only stages the native runtime actually reported", async () => {
+  const { page, errors } = await openApp("darwin", false, [], "medium", false, true, undefined, "test-model", false,
+    { revision: 1, state: "starting", preparationPhase: "decrypting_chats" });
+  try {
+    const screen = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await screen.getByRole("heading", { name: "Decrypting your chats", exact: true }).waitFor();
+    assert.equal(await screen.getByRole("listitem").count(), 1);
+    assert.equal(await screen.getByText("Done", { exact: true }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("storage migration replaces browser approval with live progress until saved data is ready", async () => {
   const { page, errors } = await openApp();
   try {
@@ -2915,12 +3054,22 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 0);
     await page.getByRole("button", { name: "Save and send", exact: true }).click();
     await page.getByRole("textbox", { name: "Edited message" }).waitFor({ state: "hidden" });
+    const regenerateMessage = page.getByRole("button", { name: "Regenerate message", exact: true });
+    assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).evaluate((button) => button.nextElementSibling?.getAttribute("aria-label")), "Regenerate message");
+    await regenerateMessage.click();
+    assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 1);
+    await regenerateMessage.click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Regenerate", exact: true }).click();
     await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
     await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
     const calls = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
     assert.deepEqual(calls.map(({ id, text, userItemId, expectedRevision }: any) => ({ id, text, userItemId, expectedRevision })), [
       { id: "old-thread", text: "Changed message", userItemId: "user", expectedRevision: 1 },
+      { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
       { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
     ]);
     await page.evaluate(() => (window as any).__deletionTest.setTimeline([
@@ -2929,7 +3078,48 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     ], true));
     await page.waitForFunction(() => (document.querySelector('button[aria-label="Edit message"]') as HTMLButtonElement)?.disabled);
     assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).isDisabled(), true);
+    assert.equal(await regenerateMessage.isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Regenerate", exact: true }).evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled)), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("user-message regeneration resends the selected original text or attachment-only prompt", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true);
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    for (const text of ["  Original **request**\n日本語 and trailing spaces  ", ""]) {
+      await page.evaluate(({ text, image }) => {
+        const attachment = { id: "reference", name: "reference.png", kind: "image", mimeType: "image/png", size: 69,
+          image: { mimeType: "image/png", data: image } };
+        (window as any).axiomDesktop.agent.getAttachments = async () => [attachment];
+        (window as any).__deletionTest.setTimeline([
+          { id: "earlier-user", turnId: "earlier", kind: "user", text, status: "completed",
+            ...(text ? {} : { raw: { metadata: { attachments: [{ name: "reference.png", kind: "image" }] } } }) },
+          { id: "earlier-answer", turnId: "earlier", kind: "assistant", text: "Earlier answer", status: "completed" },
+          { id: "later-user", turnId: "later", kind: "user", text: "A different later request", status: "completed" },
+          { id: "later-answer", turnId: "later", kind: "assistant", text: "Later answer", status: "completed" },
+        ]);
+      }, { text, image: tinyPng.toString("base64") });
+      const row = page.locator('[data-timeline-kind="user"]').first();
+      await row.getByRole("button", { name: "Regenerate message", exact: true }).click();
+      assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
+      const confirm = row.getByRole("button", { name: "Regenerate from here", exact: true });
+      assert.equal(await confirm.isEnabled(), true);
+      await confirm.click();
+      await confirm.waitFor({ state: "hidden" });
+      const requests = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
+      const latest = requests.at(-1);
+      assert.equal(latest.id, "old-thread");
+      assert.equal(latest.userItemId, "earlier-user");
+      assert.equal(latest.text, text);
+      assert.equal(latest.expectedRevision, 1);
+      if (text && process.env.AXIOM_REGENERATE_SCREENSHOT) {
+        await row.getByRole("button", { name: "Regenerate message", exact: true }).focus();
+        await row.locator(".group > div").first().screenshot({ path: process.env.AXIOM_REGENERATE_SCREENSHOT, animations: "disabled" });
+      }
+    }
+    assert.equal((await calls(page)).filter(call => call.method === "revise").length, 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -3357,7 +3547,7 @@ for (const vision of [false, true]) {
       const send = page.getByRole("button", { name: "Send", exact: true });
       if (!vision) {
         assert.ok(await send.isDisabled());
-        await page.getByText("Enable Images for image editing, or choose a model that supports these files.").waitFor();
+        await page.getByText("Choose a model that supports these image or file uploads.").waitFor();
       } else {
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
@@ -3406,7 +3596,7 @@ test("PDF bytes upload directly and unsupported documents keep the draft", async
     assert.equal(JSON.parse(call.text!).attachments[0].file.data, textPdf("Local PDF fact").toString("base64"));
     await page.locator("textarea[data-chat-input]").fill("Keep this draft");
     await page.locator('input[type="file"]').setInputFiles({ name: "binary.docx", mimeType: "application/octet-stream", buffer: Buffer.from("binary") });
-    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these files" }).waitFor();
+    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these image or file uploads." }).waitFor();
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
     assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
     assert.deepEqual(errors, []);
@@ -3817,7 +4007,7 @@ for (const existing of [false, true]) {
       await dialog.dispatchEvent("dragenter", { dataTransfer: outside });
       await dialog.dispatchEvent("drop", { dataTransfer: outside });
       assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
       assert.equal(await page.locator("[data-attachment-card]").count(), 3, "a dialog outside the panel does not attach files");
       await outside.dispose();
       assert.deepEqual(errors, []);
@@ -4619,22 +4809,116 @@ test("only editing the signed-in composer starts model-only verification, includ
   } finally { await page.close(); }
 });
 
-test("MCP selection in Tools applies only to that thread with Agent off", async () => {
+test("Agent autosave can undo an acknowledged MCP selection after the access-level save fails", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Tools for this conversation" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    const echo = dialog.getByRole("checkbox", { name: /echo Echo from a local server/ });
+    await echo.check();
+    await dialog.getByText("Full access", { exact: true }).click();
+    await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await dialog.getByRole("alert").filter({ hasText: "MCP tools were saved" }).waitFor();
+    const selectedTools = () => page.evaluate(async () => (await (window as any).axiomDesktop.agent.desktopMcp({ threadId: "old-thread", action: { kind: "list" } })).selectedTools);
+    assert.equal((await selectedTools()).length, 1);
+    await echo.uncheck();
+    await dialog.getByText("Off", { exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(await selectedTools(), [], "returning to the original choices must undo the MCP selection already saved by this dialog");
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Agent close waits for acknowledgement and repeated dismissals never duplicate an autosave", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.getByText("Full access", { exact: true }).click();
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 0, "selecting a level waits until close to save");
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("agent"));
+    const close = dialog.getByRole("button", { name: "Close Agent settings", exact: true });
+    await close.click();
+    await dialog.getByRole("status").filter({ hasText: "Saving changes…" }).waitFor();
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    await page.keyboard.press("Escape");
+    await page.mouse.click(12, 12);
+    assert.equal(await dialog.count(), 1);
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("agent"));
+    await dialog.waitFor({ state: "hidden" });
+    await page.waitForFunction(() => document.querySelector('[data-agent-toggle]')?.getAttribute("aria-pressed") === "true");
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "true");
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isChecked(), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const change of ["account", "runtime"]) test(`Agent choices are not autosaved into a changed ${change} context`, async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.getByText("Full access", { exact: true }).click();
+    await page.evaluate(kind => {
+      const fixture = (window as any).__deletionTest;
+      if (kind === "account") fixture.setAccount("replacement-account");
+      else fixture.setRuntime("replacement-runtime", false);
+    }, change);
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("composer has no separate Tools control, including with configured MCP connections", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const tools = page.getByRole("button", { name: "Tools", exact: true });
+    assert.equal(await tools.count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).count(), 1);
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    assert.equal(await tools.count(), 0);
+    if (process.env.AXIOM_COMPOSER_SCREENSHOT) await page.locator(".composer-shell").screenshot({ path: process.env.AXIOM_COMPOSER_SCREENSHOT, animations: "disabled" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.waitFor();
+    await dialog.getByRole("region", { name: "MCP connections", exact: true }).getByRole("checkbox", { name: /echo Echo from a local server/ }).waitFor();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await page.evaluate(() => (window as any).axiomDesktop.agent.desktopMcp({ expectedRevision: 1, action: { kind: "delete", name: "fixture" } }));
+    assert.equal(await tools.count(), 0);
+    assert.equal(await page.getByRole("dialog", { name: "Tools for this conversation", exact: true }).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("MCP selection under Agent applies only to that thread with Agent off", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
     assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
-    await dialog.getByRole("button", { name: "Save tools" }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

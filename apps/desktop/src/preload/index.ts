@@ -19,8 +19,7 @@ export type DesktopApi = {
   onActiveChange: (callback: (active: boolean) => void) => () => void;
   setTheme: (preference: "light" | "dark" | "system", resolved: "light" | "dark") => void;
   astreaBanner: {
-    isDismissed: () => Promise<boolean>;
-    dismiss: () => Promise<void>;
+    claim: () => Promise<boolean>;
   };
   agent: AgentApi;
   proxy: ProxyApi;
@@ -33,8 +32,7 @@ const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".lengt
 const api: DesktopApi = {
   platform: previewPlatform ?? process.platform,
   astreaBanner: {
-    isDismissed: () => ipcRenderer.invoke("astrea-banner:is-dismissed"),
-    dismiss: () => ipcRenderer.invoke("astrea-banner:dismiss"),
+    claim: () => ipcRenderer.invoke("astrea-banner:claim"),
   },
   factoryReset: (confirmation) => ipcRenderer.invoke("app:factory-reset", confirmation),
   minimize: () => {

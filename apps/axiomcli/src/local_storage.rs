@@ -90,12 +90,13 @@ pub(crate) struct OpenedDatabase {
 
 #[cfg(test)]
 pub(crate) fn open_database(path: &Path) -> Result<OpenedDatabase> {
-    open_database_with_progress(path, &|_| {})
+    open_database_with_progress(path, &|_| {}, &|| {})
 }
 
 pub(crate) fn open_database_with_progress(
     path: &Path,
     progress: &crate::storage_progress::Observer<'_>,
+    decrypting: &dyn Fn(),
 ) -> Result<OpenedDatabase> {
     check_restore_marker(path)?;
     let paths = database::StorePaths::prepare(path)?;
@@ -106,7 +107,7 @@ pub(crate) fn open_database_with_progress(
     }
     let mut maintenance = initial_maintenance(&paths)?;
     let key = Arc::new(keys::obtain(&paths)?);
-    let connection = database::open_locked(&paths, &key)?;
+    let connection = database::open_locked(&paths, &key, decrypting)?;
     finish_open_maintenance(&paths, &connection, &mut maintenance)?;
     Ok(OpenedDatabase {
         connection,
@@ -134,13 +135,14 @@ pub(crate) fn restore_marker_for_database(path: &Path) -> std::path::PathBuf {
 }
 
 pub(crate) fn open_database_with_key(path: &Path, key: Arc<StorageKey>) -> Result<OpenedDatabase> {
-    open_database_with_key_and_progress(path, key, &|_| {})
+    open_database_with_key_and_progress(path, key, &|_| {}, &|| {})
 }
 
 pub(crate) fn open_database_with_key_and_progress(
     path: &Path,
     key: Arc<StorageKey>,
     progress: &crate::storage_progress::Observer<'_>,
+    decrypting: &dyn Fn(),
 ) -> Result<OpenedDatabase> {
     let paths = database::StorePaths::prepare(path)?;
     let _lock = paths.lock()?;
@@ -148,7 +150,7 @@ pub(crate) fn open_database_with_key_and_progress(
         crate::storage_progress::phase(progress, crate::storage_progress::Phase::Encrypting);
     }
     let mut maintenance = initial_maintenance(&paths)?;
-    let connection = database::open_locked(&paths, &key)?;
+    let connection = database::open_locked(&paths, &key, decrypting)?;
     finish_open_maintenance(&paths, &connection, &mut maintenance)?;
     Ok(OpenedDatabase {
         connection,

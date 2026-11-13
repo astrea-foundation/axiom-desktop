@@ -685,6 +685,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
     let revision = status.revision;
     match status.status {
         ValidationStatus::Missing => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::SignedOut,
@@ -693,6 +694,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: None,
         },
         ValidationStatus::Valid(account) => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::Valid,
@@ -715,6 +717,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: None,
         },
         ValidationStatus::Expired => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::Expired,
@@ -723,6 +726,7 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: Some("The native account session expired or was revoked".into()),
         },
         ValidationStatus::Unavailable(detail) => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
             storage_migration: None,
             state: ExtensionAccountState::Unavailable,
@@ -736,12 +740,29 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
 fn extension_account_switching(revision: u64) -> ExtensionAccountStatus {
     ExtensionAccountStatus {
         revision,
+        preparation_phase: Some(extension::AccountPreparationPhase::SwitchingAccount),
         storage_migration: None,
-        state: ExtensionAccountState::Unavailable,
+        state: ExtensionAccountState::Starting,
         account: None,
         session: None,
-        detail: Some("Switching the local Axiom account context".into()),
+        detail: None,
     }
+}
+
+fn publish_account_preparing(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+    phase: extension::AccountPreparationPhase,
+) -> agent_client_protocol::Result<()> {
+    let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+    status.preparation_phase = Some(phase);
+    send_extension_activity(
+        connection,
+        extension_state,
+        None,
+        ActivityEvent::AccountChanged { status },
+    )
 }
 
 async fn publish_account_switch_started(
@@ -1414,7 +1435,7 @@ async fn commit_account_store_switch(
     account_id: Option<&str>,
 ) -> crate::Result<()> {
     drain_account_switch(sessions, work_tracker).await?;
-    let result = store_switch_task(store, account_id, None)
+    let result = store_switch_task(store, account_id, None, None)
         .await
         .unwrap_or_else(|error| {
             Err(crate::AxiomError::Storage(format!(
@@ -1431,17 +1452,24 @@ fn store_switch_task(
     store: Option<&SessionStore>,
     account_id: Option<&str>,
     progress: Option<tokio::sync::watch::Sender<Option<crate::storage_progress::Progress>>>,
+    decrypting: Option<tokio::sync::watch::Sender<bool>>,
 ) -> tokio::task::JoinHandle<crate::Result<()>> {
     let store = store.cloned();
     let account_id = account_id.map(str::to_owned);
     tokio::task::spawn_blocking(move || match (store, account_id) {
-        (Some(store), Some(account_id)) => {
-            store.activate_account_with_progress(&account_id, &|update| {
+        (Some(store), Some(account_id)) => store.activate_account_with_progress(
+            &account_id,
+            &|update| {
                 if let Some(sender) = &progress {
                     sender.send_replace(Some(update));
                 }
-            })
-        }
+            },
+            &|| {
+                if let Some(sender) = &decrypting {
+                    sender.send_replace(true);
+                }
+            },
+        ),
         (Some(store), None) => store.deactivate_account(),
         (None, _) => Ok(()),
     })
@@ -1457,12 +1485,33 @@ async fn commit_account_store_switch_reporting(
     auth: &AuthManager,
 ) -> crate::Result<()> {
     drain_account_switch(sessions, work_tracker).await?;
+    if account_id.is_some() {
+        // Observational delivery cannot abort an in-progress local commit.
+        let _ = publish_account_preparing(
+            connection,
+            extension_state,
+            auth,
+            extension::AccountPreparationPhase::OpeningChats,
+        );
+    }
     let (sender, mut updates) = tokio::sync::watch::channel(None);
-    let mut task = store_switch_task(store, account_id, Some(sender));
+    let (decrypting_sender, mut decrypting_updates) = tokio::sync::watch::channel(false);
+    let mut task = store_switch_task(store, account_id, Some(sender), Some(decrypting_sender));
     let mut last_progress = None;
+    let mut decryption_reported = false;
     let result = loop {
         tokio::select! {
             result = &mut task => break result,
+            changed = decrypting_updates.changed() => {
+                if changed.is_err() {
+                    break task.await;
+                }
+                if *decrypting_updates.borrow_and_update() && updates.borrow().is_none() {
+                    let _ = publish_account_preparing(connection, extension_state, auth,
+                        extension::AccountPreparationPhase::DecryptingChats);
+                    decryption_reported = true;
+                }
+            }
             changed = updates.changed() => {
                 if changed.is_err() {
                     break task.await;
@@ -1482,6 +1531,15 @@ async fn commit_account_store_switch_reporting(
     });
     // The task may finish before the executor consumes its last observation.
     let latest = updates.borrow().clone();
+    let decryption_started = *decrypting_updates.borrow();
+    if decryption_started && !decryption_reported && latest.is_none() {
+        let _ = publish_account_preparing(
+            connection,
+            extension_state,
+            auth,
+            extension::AccountPreparationPhase::DecryptingChats,
+        );
+    }
     if latest != last_progress
         && let Some(progress) = latest.as_ref()
     {
@@ -1490,6 +1548,14 @@ async fn commit_account_store_switch_reporting(
     finish_account_switch(sessions, work_tracker).await;
     if let Err(error) = &result {
         let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+        status.state = ExtensionAccountState::Unavailable;
+        if account_id.is_some() {
+            status.preparation_phase = Some(if decryption_started {
+                extension::AccountPreparationPhase::DecryptingChats
+            } else {
+                extension::AccountPreparationPhase::OpeningChats
+            });
+        }
         status.detail = Some(error.to_string());
         if latest.is_some() || last_progress.is_some() {
             status.storage_migration = Some(crate::storage_progress::Progress {
@@ -2446,6 +2512,20 @@ fn agent_error(error: crate::AxiomError) -> agent_client_protocol::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_preparation_is_progress_and_withholds_the_previous_identity() {
+        let status = extension_account_switching(17);
+        assert_eq!(status.state, ExtensionAccountState::Starting);
+        assert_eq!(
+            status.preparation_phase,
+            Some(extension::AccountPreparationPhase::SwitchingAccount)
+        );
+        assert_eq!(status.revision, 17);
+        assert!(status.account.is_none());
+        assert!(status.session.is_none());
+        assert!(status.detail.is_none());
+    }
 
     #[test]
     fn independently_paged_accounting_requires_timeline_version_two() {

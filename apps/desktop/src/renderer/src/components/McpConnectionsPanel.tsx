@@ -90,7 +90,7 @@ export function McpConnectionsPanel() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   }
   return <div className="space-y-4 text-[13px]">
-    <p className="text-[var(--color-text-secondary)]">Connect tools, then choose which ones are available in each conversation’s Tools menu.</p>
+    <p className="text-[var(--color-text-secondary)]">Add connections here, then choose their tools under Agent in each conversation.</p>
     <div className="flex flex-wrap gap-2">
       <button type="button" className={button} disabled={busy || !state} onClick={() => { setImportText(null); setDraft({ ...emptyDraft(), type: state?.remoteSupported ? "remote" : "local" }); setError(null); }}><Plus size={13} className="mr-1 inline" />Add connection</button>
       <button type="button" className={button} disabled={busy || !state} onClick={() => { setDraft(null); setImportText(""); setError(null); }}>Import configuration</button>

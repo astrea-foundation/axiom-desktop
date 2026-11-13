@@ -159,7 +159,7 @@ URLs by `fetch_url` is expected.
 
 CLI MCP server commands belong in trusted user configuration. In Desktop, add
 and test [connections](mcp.md) in Settings, then choose tools in the conversation's
-Tools menu. Check that the executable and its runtime are installed and reachable
+Agent dialog. Check that the executable and its runtime are installed and reachable
 on the sanitized PATH; use an absolute path if needed. Locked/missing environment
 credentials require unlocking the OS credential store or saving them again. A disconnected read-only tool may retry once only if its
 name/schema are unchanged. A side-effecting operation with an ambiguous outcome

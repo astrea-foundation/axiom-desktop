@@ -78,6 +78,7 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
+export type AccountPreparationPhase = "checking_sign_in" | "opening_chats" | "decrypting_chats" | "switching_account";
 export type StorageMigrationPhase = "encrypting" | "moving_media" | "checking" | "finalizing" | "failed";
 export type CryptoInvoiceAction = "cancel" | "check" | "refresh";
 export type SecurityState =
@@ -837,6 +838,10 @@ export interface AccountStatus {
   account?: AccountProfile | null;
   session?: NativeSession | null;
   detail?: string | null;
+  /**
+   * Current native preparation work; never inferred from an error string.
+   */
+  preparationPhase?: AccountPreparationPhase | null;
   /**
    * Local storage work must finish before this account becomes usable.
    */

@@ -23,23 +23,29 @@ async function open(theme="light"){
     if(url===origin)return route.fulfill({contentType:"text/html",body:`<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module">import RefreshRuntime from "/@react-refresh"; RefreshRuntime.injectIntoGlobalHook(window); window.$RefreshReg$ = () => {}; window.$RefreshSig$ = () => (type) => type; window.__vite_plugin_react_preamble_installed__ = true; await import("/@fs/${fileURLToPath(new URL("./fixtures/remote-mcp.tsx",import.meta.url))}");</script></body></html>`});
     if(url.startsWith(origin))return route.continue();return route.abort();
   });
-  await page.goto(origin);await page.getByRole("button",{name:"Tools",exact:true}).waitFor();await page.evaluate(()=>document.fonts.ready);
+  await page.goto(origin);await page.getByRole("button",{name:"Agent",exact:true}).waitFor();await page.evaluate(()=>document.fonts.ready);
   return {page,errors};
 }
 async function capture(page:Page,name:string){if(captures)await page.screenshot({path:`${captures}/${name}.png`,animations:"disabled"});}
 for(const theme of ["light","dark"])test(`remote tools expose destinations and remain independent of Agent (${theme})`,async()=>{
   const {page,errors}=await open(theme);try{
-    const tools=page.getByRole("button",{name:"Tools",exact:true});
-    assert.match(await tools.getAttribute("aria-description")??"",/including remote tools/);
+    const agent=page.getByRole("button",{name:"Agent",exact:true});
+    assert.equal(await page.getByRole("button",{name:"Tools",exact:true}).count(),0);
+    assert.match(await agent.getAttribute("aria-description")??"",/including remote tools/);
     assert.equal(await page.getByRole("button",{name:"Agent",exact:true}).getAttribute("aria-pressed"),"false");
-    await tools.click();const dialog=page.getByRole("dialog",{name:"Tools for this conversation"});
+    await agent.click();const dialog=page.getByRole("dialog",{name:"Agent settings"});
     await dialog.getByRole("heading",{name:"Remote services",exact:true}).waitFor();
     await dialog.getByRole("heading",{name:"On this device",exact:true}).waitFor();
     assert.match(await dialog.innerText(),/outside Axiom’s attested environment/);
     assert.match(await dialog.innerText(),/mcp.example.com/);
     await dialog.getByRole("checkbox",{name:"Use Project tracker in this conversation"}).check();
-    await capture(page,`${theme}-tools`);
-    await dialog.getByRole("button",{name:"Save tools",exact:true}).click();await dialog.waitFor({state:"hidden"});
+    assert.equal(await dialog.getByRole("button",{name:"Save changes",exact:true}).count(),0);
+    assert.equal(await dialog.getByRole("button",{name:"Close Agent settings",exact:true}).evaluate(element=>{
+      const bounds=element.getBoundingClientRect();return bounds.top>=0 && bounds.bottom<=innerHeight;
+    }),true,"Close stays visible while the connections list scrolls");
+    await dialog.getByRole("heading",{name:"MCP connections",exact:true}).scrollIntoViewIfNeeded();
+    await capture(page,`${theme}-agent-connections`);
+    await dialog.getByRole("button",{name:"Close Agent settings",exact:true}).click();await dialog.waitFor({state:"hidden"});
     assert.equal((await page.evaluate(()=>(window as any).__remoteMcpTest.selection())).mcpTools.length,2);
     assert.equal(await page.getByRole("button",{name:"Agent",exact:true}).getAttribute("aria-pressed"),"false");
     await page.getByRole("button",{name:/View privacy proof$/}).click();const proof=page.getByRole("dialog",{name:"Privacy proof",exact:true});

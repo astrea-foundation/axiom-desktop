@@ -1,9 +1,10 @@
 /** @jsxRuntime automatic */
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "./AxiomLogo";
 import { GreetingHeadline } from "./GreetingHeadline";
-import type { AccountPresentation } from "@axiom/chat-core/account";
+import { isChatPreparation, type AccountPresentation } from "@axiom/chat-core/account";
+import { ChatPreparationScreen } from "./ChatPreparationScreen";
 import type { ProviderModel, ReasoningEffort } from "@axiom/chat-core/types";
 import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
@@ -23,7 +24,8 @@ interface WelcomeViewProps {
   account: AccountPresentation;
   signInActive?: boolean;
   onSignIn: () => void;
-  onRefreshAccount: () => void;
+  onRefreshAccount: () => void | Promise<unknown>;
+  onOpenSettings?: (trigger: HTMLElement) => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   webEnabled: boolean;
@@ -46,14 +48,20 @@ export function WelcomeView({
   signInActive = false,
   onSignIn,
   onRefreshAccount,
+  onOpenSettings,
   reasoningEffort,
   onReasoningEffortChange,
   webEnabled,
   webDisabled,
   onWebToggle,
 }: WelcomeViewProps) {
+  const root = useRef<HTMLDivElement>(null);
+  const prepared = useRef(false);
+  const preparing = isChatPreparation(account);
+  useLayoutEffect(() => { if (preparing) prepared.current = true; }, [preparing]);
+  const focusComposer = !prepared.current || document.activeElement === document.body || !!root.current?.contains(document.activeElement);
   return (
-    <div className="relative flex h-full w-full items-center justify-center px-6">
+    <div ref={root} className="relative flex h-full min-h-0 w-full items-start justify-center overflow-y-auto px-6 py-16">
       {/* A fixed 2000×1400 composition pinned to the view's centre: the window
           reveals more or less of it instead of moving the blooms around. */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
@@ -73,11 +81,12 @@ export function WelcomeView({
         </div>
       </div>
 
-      <div className="relative z-10 flex w-full max-w-[760px] flex-col items-center animate-fade-in">
+      <div className="relative z-10 my-auto flex w-full max-w-[760px] flex-col items-center animate-fade-in">
+        {isChatPreparation(account) ? <ChatPreparationScreen key={agentControl?.scope} account={account} onRetry={onRefreshAccount} onOpenSettings={onOpenSettings} /> : <>
         <AxiomMark className="mb-7 h-10 w-auto" />
         <GreetingHeadline />
-        {!signInActive && account.kind !== "valid" && account.kind !== "starting" ? (
-          <div className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
+        {!signInActive && account.kind !== "valid" ? (
+          <div role={account.kind === "unavailable" ? "alert" : undefined} className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
             <div
               className={[
                 "flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]",
@@ -90,7 +99,11 @@ export function WelcomeView({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-[var(--color-text-primary)]">{account.title}</div>
-              <div className="mt-0.5 truncate text-[11.5px] text-[var(--color-text-tertiary)]">{account.detail}</div>
+              <div className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--color-text-secondary)]">{account.detail}</div>
+              {account.kind === "unavailable" && account.technicalDetails ? <details className="mt-2 text-[11.5px] text-[var(--color-text-secondary)]">
+                <summary className="cursor-pointer">Details</summary>
+                <p className="mt-1 whitespace-pre-wrap break-words">{account.technicalDetails}</p>
+              </details> : null}
             </div>
             <button
               type="button"
@@ -113,12 +126,13 @@ export function WelcomeView({
             value={draft}
             onChange={onDraftChange}
             onSubmit={onSubmit}
-            autoFocus
+            autoFocus={focusComposer}
             models={models}
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
             requiresSignIn={account.kind === "signed-out" || account.kind === "expired"}
+            accountReady={account.kind === "valid"}
             onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
@@ -130,6 +144,7 @@ export function WelcomeView({
             Model conversations are end-to-end encrypted
           </span>
         </div>
+        </>}
       </div>
     </div>
   );

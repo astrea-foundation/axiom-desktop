@@ -449,6 +449,7 @@ function SidebarFrame({
 
         <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-2 pt-3">
           <div className="ax-label px-2 pb-2">Threads</div>
+          {account.kind === "starting" && filtered.length === 0 && !query ? <p className="px-2 py-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">Your chats will appear here once they’re open.</p> : null}
           {folders.map((folder) => (
             <FolderBlock
               key={folder.id}

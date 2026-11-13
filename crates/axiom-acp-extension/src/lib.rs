@@ -738,9 +738,21 @@ pub struct AccountStatus {
     pub session: Option<NativeSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Current native preparation work; never inferred from an error string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_phase: Option<AccountPreparationPhase>,
     /// Local storage work must finish before this account becomes usable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_migration: Option<StorageMigrationProgress>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountPreparationPhase {
+    CheckingSignIn,
+    OpeningChats,
+    DecryptingChats,
+    SwitchingAccount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

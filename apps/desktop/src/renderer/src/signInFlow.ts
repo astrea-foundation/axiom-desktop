@@ -19,7 +19,7 @@ export function accountPresentation(
     return {
       kind: "starting",
       title: "Starting Axiom…",
-      detail: "",
+      detail: "Connecting to the local chat service.",
     };
   }
   if (account?.state === "valid" && account.account) {
@@ -39,17 +39,38 @@ export function accountPresentation(
     };
   }
   if (account?.state === "unavailable") {
+    const storage = account.preparationPhase === "opening_chats" || account.preparationPhase === "decrypting_chats";
+    const switching = account.preparationPhase === "switching_account";
     return {
       kind: "unavailable",
-      title: "Account status unavailable",
-      detail: account.detail?.trim() || "Axiom could not be reached. Check your connection and try again.",
+      phase: account.preparationPhase ?? undefined,
+      title: storage ? "Couldn’t open your chats" : switching ? "Couldn’t update your account" : "Couldn’t check your sign-in",
+      detail: storage
+        ? "Axiom couldn’t unlock local chat storage. Try again."
+        : switching ? "Axiom couldn’t finish the local account change. Try again."
+          : "Axiom couldn’t restore or verify your saved session. Try again, or open Details for the reported reason.",
+      technicalDetails: account.detail?.trim() || undefined,
     };
   }
-  if (account?.state === "starting") {
+  if (!account || account.state === "starting") {
+    if (account?.preparationPhase === "switching_account") return {
+      kind: "starting", phase: "switching_account",
+      title: "Updating your account…",
+      detail: "Finishing the local account change.",
+    };
+    if (account?.preparationPhase === "decrypting_chats") return {
+      kind: "starting", phase: "decrypting_chats",
+      title: "Decrypting your chats",
+      detail: "Opening your saved conversations on this device.",
+    };
+    const storage = account?.preparationPhase === "opening_chats";
     return {
       kind: "starting",
-      title: "Checking your account…",
-      detail: "",
+      phase: storage ? "opening_chats" : "checking_sign_in",
+      title: storage ? "Unlocking your chats" : "Checking your sign-in…",
+      detail: storage
+        ? "Getting the key for your encrypted chats on this device."
+        : "Restoring your saved session and confirming it’s still active.",
     };
   }
   return {

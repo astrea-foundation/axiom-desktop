@@ -19,7 +19,6 @@ import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
 import { DraftAttachments, type AttachmentControl } from "./Attachments";
-import { ToolsControl } from "./ToolsControl";
 import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
@@ -31,7 +30,7 @@ function reasoningEffortLabel(effort: ReasoningEffort): string {
 
 let previousComposerBounds: DOMRect | undefined;
 
-type OpenMenu = "model" | "thinking" | "agent" | "tools" | null;
+type OpenMenu = "model" | "thinking" | "agent" | null;
 
 interface ChatComposerProps {
   attachments?: AttachmentControl;
@@ -49,6 +48,7 @@ interface ChatComposerProps {
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
   requiresSignIn?: boolean;
+  accountReady?: boolean;
   onSignIn?: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
@@ -81,6 +81,7 @@ export function ChatComposer({
   modelStatusLabel,
   onModelChange,
   requiresSignIn = false,
+  accountReady = true,
   onSignIn,
   reasoningEffort,
   onReasoningEffortChange,
@@ -116,11 +117,11 @@ export function ChatComposer({
   const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
-  const canAttach = !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
+  const canAttach = accountReady && !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
   const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
-  const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
-  const modelSelectionLocked = preparing || isStreaming;
+  const canSend = !preparing && (accountReady || requiresSignIn) && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
+  const modelSelectionLocked = preparing || isStreaming || (!accountReady && !requiresSignIn);
 
   useEffect(() => {
     const el = ref.current;
@@ -144,8 +145,8 @@ export function ChatComposer({
   }, [modelSelectionLocked, models.length]);
 
   useEffect(() => {
-    // Agent and Tools own top-layer modals, including dismissal and focus.
-    if (!openMenu || openMenu === "agent" || openMenu === "tools") return;
+    // Agent owns its top-layer modal, including dismissal and focus.
+    if (!openMenu || openMenu === "agent") return;
     const closeMenu = (event: MouseEvent) => {
       if (!controlsRef.current?.contains(event.target as Node)) setOpenMenu(null);
     };
@@ -169,7 +170,7 @@ export function ChatComposer({
     <div ref={composerRoot} className="group relative w-full">
       <fieldset disabled={preparing} aria-busy={preparing || undefined} className="composer-shell relative flex min-w-0 flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
         {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
-        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Enable Images for image editing, or choose a model that supports these files.</p> : null}
+        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these image or file uploads.</p> : null}
         <div className="flex items-start gap-3">
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea
@@ -210,7 +211,7 @@ export function ChatComposer({
                 className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model" && !modelSelectionLocked}
-                title={modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
+                title={!accountReady && !requiresSignIn ? "Available once your account is ready." : modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
                   <>
@@ -306,7 +307,6 @@ export function ChatComposer({
               Web
               {webEnabled ? <Check size={12} aria-hidden="true" /> : null}
             </button>
-            {agentControl ? <ToolsControl key={`tools:${agentControl.scope}`} options={agentControl} open={openMenu === "tools"} onOpenChange={open => setOpenMenu(open ? "tools" : null)} /> : null}
             {agentControl ? <AgentModeControl key={agentControl.scope} options={agentControl} open={openMenu === "agent"} onOpenChange={(open) => setOpenMenu(open ? "agent" : null)} /> : null}
           </div>
 
@@ -340,6 +340,7 @@ export function ChatComposer({
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
+                title={!accountReady && !requiresSignIn ? "Available once your account is ready." : !selectedModel && !requiresSignIn ? modelStatusLabel : undefined}
                 className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand dark:disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label={requiresSignIn ? "Sign in to send" : isStreaming ? "Queue message" : "Send"}
               >
