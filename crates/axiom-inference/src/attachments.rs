@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ChatMessage, ChatRole, MAX_MESSAGE_TEXT_BYTES, ValidationError};
 
-pub const MAX_ATTACHMENTS: usize = 8;
+pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_GENERATED_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_GENERATED_IMAGE_PIXELS: u64 = 1536 * 1536;
 pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -71,7 +73,11 @@ pub struct ImageContent {
 
 impl ImageContent {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        self.validate_bounded(MAX_IMAGE_BYTES)
+    }
+
+    pub fn validate_bounded(&self, maximum: usize) -> Result<(), ValidationError> {
+        if self.data.len() > maximum.div_ceil(3) * 4 {
             return Err(ValidationError::invalid("image.size"));
         }
         let bytes = STANDARD
@@ -84,7 +90,7 @@ impl ImageContent {
             "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
             _ => false,
         };
-        if bytes.len() > MAX_IMAGE_BYTES || !matches {
+        if bytes.len() > maximum || !matches {
             return Err(ValidationError::invalid("image.content"));
         }
         Ok(())
@@ -106,6 +112,27 @@ impl ImageContent {
         };
         image.validate()?;
         Ok(image)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ImageDimensions {
+    pub fn validate(self) -> Result<(), ValidationError> {
+        if !(256..=8192).contains(&self.width)
+            || !(256..=8192).contains(&self.height)
+            || !self.width.is_multiple_of(32)
+            || !self.height.is_multiple_of(32)
+            || u64::from(self.width) * u64::from(self.height) > MAX_GENERATED_IMAGE_PIXELS
+        {
+            return Err(ValidationError::invalid("image.dimensions"));
+        }
+        Ok(())
     }
 }
 
@@ -231,6 +258,21 @@ pub fn user_message(text: &str, attachments: &[PromptAttachment]) -> ChatMessage
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_output_dimensions_enforce_area_grid_and_bounded_axes() {
+        for (width, height) in [(1024, 1024), (1536, 1536), (2048, 1152), (1152, 2048)] {
+            assert!(ImageDimensions { width, height }.validate().is_ok());
+        }
+        for (width, height) in [
+            (2048, 2048),
+            (1537, 1024),
+            (128, 8192),
+            (u32::MAX, u32::MAX),
+        ] {
+            assert!(ImageDimensions { width, height }.validate().is_err());
+        }
+    }
 
     #[test]
     fn local_images_are_validated_and_remote_urls_are_rejected() {

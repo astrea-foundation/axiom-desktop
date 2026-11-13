@@ -30,6 +30,18 @@ availability list; models are never substituted based on aliases or similar name
 Image and file icons replace capability words in Desktop. Tinfoil uses its official
 provider symbol. The composer model control shows the provider symbol to the left
 of the model brand icon and name; hovering the provider symbol shows its name.
+The Axiom-hosted Chutes offering uses Axiom's colored provider symbol and the
+Qwen family icon for Qwen3.8 Uncensored. Qwen names with an attached version
+number resolve to the same family artwork in the model picker and composer.
+The native image tools derive their adapter policy from the actual selected
+model for each turn: Qwen3.8 Uncensored requests the bundled uncensored image
+LoRA at strength **0.9**, while other models use the base image model. Both generation and
+editing follow this rule, including after switching models. Tool arguments
+cannot override the policy, adapter path or multiplier. The flag and adapter
+metadata are bound to the encrypted image request and authenticated response.
+Image-only regeneration retains the original native model identity, so switching
+the chat model does not change the saved image's adapter policy. Historical
+images without that provenance use the current model.
 Brand artwork is presentation metadata, not a model availability
 list. A previously unseen model uses the generic model icon when no brand matches.
 

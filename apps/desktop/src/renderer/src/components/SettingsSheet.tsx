@@ -10,6 +10,7 @@ import { ApiKeysPanel } from "./ApiKeysPanel";
 import { UpdatesPanel } from "./UpdatesPanel";
 import type { DesktopUpdates } from "../useDesktopUpdates";
 import { accountAvatar } from "../lib/accountAvatar";
+import { FactoryResetPanel } from "./FactoryResetPanel";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
   { value: "light", label: "Light" },
@@ -158,6 +159,7 @@ export function SettingsSheet({
             </div>
             </div>
             <p className="mt-4 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Your sign-in is shared with AxiomCLI on this device.</p>
+            {category === "account" ? <FactoryResetPanel /> : null}
           </SettingsPanel>
 
 
@@ -170,7 +172,7 @@ export function SettingsSheet({
             /> : null}
           </SettingsPanel>
           <SettingsPanel category="mcp" active={category} idPrefix={id}>
-            {category === "mcp" ? connected && signedIn ? <McpConnectionsPanel key={`${runtimeInstanceId}:${account.account?.id}`} /> : <p>Sign in and connect to manage local MCP servers.</p> : null}
+            {category === "mcp" ? connected && signedIn ? <McpConnectionsPanel key={`${runtimeInstanceId}:${account.account?.id}`} /> : <p>Sign in and connect to manage MCP connections.</p> : null}
           </SettingsPanel>
           <SettingsPanel category="api-keys" active={category} idPrefix={id}>
             {category === "api-keys" && (connected && signedIn && account.account ? <ApiKeysPanel

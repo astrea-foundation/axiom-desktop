@@ -61,7 +61,7 @@ preparations require review and a fresh send; an old setup callback cannot
 reactivate them after an account or connection changes and returns.
 
 `account`, `timeline`, and `attachments` are version **2**;
-`billing` is version **4** and `securityEvidence` is version **4**.
+`billing` is version **6** and `securityEvidence` is version **4**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
@@ -99,7 +99,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Collections | `collection/list`, `collection/create`, `collection/rename`, `collection/set_collapsed`, `collection/move`, `collection/delete`, `collection/assign` |
 | Native account | `account/status`, `account/native_login_start`, `account/native_login_complete`, `account/native_login_cancel`, `account/logout` |
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
-| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments` |
+| Billing | `billing/status`, `billing/redeem_gift_code`, `billing/crypto_options`, `billing/create_crypto_payment`, `billing/crypto_payments`, `billing/crypto_invoice_action`, `billing/credits` |
 | Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
 | Evidence/compaction/steering | `security/verify`, `security/prewarm`, `compaction/start`, `turn/steer` |
 
@@ -117,6 +117,30 @@ pages from the beginning and atomically replace the projection. Metadata-only
 refresh is insufficient. Standard notifications can include `_meta.axiom`
 delivery identity; stable prompt `clientItemId` values reconcile optimistic
 messages with durable rows.
+
+Desktop opts into `session/load` metadata
+`_meta.axiom.skipHistoryReplay: true` and then fetches the complete authoritative
+timeline before marking the thread loaded. With the Desktop frontend and
+`timeline@2` negotiated, native code restores the full conversation and image
+catalog without also replaying historical presentation notifications. This
+avoids transferring generated images twice and broadcasting partial history
+for every saved event. Ordinary ACP loads retain transcript replay; older
+sidecars can ignore the metadata and the timeline still replaces their replay.
+The local pipe reader buffers fragments until a complete frame arrives, so
+large image pages require linear copying while keeping the 64 MiB frame limit.
+
+Optional `imageResources@1` makes generated-image timeline content metadata-only:
+`{type:"image", mimeType:"image/png", width, height, imageResource:{callId,sha256}}`.
+Live tool updates carry the same descriptor in `rawOutput.imageResource`.
+`_axiom/image/read` accepts `{threadId,callId,sha256}` and returns one original
+PNG only after resolving the exact completed tool under the current account
+and checking its saved proof, digest and size. Older clients keep inline image
+content. Saved-image reads remain available without an installed image provider.
+Desktop mints a separate opaque handle for each window/document; renderer callers
+cannot supply a native path, URL or another thread identity. Its viewport loader
+keeps at most two reads in flight, shares duplicate reads and caches up to 32 MiB
+of idle originals. Active viewers pin their URLs. Account/runtime changes,
+disconnect, deletion and document unload invalidate handles and delayed replies.
 
 `lastMessageAt` describes nonempty user/assistant/reasoning activity.
 `lastUserMessageAt` advances on user submissions and is the current catalog sort
@@ -140,15 +164,22 @@ keeps its embedded system prompt and does not start servers from CLI configurati
 
 Optional `desktopMcp@1` adds `_axiom/desktop/mcp` for account-scoped local stdio
 connections: `list`, `save`, `delete`, `test`, `import` and per-thread `select`.
+`desktopMcp@2` adds remote Streamable HTTP, `connect`, `cancel_connect` and
+`disconnect`. `remoteSupported` reports whether both peers support remote
+connections; older peers receive only local connections and cannot execute saved
+remote selections. Missing `remote` fields preserve existing local configuration.
 Mutations carry `expectedRevision` and require idle work. Secrets are write-only
-OS-credential-store variables; only their names and opaque references are
+OS-credential-store variables, bearer tokens and OAuth grants; only variable names and opaque references are
 returned. Thread selections expose only the chosen MCP tools, without granting
 builtin Agent or Web authority. Prompts with `_meta.axiom.mcpRevision` bind to the
 current account-wide configuration/selection revision; mismatches fail before
 acceptance. Missing metadata exposes no Desktop MCP tools, preserving safe older
 client behavior. Connection changes invalidate affected selections/grants;
 MCP schema hashes are rechecked before each turn. This optional feature is
-advertised only by the Desktop frontend. See [local MCP connections](mcp.md).
+advertised only by the Desktop frontend. Native tool-call notifications carry
+`_meta.axiomMcpSource` and durable timeline metadata preserves `mcp_source` and
+`started`, identifying the call-time connection/destination and whether execution
+started. These describe tool activity, not inference attestation. See [MCP connections](mcp.md).
 
 Every Desktop prompt supplies `_meta.axiom.webEnabled`; only explicit boolean
 `true` permits built-in Web tools. Missing consent is false, and malformed
@@ -180,6 +211,45 @@ renderer from sending a file shape to an older process. Timeline metadata contai
 only summaries; `thread/attachments` reads original inputs under the active account
 guard. Revisions preserve attachments and recheck model support. Model discovery
 adds `fileMimeTypes`; `supportsImages` remains separate. See [direct uploads](desktop.md#images-and-files).
+
+`imageGeneration@3` exposes `generate` and `view_image` automatically for a
+vision-capable selected model when the native image service is installed. A
+prompt creates an image; an optional `reference_image_ids` array selects up to
+five distinct conversation-local images for editing or composition. The array
+defines `<image1>`, `<image2>`, etc. for that call. Prompt metadata has no Images toggle or
+per-message image permission. Native code checks model capability on every
+turn and rejects unadvertised image calls and nonvision image uploads. The earlier
+version-1 toggle and version-2 singular-reference contracts are not negotiated
+for new calls; their saved tool records remain renderable. Instructions
+require an explicit user request for image creation or editing; image analysis
+alone is not such a request. Web consent and Agent/MCP authority remain separate.
+
+`imageGeneration@4` adds `_axiom/image/regenerate` with only `threadId` and
+`callId`. Native code resolves a completed image tool record under the active
+account, verifies its reference order, and runs that stored request in a fresh
+image-only turn. It adds the result without replacing the user prompt, prior
+images, or later messages, and never calls the chat model. Running work is
+serialized per thread, supports standard cancellation, and retains normal
+authenticated progress, accounting, and durable recovery. Earlier sidecars
+reject the action before sending any generation request. The model-facing tool
+uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
+32-pixel-grid output within the existing area cap. New images default to 2:3.
+
+`view_image` selects one conversation-local `image_id` for optional inspection,
+including a result generated earlier in the same turn. Native code supplies a
+bounded visual observation after all replies in the tool-call batch, preserving
+provider tool-history ordering. The observation is application context, not a
+new user request. ACP receives a normal text tool result; image bytes go only to
+the selected model's encrypted vision input. Successful views reconstruct from
+the saved tool arguments and completion status, using the existing local image
+catalog. No additional ACP extension or image-generation request is needed.
+
+Image progress uses standard tool-call updates with
+`rawOutput.imageProgress = {stage, percent}`. Native tool metadata retains the
+latest value as `image_progress` for durable snapshots. Intermediate percentages
+are bounded to 0–99 and monotonic; successful tool completion supplies the UI's
+100% state. Stages are `queued`, `generating` and `finishing`. Progress is tool
+state rather than assistant text, model output or additional image content.
 
 ## Accounts, billing and public evidence
 
@@ -223,6 +293,16 @@ Payment responses add optional `quote_id`, `invoice_expires_at`, and `active` fo
 older-server compatibility, preserving the server's snake_case funding contract.
 The native client checks that invoice metadata appears together, expiry is exactly
 six hours after creation, and rate expiry never exceeds invoice expiry.
+
+`billing@7` adds `_axiom/billing/credits` with finite tagged actions/results for
+the independent `credits@3` summary, plans, model multipliers, credit usage,
+subscription Checkout/change/portal, saved-card setup, auto top-up consent,
+operation recovery and one-time card funding. Credit values are exact bounded
+decimal strings at scale 1,000,000. Legacy `BillingStatus` monetary fields retain
+their denomination and exclude weekly allowance. Updated SDK state carries the
+credit summary separately and discards stale account/runtime replies. Native
+requests use account token leases; renderers cannot select URLs, headers or an
+arbitrary principal. See [billing controls](billing.md#integration).
 
 Billing status can include shared `trial_capacity` metadata. Trial admission
 errors are typed `TRIAL_CAPACITY` with a retry timestamp; clients show a capacity

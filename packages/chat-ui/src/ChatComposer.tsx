@@ -19,6 +19,7 @@ import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
 import { DraftAttachments, type AttachmentControl } from "./Attachments";
+import { ToolsControl } from "./ToolsControl";
 import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
 
 function reasoningEffortLabel(effort: ReasoningEffort): string {
@@ -30,7 +31,7 @@ function reasoningEffortLabel(effort: ReasoningEffort): string {
 
 let previousComposerBounds: DOMRect | undefined;
 
-type OpenMenu = "model" | "thinking" | "agent" | null;
+type OpenMenu = "model" | "thinking" | "agent" | "tools" | null;
 
 interface ChatComposerProps {
   attachments?: AttachmentControl;
@@ -114,7 +115,7 @@ export function ChatComposer({
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
   const canAttach = !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
-  const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? `${selectedModel.providerLabel}’s ${selectedModel.shortLabel} doesn’t support attachments.` : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
+  const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
   const canSend = !preparing && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
 
@@ -140,8 +141,8 @@ export function ChatComposer({
   }, [models.length]);
 
   useEffect(() => {
-    // Agent owns a top-layer modal, including dismissal and focus handling.
-    if (!openMenu || openMenu === "agent") return;
+    // Agent and Tools own top-layer modals, including dismissal and focus.
+    if (!openMenu || openMenu === "agent" || openMenu === "tools") return;
     const closeMenu = (event: MouseEvent) => {
       if (!controlsRef.current?.contains(event.target as Node)) setOpenMenu(null);
     };
@@ -165,7 +166,7 @@ export function ChatComposer({
     <div ref={composerRoot} className="group relative w-full">
       <fieldset disabled={preparing} aria-busy={preparing || undefined} className="composer-shell relative flex min-w-0 flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
         {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
-        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these files, or remove the unsupported attachments.</p> : null}
+        {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Enable Images for image editing, or choose a model that supports these files.</p> : null}
         <div className="flex items-start gap-3">
           <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
           <textarea
@@ -300,6 +301,7 @@ export function ChatComposer({
               Web
               {webEnabled ? <Check size={12} aria-hidden="true" /> : null}
             </button>
+            {agentControl ? <ToolsControl key={`tools:${agentControl.scope}`} options={agentControl} open={openMenu === "tools"} onOpenChange={open => setOpenMenu(open ? "tools" : null)} /> : null}
             {agentControl ? <AgentModeControl key={agentControl.scope} options={agentControl} open={openMenu === "agent"} onOpenChange={(open) => setOpenMenu(open ? "agent" : null)} /> : null}
           </div>
 
@@ -307,7 +309,7 @@ export function ChatComposer({
             {security !== undefined && onVerifySecurity ? (
               <TeeVerificationBadge key={JSON.stringify([securityScope, security.sessionId, selectedModelId])}
                 session={security} model={models.find((model) => model.id === selectedModelId)} modelId={selectedModelId}
-                webEnabled={webEnabled} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
+                webEnabled={webEnabled} mcpServers={agentControl?.mcpServers} selectedMcpTools={agentControl?.selection.mcpTools} disabledReason={securityRefreshDisabledReason} onVerify={onVerifySecurity} />
             ) : null}
             <ContextUsageIndicator
               usage={contextUsage}

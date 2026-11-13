@@ -44,6 +44,20 @@ model preferences, selection, and durable submission/queue lifecycle respectivel
 Account/runtime generations and stable submission IDs remain the guards against
 late work affecting a different account or conversation.
 
+With `imageResources@1`, native timeline queries project image dimensions and
+identities without sending PNGs to Desktop. Live image updates also carry
+metadata. Main mints opaque window/document handles; viewport requests resolve
+one account-owned completed tool and check its original hash before preload
+creates a local Blob URL. No image bytes cross `contextBridge`. Preload shares
+duplicate reads, limits concurrency to two and retains at most 32 MiB of idle
+originals, with active viewers pinned. Logout, account/runtime changes,
+disconnection and document unload revoke resources; deleted timeline resources
+and delayed replies are discarded. Legacy inline image transport still sends
+assets separately from streaming state and supports late bootstrap recovery.
+Native conversation storage, image hashes, E2EE verification and resolution
+limits are unchanged. Browser inline-image compatibility decoding yields in
+bounded chunks outside React rendering.
+
 ## Account and credential ownership
 
 Native login starts a short-lived browser authorization bound to PKCE and a
@@ -79,6 +93,15 @@ recovery, projections and value encoding. Helpers receive the existing connectio
 or transaction; moving a method does not create an extra commit boundary.
 Runtime events become materialized records rather than stored event envelopes.
 Startup marks unfinished work interrupted and never replays side effects.
+Stop rebuilds model context from the committed local timeline before accepting
+the next prompt. For models that support reasoning replay, request preparation
+preserves reasoning-only assistant entries with a `<response_incomplete>` body
+marking the reasoning as unfinished. Empty assistant entries and reasoning-only
+entries for models without replay support are omitted from requests. The local
+timeline retains the original thinking trace without the generated marker.
+Partial answer text, refusals and tool calls remain eligible for replay under the
+selected model's capabilities. This applies independently of the next prompt's
+Web setting and does not relax provider message validation.
 The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
 [versioning policy](versioning.md) define compatibility.
 

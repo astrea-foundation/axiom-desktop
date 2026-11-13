@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { validateCreditBalances } from "@axiom/chat-core/creditBalances";
 import type {
   AccountStatusResponse,
   PromptAttachment,
@@ -27,6 +28,7 @@ import type {
   ConfigureDesktopAgentResponse,
   EventNotification,
   GetThreadTimelineResponse,
+  ReadImageResponse,
   ListModelsResponse,
   ListThreadsRequest,
   ListThreadsResponse,
@@ -65,12 +67,14 @@ const EXTENSION_CAPABILITIES = {
     collections: 1,
     desktopChat: 1,
     desktopAgent: 1,
-    desktopMcp: 1,
+    desktopMcp: 2,
     account: 2,
-    billing: 5,
+    billing: 7,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
+    imageGeneration: 4,
+    imageResources: 1,
     steering: 1,
     messageRevision: 1,
     attachments: 2,
@@ -156,12 +160,17 @@ export class AxiomAcpClient extends EventEmitter {
   }>();
   private readonly securityVerifications = new Map<string, { context: object; promise: Promise<VerifySecurityResponse> }>();
   private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean }>();
+  private readonly pendingImageRequests = new Map<string, AbortController>();
   private fullResync: Promise<void> | null = null;
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
   private supportsMcp = false;
+  private supportsImageGeneration = false;
+  private supportsImageRegeneration = false;
+  private supportsImageResources = false;
   private supportsCryptoInvoices = false;
+  private supportsCreditBilling = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -240,7 +249,12 @@ export class AxiomAcpClient extends EventEmitter {
     this.state.initializeRuntime(meta?.runtimeInstanceId);
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
+    this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
+    this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
+    this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
+    this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
+    this.supportsCreditBilling = (meta?.features?.billing ?? 0) >= 7;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -345,7 +359,13 @@ export class AxiomAcpClient extends EventEmitter {
   async loadSession(threadId: string, cwd: string): Promise<SessionStartResult> {
     this.assertInitialized();
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<SessionStartResult>("session/load", { sessionId: threadId, cwd, mcpServers: [] });
+    const result = await this.process.request<SessionStartResult>("session/load", {
+      sessionId: threadId, cwd, mcpServers: [],
+      // Desktop atomically restores the authoritative timeline below. Replaying
+      // every saved event first transfers all generated images a second time
+      // and publishes a growing state snapshot for each historical event.
+      ...(this.desktopBootstrap ? { _meta: { axiom: { skipHistoryReplay: true } } } : {}),
+    });
     this.assertAccountContext(accountContext);
     this.state.addSession(threadId, cwd);
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
@@ -401,6 +421,27 @@ export class AxiomAcpClient extends EventEmitter {
     }
   }
 
+  async regenerateImage(threadId: string, callId: string): Promise<{ callId: string }> {
+    if (!this.supportsImageRegeneration) throw new ProtocolError("Restart Axiom to regenerate individual images.");
+    if (!callId || callId.length > 512 || !threadId || threadId.length > 128) throw new ProtocolError("Invalid image identity");
+    if (this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Wait for the current response or stop it first.");
+    const context = this.state.accountContextToken();
+    const cancellation = new AbortController();
+    this.pendingImageRequests.set(threadId, cancellation);
+    this.state.setRunning(threadId, true);
+    try {
+      const result = await this.process.request<{ callId: string }>("_axiom/image/regenerate", { threadId, callId }, 0, cancellation.signal);
+      this.assertAccountContext(context);
+      return result;
+    } finally {
+      if (this.pendingImageRequests.get(threadId) === cancellation) this.pendingImageRequests.delete(threadId);
+      if (this.state.accountContextToken() === context) {
+        this.state.setRunning(threadId, false);
+        await this.refreshThread(threadId).catch(() => undefined);
+      }
+    }
+  }
+
   async getAttachments(threadId: string, userItemId: string): Promise<GetAttachmentsResponse> {
     if (!this.supportsAttachments) throw new ProtocolError("Restart Axiom to view attachments.");
     const context = this.state.accountContextToken();
@@ -409,7 +450,19 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
+  async readImage(threadId: string, callId: string, sha256: string): Promise<ReadImageResponse> {
+    if (!this.supportsImageResources) throw new ProtocolError("Restart Axiom to load saved images.");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ReadImageResponse>("_axiom/image/read", { threadId, callId, sha256 });
+    this.assertAccountContext(context);
+    if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 14_000_000) {
+      throw new ProtocolError("Saved image identity differs");
+    }
+    return result;
+  }
+
   async cancel(threadId: string): Promise<void> {
+    this.pendingImageRequests.get(threadId)?.abort();
     // A prompt waiting for attestation must not start after Stop was sent.
     for (const pending of this.pendingPrompts) if (pending.threadId === threadId) pending.cancelled = true;
     try {
@@ -647,9 +700,13 @@ export class AxiomAcpClient extends EventEmitter {
     // Startup, the account menu and the balance/deposit screens can all request
     // the same balance at once. Share only in-flight work for this exact account
     // generation; never cache a settled balance or join an old owner's request.
-    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then((result) => {
+    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then(async (result) => {
       this.assertAccountContext(accountContext);
       this.state.setBilling(result.status);
+      if (this.supportsCreditBilling) {
+        await this.creditBilling({kind: "summary"}).catch(() => undefined);
+        this.assertAccountContext(accountContext);
+      }
       return result;
     }).finally(() => {
       // An old account's completion must not detach a newer account's request.
@@ -657,6 +714,24 @@ export class AxiomAcpClient extends EventEmitter {
     });
     this.billingRefresh = { context: accountContext, promise };
     return promise;
+  }
+
+  async creditBilling(action: import("./generated/protocol.js").CreditBillingAction): Promise<import("./generated/protocol.js").CreditBillingResponse> {
+    if (!this.supportsCreditBilling) throw new ProtocolError("Restart Axiom with the updated native app to manage subscriptions and credits.");
+    const { validateCreditAction } = await import("./credit-billing.js");
+    validateCreditAction(action);
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<import("./generated/protocol.js").CreditBillingResponse>("_axiom/billing/credits", {action});
+    this.assertAccountContext(context);
+    if (result.result.kind === "summary") {
+      const summary: unknown = result.result.value;
+      if (summary === null) this.state.setCreditBalances(null);
+      else {
+        validateCreditBalances(summary);
+        this.state.setCreditBalances(summary);
+      }
+    }
+    return result;
   }
 
   async cryptoOptions(): Promise<CryptoOptionsResponse> {

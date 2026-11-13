@@ -11,7 +11,7 @@ members = [
     "crates/axiom-openai-compat",
     "crates/axiom-secure-client",
 ]
-exclude = ["vendor/agent-client-protocol-2.0.0"]
+exclude = ["vendor/agent-client-protocol-2.0.0", "vendor/axiom-pool-protocol", "vendor/axiom-pool-client"]
 default-members = [
     "apps/axiomcli",
     "apps/axiom-proxy",

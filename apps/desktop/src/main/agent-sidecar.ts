@@ -2,7 +2,7 @@ import type { PromptAttachment } from "@axiom/axiom-acp-client";
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, shell, type WebContents } from "electron";
 import type { DesktopMcpRequest } from "@axiom/axiom-acp-client";
 import {
   AxiomAcpClient,
@@ -22,12 +22,25 @@ import {
 import { RestartPolicy } from "./restart-policy";
 import { actionableAcpError } from "./agent-errors";
 import { resolveServiceOrigins, trustedNativeAuthorizationUrl } from "./service-origins";
+import { localProfile } from "./local-profile";
+import { AgentStateTransport } from "./agent-state-transport";
 
 export const AGENT_STATE_CHANNEL = "agent:state-changed";
 export const AGENT_INTERACTION_CHANNEL = "agent:interaction";
 
+const rendererTransports = new WeakMap<WebContents, AgentStateTransport>();
+function rendererTransport(contents: WebContents): AgentStateTransport {
+  let transport = rendererTransports.get(contents);
+  if (!transport) { transport = new AgentStateTransport(); rendererTransports.set(contents, transport); }
+  return transport;
+}
+
 function broadcast(channel: string, value: unknown): void {
-  for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, value);
+  for (const window of BrowserWindow.getAllWindows()) {
+    const payload = channel === AGENT_STATE_CHANNEL
+      ? rendererTransport(window.webContents).encode(value as ClientState) : value;
+    window.webContents.send(channel, payload);
+  }
 }
 
 async function executable(path: string): Promise<boolean> {
@@ -59,6 +72,13 @@ export async function resolveSidecar(): Promise<string> {
 }
 
 export class AgentSidecar {
+  rendererState(contents: WebContents) {
+    return rendererTransport(contents).encode(this.state(), true);
+  }
+  rendererImage(contents: WebContents, context: string, id: string) {
+    const client = this.requireClient();
+    return rendererTransport(contents).readImage(context, id, request => client.readImage(request.threadId, request.callId, request.sha256));
+  }
   constructor(private readonly stateChanged: (state: ClientState) => void = () => {}) {}
   private client: AxiomAcpClient | null = null;
   private initializingClient: AxiomAcpClient | null = null;
@@ -103,6 +123,20 @@ export class AgentSidecar {
     let client: AxiomAcpClient | null = null;
     try {
       const command = await resolveSidecar();
+      // Installed native trust configuration is startup input, never an ACP
+      // or renderer preference. Packaged apps only use their own resource.
+      const chutesConfig = app.isPackaged
+        ? join(process.resourcesPath, "chutes", "native.json")
+        : process.env.AXIOM_CHUTES_CLIENT_CONFIG_FILE;
+      let chutesEnv: NodeJS.ProcessEnv = {};
+      if (chutesConfig) {
+        try {
+          await access(chutesConfig, constants.R_OK);
+          chutesEnv = { AXIOM_CHUTES_CLIENT_CONFIG_FILE: chutesConfig };
+        } catch (error) {
+          if (!app.isPackaged) throw error;
+        }
+      }
       client = new AxiomAcpClient({
         command,
         args: ["acp", "--frontend", "desktop-chat"],
@@ -110,6 +144,8 @@ export class AgentSidecar {
         env: {
           AXIOM_AUTH_URL: this.origins.auth,
           AXIOM_BASE_URL: this.origins.api,
+          ...chutesEnv,
+          ...localProfile({ packaged: app.isPackaged, environment: process.env, home: app.getPath("home") }).sidecarEnv,
           // Scope only native account storage, not Electron's OS browser lookup.
           ...(!app.isPackaged && process.env.AXIOM_DESKTOP_STAGING_PROFILE === "1" ? {
             XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
@@ -235,6 +271,7 @@ export class AgentSidecar {
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
   getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
+  regenerateImage(threadId: string, callId: string) { return this.requireClient().regenerateImage(threadId, callId); }
 
   prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number) {
     return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments, mcpRevision);
@@ -286,6 +323,10 @@ export class AgentSidecar {
 
   cryptoOptions() {
     return this.requireClient().cryptoOptions().catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  creditBilling(action: import("@axiom/axiom-acp-client").CreditBillingAction) {
+    return this.requireClient().creditBilling(action).catch((error: unknown) => { throw actionableAcpError(error); });
   }
 
   cryptoPayments() {

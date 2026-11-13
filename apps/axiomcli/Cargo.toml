@@ -32,18 +32,21 @@ getrandom = "0.4.1"
 git2 = { version = "0.21.0", features = ["vendored-libgit2"] }
 globset = "0.4.20"
 ignore = "0.4.33"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 keyring = "4.1.6"
+keyring-core = "1.0.0"
 open = "5.3.6"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
-rmcp = { version = "3.1.4", default-features = false, features = ["client", "server", "transport-child-process", "transport-io"] }
+rmcp = { version = "3.1.4", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "uuid"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 shell-words = "1.1.1"
+sse-stream = "0.2.6"
 similar = "3.0.2"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["full"] }
@@ -64,6 +67,7 @@ nix = { version = "0.31.3", features = ["process", "signal"] }
 win32job = "2.0.3"
 
 [dev-dependencies]
+rmcp = { version = "3.1.4", default-features = false, features = ["transport-streamable-http-server"] }
 assert_cmd = "2.1.1"
 axum = "0.8.7"
 insta = { version = "1.43.2", features = ["json"] }

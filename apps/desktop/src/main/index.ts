@@ -19,6 +19,9 @@ import { UpdateService } from "./update-service";
 import { updateIdentity } from "./update-identity";
 import { nativeUpdates } from "./native-updates";
 import { claimFirstLaunchUpdate } from "./first-launch-update";
+import { localProfile } from "./local-profile";
+import { installPageContextMenu } from "./page-context-menu";
+import { FactoryResetController, checkFactoryResetSupport, factoryResetError, factoryResetRelaunch } from "./factory-reset";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +30,7 @@ const WINDOW_HEIGHT = 860;
 const BACKGROUND = "#f2f2f4";
 const BACKGROUND_DARK = "#141416";
 const IS_STAGING_PROFILE = !app.isPackaged && process.env.AXIOM_DESKTOP_STAGING_PROFILE === "1";
+const LOCAL_PROFILE = localProfile({ packaged: app.isPackaged, environment: process.env, home: app.getPath("home") });
 // TODO(brand): confirm the legal line before release.
 const COPYRIGHT = "© 2026 Astrea Foundation";
 const proxy = new ProxySupervisor(async (port, accountId, token) => {
@@ -36,6 +40,7 @@ const proxy = new ProxySupervisor(async (port, accountId, token) => {
     cwd: app.getPath("home"), windowsHide: true, stdio: "pipe",
     env: createChildEnvironment(process.env, {
       AXIOM_AUTH_URL: origins.auth, AXIOM_BASE_URL: origins.api, AXIOM_PROXY_TOKEN: token,
+      ...LOCAL_PROFILE.sidecarEnv,
       ...(IS_STAGING_PROFILE ? {
         XDG_CONFIG_HOME: join(app.getPath("home"), ".axiom-staging", "config"),
         XDG_DATA_HOME: join(app.getPath("home"), ".axiom-staging", "data"),
@@ -50,6 +55,21 @@ const sidecar = new AgentSidecar((state) => {
 });
 let shutdownStarted = false;
 let updates: UpdateService | undefined;
+const factoryReset = new FactoryResetController({
+  isInstalling: () => updates?.snapshot().status === "installing" || shutdownStarted,
+  prepare: async () => {
+    const executable = await resolveSidecar();
+    await checkFactoryResetSupport(executable);
+    const relaunch = factoryResetRelaunch({
+      sidecar: executable, executable: process.env.APPIMAGE || app.getPath("exe"),
+      argv: process.argv, userData: app.getPath("userData"),
+      profile: IS_STAGING_PROFILE ? "staging" : LOCAL_PROFILE.userDataName ? "local" : "system",
+    });
+    return () => app.relaunch(relaunch);
+  },
+  stop: async () => { await Promise.all([updates?.dispose(), proxy.dispose(), sidecar.stop()]); },
+  quit: () => { shutdownStarted = true; app.quit(); },
+});
 // Dev-only: preview another platform's chrome (AXIOM_DESKTOP_PLATFORM_PREVIEW=win32).
 const PLATFORM_PREVIEW = app.isPackaged ? undefined : process.env.AXIOM_DESKTOP_PLATFORM_PREVIEW;
 
@@ -60,6 +80,9 @@ if (IS_STAGING_PROFILE) {
     authUrl: process.env.AXIOM_AUTH_URL, apiUrl: process.env.AXIOM_BASE_URL });
   if (origins.api !== STAGING_API_ORIGIN) throw new Error("Staging profile requires staging service origins");
   app.setPath("userData", join(app.getPath("appData"), "Axiom Staging"));
+}
+if (LOCAL_PROFILE.userDataName) {
+  app.setPath("userData", join(app.getPath("appData"), LOCAL_PROFILE.userDataName));
 }
 // Electron 37 derives X11 WM_CLASS from this name, not --class. Keep it stable
 // across profiles; staging already has isolated userData above.
@@ -114,6 +137,7 @@ function agentHandle(channel: string, handler: AgentHandler): void {
     if (!trusted || !BrowserWindow.fromWebContents(event.sender)) {
       throw new Error("agent IPC rejected an untrusted renderer");
     }
+    if (factoryReset.isPending()) throw new Error("Axiom is resetting. Wait for it to reopen.");
     if (updates?.snapshot().status === 'installing' && (channel.startsWith('agent:prompt') || channel === 'proxy:start')) {
       throw new Error('Axiom is installing an update. Wait for it to restart.');
     }
@@ -122,6 +146,7 @@ function agentHandle(channel: string, handler: AgentHandler): void {
 }
 
 function installAgentIpc(): void {
+  agentHandle("app:factory-reset", (_event, confirmation: unknown) => factoryReset.reset(confirmation));
   agentHandle("proxy:state", () => proxy.snapshot());
   agentHandle("proxy:start", (_event, port: unknown, accountId: unknown, runtimeId: unknown) => {
     if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) throw new Error("Port must be between 1 and 65535");
@@ -131,7 +156,9 @@ function installAgentIpc(): void {
   agentHandle("proxy:copy-token", (_event, accountId: unknown, runtimeId: unknown) => {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
-  agentHandle("agent:state", () => sidecar.state());
+  agentHandle("agent:state", (event) => sidecar.rendererState(event.sender));
+  agentHandle("agent:image-read", (event, context: unknown, id: unknown) =>
+    sidecar.rendererImage(event.sender, boundedString(context, "image context", 128), boundedString(id, "image resource", 128)));
   agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
     if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
@@ -165,6 +192,8 @@ function installAgentIpc(): void {
   });
   agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
     sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
+  agentHandle("agent:image-regenerate", (_event, threadId: unknown, callId: unknown) =>
+    sidecar.regenerateImage(boundedString(threadId, "thread ID", 128), boundedString(callId, "image call ID", 512)));
   agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
     if (typeof text !== "string") throw new Error("Invalid prompt input");
@@ -268,6 +297,24 @@ function installAgentIpc(): void {
     return result;
   });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
+  agentHandle("agent:credit-billing", async (_event, request: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const { validateCreditAction, allowedBillingUrl } = await import("@axiom/axiom-acp-client");
+    const action = validateCreditAction(request);
+    const response = await sidecar.creditBilling(action);
+    requirePaymentAccount(id, sidecar.state());
+    if (["checkout", "portal", "setup_card", "create_card_payment", "operation"].includes(action.kind)) {
+      const result = response.result;
+      const url = result.kind === "portal" ? result.value.url : result.kind === "operation" ? result.value.url
+        : result.kind === "card_payment" ? result.value.checkout_url : null;
+      if (url) {
+        if (!allowedBillingUrl(url)) throw new Error("Invalid billing destination.");
+        await shell.openExternal(url);
+      }
+    }
+    return response;
+  });
   agentHandle("agent:crypto-options", async (_event, accountId: unknown) => {
     const id = boundedString(accountId, "account ID", 128);
     requirePaymentAccount(id, sidecar.state());
@@ -470,6 +517,7 @@ function createWindow(): BrowserWindow {
 
   window.setMenuBarVisibility(false);
   installApplicationMenu();
+  installPageContextMenu(window, app.getPath("downloads"), (items) => Menu.buildFromTemplate(items));
   if (PLATFORM_PREVIEW && process.platform === "darwin") window.setWindowButtonVisibility(false);
 
   window.on("ready-to-show", () => {
@@ -588,6 +636,10 @@ if (primaryInstance) app.on("second-instance", () => {
 });
 
 if (primaryInstance) void app.whenReady().then(async () => {
+  const resetError = factoryResetError(process.argv);
+  if (resetError !== null) {
+    dialog.showErrorBox("Factory reset did not finish", `${resetError}\n\nSome data or saved credentials may remain. Resolve the problem and try again from Settings → Account.`);
+  }
   const metadata = app.isPackaged
     ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }
     : {};
@@ -600,7 +652,7 @@ if (primaryInstance) void app.whenReady().then(async () => {
     run: nativeUpdates(resolveSidecar),
     parentPid: process.pid,
     prepareRestart: prepareUpdateRestart,
-    canRestart: () => !Object.values(sidecar.state().sessions).some(session => session.running)
+    canRestart: () => !factoryReset.isPending() && !Object.values(sidecar.state().sessions).some(session => session.running)
       && !['running', 'starting', 'stopping'].includes(proxy.snapshot().status),
     restart: async () => {
       await Promise.all([proxy.dispose(), sidecar.stop()]);
@@ -681,6 +733,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
+  if (factoryReset.isPending()) return;
   shutdownStarted = true;
   void Promise.all([proxy.dispose(), sidecar.stop(), updates?.dispose()]).finally(() => app.quit());
 });

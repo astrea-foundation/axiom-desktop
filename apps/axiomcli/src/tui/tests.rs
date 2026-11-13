@@ -1095,7 +1095,7 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
     });
 
     let folded = render_symbols(100, 30, &state);
-    assert!(folded.contains("Out of credits"));
+    assert!(folded.contains("Insufficient balance. Top up to continue."));
     assert!(folded.contains("Use /topup"));
     assert!(!folded.contains("insufficient_credit"));
     let task = state.entries[state.task_index(&turn).expect("task")]
@@ -1110,6 +1110,9 @@ fn insufficient_credit_failure_has_a_specific_top_up_message() {
 
     let unrelated = "provider error: HTTP 402 Payment Required: card authorization failed";
     assert_eq!(user_facing_provider_error(unrelated), unrelated);
+    let canonical = user_facing_provider_error(axiom_secure_client::INSUFFICIENT_CREDIT_MESSAGE);
+    assert!(canonical.contains("Insufficient balance. Top up to continue."));
+    assert!(canonical.contains("Use /topup"));
 }
 
 #[test]
@@ -1200,6 +1203,7 @@ fn ascii_mode_and_every_semantic_category_render_without_controls() {
             }],
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: "c1".into(),
             name: "read_file".into(),
@@ -1414,6 +1418,7 @@ fn task_events_update_one_live_card_and_keep_raw_details_folded() {
             text: "private scratch reasoning".into(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: "read-1".into(),
             name: "read_file".into(),
@@ -1500,6 +1505,7 @@ fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
     });
 
     state.apply(&AppEvent::ToolProposed {
+        mcp_source: None,
         turn_id: turn.clone(),
         call_id: "command".into(),
         name: "run_command".into(),
@@ -1539,6 +1545,7 @@ fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
         ),
     ] {
         state.apply(&AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: call_id.into(),
             name: name.into(),
@@ -1681,6 +1688,7 @@ fn typical_operational_document_snapshot() {
         output_tokens: 7,
     });
     state.apply(&AppEvent::ToolProposed {
+        mcp_source: None,
         turn_id: turn.clone(),
         call_id: "tool-1".into(),
         name: "read_file".into(),
@@ -1867,6 +1875,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             ],
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: working_turn.clone(),
             call_id: "read-release".into(),
             name: "read_file".into(),
@@ -1886,6 +1895,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             success: true,
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: working_turn.clone(),
             call_id: "package".into(),
             name: "shell".into(),
@@ -1918,6 +1928,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             turn_id: waiting_turn.clone(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: waiting_turn,
             call_id: "write-manifest".into(),
             name: "apply_patch".into(),
@@ -1987,6 +1998,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             text: "The regression begins in the task reducer. I should inspect the call identity path before editing.".into(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: details_turn.clone(),
             call_id: "search-reducer".into(),
             name: "search_files".into(),
@@ -2006,6 +2018,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             success: true,
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: details_turn.clone(),
             call_id: "patch-reducer".into(),
             name: "apply_patch".into(),

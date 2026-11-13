@@ -26,13 +26,25 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct ToolContext {
     pub session_id: SessionId,
+    /// The actual model selected for the turn that produced this tool call.
+    pub model_id: String,
     pub cwd: PathBuf,
     pub permission_profile: PermissionProfile,
+    pub images: crate::image_tool::ImageCatalog,
+    pub progress: Option<ToolProgress>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+pub struct ToolProgress {
+    pub call_id: String,
+    pub events: tokio::sync::mpsc::Sender<AppEvent>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct ToolResult {
     pub content: String,
+    /// Visual observations for the next model step, separate from display text.
+    pub images: Vec<axiom_inference::ImageContent>,
     pub success: bool,
     pub truncated: bool,
     pub changed_paths: Vec<PathBuf>,
@@ -43,11 +55,29 @@ pub struct ToolResult {
     pub questions: Option<QuestionRequest>,
 }
 
+impl std::fmt::Debug for ToolResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolResult")
+            .field("content", &self.content)
+            .field("image_count", &self.images.len())
+            .field("success", &self.success)
+            .field("truncated", &self.truncated)
+            .field("changed_paths", &self.changed_paths)
+            .field("diff", &self.diff)
+            .field("file_diffs", &self.file_diffs)
+            .field("background", &self.background)
+            .field("events", &self.events)
+            .field("questions", &self.questions)
+            .finish()
+    }
+}
+
 impl ToolResult {
     #[must_use]
     pub fn success(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            images: Vec::new(),
             success: true,
             truncated: false,
             changed_paths: Vec::new(),
@@ -65,6 +95,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
+    fn mcp_source(&self) -> Option<axiom_acp_extension::McpToolSource> {
+        None
+    }
     fn access(&self) -> ToolAccess {
         ToolAccess::Write
     }
@@ -292,6 +325,10 @@ impl std::fmt::Debug for ToolRegistry {
 }
 
 impl ToolRegistry {
+    #[must_use]
+    pub fn mcp_source(&self, name: &str) -> Option<axiom_acp_extension::McpToolSource> {
+        self.tools.get(name).and_then(|tool| tool.mcp_source())
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -913,6 +950,7 @@ impl Tool for InspectGit {
             self.max_bytes,
         )?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&inspection)?,
             success: true,
             truncated: inspection.truncated,
@@ -963,6 +1001,7 @@ impl Tool for ViewSessionDiff {
         let _: BTreeMap<String, Value> = parse(self.name(), arguments)?;
         let (paths, diff, truncated) = self.changes.render(context);
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&json!({
                 "paths": paths,
                 "diff": diff,
@@ -1082,6 +1121,7 @@ impl Tool for ReadFile {
             128 * 1024,
         )?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&read)?,
             success: true,
             truncated: read.truncated,
@@ -1216,6 +1256,7 @@ impl Tool for ApplyPatch {
             })
             .collect();
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&outcome)?,
             success: true,
             truncated: outcome.diff_truncated,
@@ -1287,6 +1328,7 @@ impl Tool for ReplaceText {
             new_text,
         };
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&result)?,
             success: true,
             truncated: false,
@@ -1458,6 +1500,7 @@ impl Tool for RunCommand {
             )
             .await?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&outcome)?,
             success: outcome.exit_code == Some(0),
             truncated: outcome.truncated,
@@ -1545,6 +1588,7 @@ impl Tool for RunShell {
             )
             .await?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&outcome)?,
             success: outcome.exit_code == Some(0),
             truncated: outcome.truncated,
@@ -1600,6 +1644,7 @@ impl Tool for StartBackground {
             )
             .await?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: json!({"task_id": id, "state": "running"}).to_string(),
             success: true,
             truncated: false,
@@ -1695,6 +1740,7 @@ impl Tool for BackgroundStatus {
         let args: TaskArgs = parse(self.name(), arguments)?;
         let snapshot = self.processes.snapshot(&args.task_id).await?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&snapshot)?,
             success: true,
             truncated: snapshot.truncated,
@@ -1757,6 +1803,7 @@ impl Tool for WaitBackground {
             snapshot = wait => snapshot?,
         };
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&snapshot)?,
             success: snapshot
                 .outcome
@@ -1867,6 +1914,7 @@ impl Tool for FetchUrl {
         let args: FetchArgs = parse(self.name(), arguments)?;
         let result = self.fetcher.fetch(&args.url, cancellation).await?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: serde_json::to_string_pretty(&result)?,
             success: true,
             truncated: result.truncated,
@@ -1910,6 +1958,7 @@ impl Tool for StopBackground {
         let args: TaskArgs = parse(self.name(), arguments)?;
         self.processes.stop(&args.task_id).await?;
         Ok(ToolResult {
+            images: Vec::new(),
             content: json!({"task_id": args.task_id, "state": "stopping"}).to_string(),
             success: true,
             truncated: false,
@@ -2330,9 +2379,12 @@ mod tests {
     async fn registry_rejects_duplicates_and_unknown_tools() {
         let root = tempdir().expect("root");
         let context = ToolContext {
+            model_id: "test-model".into(),
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Confirm,
+            images: crate::image_tool::ImageCatalog::default(),
+            progress: None,
         };
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(TestTool)).expect("register");
@@ -2388,9 +2440,12 @@ mod tests {
         let root = tempdir().expect("root");
         std::fs::write(root.path().join("hello.txt"), "hello\n").expect("fixture");
         let context = ToolContext {
+            model_id: "test-model".into(),
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Confirm,
+            images: crate::image_tool::ImageCatalog::default(),
+            progress: None,
         };
         let registry = test_registry(4096).expect("registry");
         let read = registry
@@ -2465,9 +2520,12 @@ mod tests {
     async fn plan_tools_persist_revision_and_emit_review_event() {
         let root = tempdir().expect("root");
         let context = ToolContext {
+            model_id: "test-model".into(),
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::FullAccess,
+            images: crate::image_tool::ImageCatalog::default(),
+            progress: None,
         };
         let registry = test_registry(4096).expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
@@ -2558,9 +2616,12 @@ mod tests {
     async fn progress_tool_emits_structured_checklist_and_progress_events() {
         let root = tempdir().expect("root");
         let context = ToolContext {
+            model_id: "test-model".into(),
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Observe,
+            images: crate::image_tool::ImageCatalog::default(),
+            progress: None,
         };
         let registry = test_registry(4096).expect("registry");
         let result = registry
@@ -2592,9 +2653,12 @@ mod tests {
         let root = tempdir().expect("root");
         std::fs::write(root.path().join("file.txt"), "content").expect("fixture");
         let context = ToolContext {
+            model_id: "test-model".into(),
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::Observe,
+            images: crate::image_tool::ImageCatalog::default(),
+            progress: None,
         };
         let registry = test_registry(4096).expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");
@@ -2647,9 +2711,12 @@ mod tests {
     fn full_access_auto_approves_repository_mutation_effects() {
         let root = tempdir().expect("root");
         let context = ToolContext {
+            model_id: "test-model".into(),
             session_id: SessionId::new(),
             cwd: root.path().to_path_buf(),
             permission_profile: PermissionProfile::FullAccess,
+            images: crate::image_tool::ImageCatalog::default(),
+            progress: None,
         };
         let registry = test_registry(4096).expect("registry");
         let policy = PolicyEngine::for_workspace(root.path()).expect("policy");

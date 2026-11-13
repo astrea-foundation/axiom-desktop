@@ -54,6 +54,8 @@ pub(super) async fn prompt(
         prompt_metadata(request.meta.as_ref()).map_err(agent_error)
     );
     let web_enabled = prompt_web_enabled(ctx_frontend, prompt_metadata.as_ref());
+    let image_tools_available =
+        extension_enabled(&ctx_extension_state, ExtensionFeature::ImageGeneration);
     let agent_revision = prompt_metadata
         .as_ref()
         .and_then(|metadata| metadata.agent_revision)
@@ -459,6 +461,7 @@ pub(super) async fn prompt(
                     &connection,
                     &ctx_extension_state,
                     &ctx_auth,
+                    ctx_runner.as_ref(),
                 )
                 .await?;
                 commit_account_store_switch(
@@ -520,6 +523,7 @@ pub(super) async fn prompt(
                     &connection,
                     &ctx_extension_state,
                     &ctx_auth,
+                    ctx_runner.as_ref(),
                 )
                 .await?;
                 commit_account_store_switch(
@@ -586,6 +590,7 @@ pub(super) async fn prompt(
                     ctx_runner.accept_outdated_tee(&session_model, work.cancellation.clone())).await?.map_err(agent_error)?;
                 strict_extension_security_verification(verification.clone()).map_err(agent_error)?;
                 send_extension_activity(&connection, &ctx_extension_state, Some(&session_id), ActivityEvent::SecurityChanged {
+ evidence: None,
                     status: extension_security_status(verification.status),
                 })?;
                 send_text(&connection, &session_id, "Outdated TEE accepted for this provider until restart. All other verification checks remain required.".into())?;
@@ -632,6 +637,7 @@ pub(super) async fn prompt(
                     &ctx_extension_state,
                     Some(&session_id),
                     ActivityEvent::SecurityChanged {
+ evidence: None,
                         status: extension_security_status(
                             crate::app::SecurityStatus::Verifying,
                         ),
@@ -675,6 +681,7 @@ pub(super) async fn prompt(
                                 &ctx_extension_state,
                                 Some(&session_id),
                                 ActivityEvent::SecurityChanged {
+ evidence: None,
                                     status: extension_security_status(
                                         crate::app::SecurityStatus::Unverified,
                                     ),
@@ -700,6 +707,7 @@ pub(super) async fn prompt(
                                 &ctx_extension_state,
                                 Some(&session_id),
                                 ActivityEvent::SecurityChanged {
+ evidence: None,
                                     status: extension_security_status(
                                         crate::app::SecurityStatus::Unverified,
                                     ),
@@ -733,6 +741,7 @@ pub(super) async fn prompt(
                                 &ctx_extension_state,
                                 Some(&session_id),
                                 ActivityEvent::SecurityChanged {
+ evidence: None,
                                     status: ExtensionSecurityStatus {
                                         state: extension_security_state(status),
                                         detail: Some(error.to_string()),
@@ -762,6 +771,7 @@ pub(super) async fn prompt(
                                     &ctx_extension_state,
                                     Some(&session_id),
                                     ActivityEvent::SecurityChanged {
+ evidence: None,
                                         status: ExtensionSecurityStatus {
                                             state: ExtensionSecurityState::Failed,
                                             detail: Some(error.to_string()),
@@ -790,6 +800,7 @@ pub(super) async fn prompt(
                     &ctx_extension_state,
                     Some(&session_id),
                     ActivityEvent::SecurityChanged {
+ evidence: None,
                         status: extension_security_status(verification_status),
                     },
                 )?;
@@ -966,15 +977,10 @@ pub(super) async fn prompt(
                 return Err(crate::AxiomError::Provider("This model does not support these file uploads. Choose a model with the required upload support.".into()));
             }
         }
-        let history_has_images = revision_history.as_ref().is_some_and(|history| {
-            history.iter().rev().take_while(|event| !matches!(event.event, AppEvent::ContextCompacted { .. })).any(|event| {
-                matches!(&event.event, AppEvent::PromptAccepted { attachments, .. } if attachments.iter().any(|attachment| matches!(attachment, axiom_inference::PromptAttachment::Image { .. })))
-            })
-        });
-        if history_has_images || attachments.iter().any(|attachment| matches!(attachment, axiom_inference::PromptAttachment::Image { .. })) {
+        if attachments.iter().any(|attachment| matches!(attachment, axiom_inference::PromptAttachment::Image { .. })) {
             let models = ctx_runner.available_model_details(work.cancellation.child_token()).await?;
             if !models.iter().any(|model| model.id == session_model && model.supports_images) {
-                return Err(crate::AxiomError::Provider("This model does not support encrypted image input. Choose an image-capable model before sending.".into()));
+                return Err(crate::AxiomError::Provider("Choose a vision-capable model to upload or edit an image.".into()));
             }
         }
         Ok(())
@@ -1138,6 +1144,10 @@ pub(super) async fn prompt(
                 let thread = internal_id.clone();
                 crate::desktop_mcp::credential_task(move || crate::desktop_mcp::turn_config(&store, &thread, expected)).await.map_err(agent_error)?
             } else { None };
+            if mcp.as_ref().is_some_and(|turn| turn.servers.iter().any(|s| s.remote.is_some()))
+                && !extension_enabled(&task_extension, ExtensionFeature::RemoteMcp) {
+                return Err(agent_error(crate::AxiomError::Config("restart the updated Desktop app before using remote MCP connections".into())));
+            }
             let run = task_runner.run(
                 crate::agent::TurnContext {
                     mcp,
@@ -1146,6 +1156,7 @@ pub(super) async fn prompt(
                     cwd,
                     permission_profile: session_profile,
                     web_enabled,
+                    image_tools_available,
                     attachments,
                     steering: work.steering.clone(),
                     approval: Some(Arc::new(AcpApproval {

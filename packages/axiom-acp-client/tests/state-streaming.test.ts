@@ -42,6 +42,55 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
 
 const report = (inputTokens: number) => ({ inputTokens, outputTokens: 10, modelId: "model", reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 });
 
+test("image percentages update the owning tool and survive durable refresh without transcript text", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "image");
+  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  store.standardUpdate(proposed);
+  const progress = (revision: number, stage: string, percent: number) => ({...toolUpdate(revision, "image", "in_progress"),
+    update: {sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: {imageProgress: {stage, percent}}}});
+  store.standardUpdate(progress(3, "queued", 0));
+  store.standardUpdate(progress(4, "generating", 38));
+  let tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.deepEqual(tool.imageProgress, {stage: "generating", percent: 38});
+  assert.deepEqual(tool.content, []);
+  store.standardUpdate(progress(5, "generating", 25));
+  store.standardUpdate(progress(6, "generating", 100));
+  tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.deepEqual(tool.imageProgress, {stage: "generating", percent: 38});
+  const durable = page(8);
+  durable.thread.lastTimelineSequence = 2;
+  durable.items.push({...durable.items[0]!, id: "image-tool", externalId: "image", sequence: 2, kind: "tool_call", content: "", status: "in_progress",
+    metadata: {name: "generate", image_progress: {stage: "finishing", percent: 99}}});
+  store.replaceTimeline([durable]);
+  tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.deepEqual(tool.imageProgress, {stage: "finishing", percent: 99});
+  assert.deepEqual(tool.content, []);
+});
+
+test("live image references survive tool completion and metadata-only timeline replacement", () => {
+  const store = new AxiomStateStore(); store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "image");
+  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  store.standardUpdate(proposed);
+  const imageResource = { callId: "image", sha256: "ab".repeat(32), mimeType: "image/png", width: 1024, height: 1024 };
+  store.standardUpdate({ ...toolUpdate(3, "image", "in_progress"), update: {
+    sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: { imageResource },
+  } });
+  store.standardUpdate(toolUpdate(4, "image", "completed"));
+  const live = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.equal(live.status, "completed"); assert.equal(live.content.length, 1);
+  assert.deepEqual(live.content[0], { type: "image", mimeType: "image/png", width: 1024, height: 1024,
+    imageResource: { callId: "image", sha256: imageResource.sha256 } });
+  assert.ok(!JSON.stringify(live).includes('"data":'));
+  const durable = page(5); durable.thread.lastTimelineSequence = 2;
+  durable.items.push({ ...durable.items[0]!, id: "image-tool", externalId: "image", sequence: 2,
+    kind: "tool_call", content: "", status: "completed", metadata: { name: "generate", content: live.content } });
+  store.replaceTimeline([durable]);
+  assert.deepEqual(store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!.content, live.content);
+});
+
 test("late generated titles update the sidebar without replacing chat or recency", () => {
   const store = new AxiomStateStore();
   const snapshot = page(1, "The answer");
@@ -302,4 +351,26 @@ test("account switches clear stream revision tracking with the account-local tim
   store.setAccount({ revision: 2, state: "valid", account: { id: "two", linkedMethods: [] } });
   store.standardUpdate(delta(1, "new"));
   assert.equal(store.snapshot().sessions.thread!.timeline[0]?.text, "new");
+});
+
+test("MCP destinations survive live updates and durable reload independently of connection settings", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "mcp-call");
+  Object.assign(proposed.update, {title:"Calling MCP · mcp__project__search", rawInput:{query:"customer onboarding"},
+    _meta:{axiomMcpSource:{server:"project",destination:"https://original.example.com/mcp"}}});
+  store.standardUpdate(proposed);
+  const tool=()=>store.snapshot().sessions.thread!.timeline.find(item=>item.tool?.callId==="mcp-call")!.tool!;
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  assert.equal(tool().started,false);
+  store.standardUpdate(toolUpdate(3,"mcp-call","in_progress"));
+  assert.equal(tool().started,true);
+  store.standardUpdate(toolUpdate(4,"mcp-call","completed"));
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  const durable=page(5);durable.thread.lastTimelineSequence=2;
+  durable.items.push({...durable.items[0]!,id:"saved-call",externalId:"mcp-call",sequence:2,kind:"tool_call",content:"result",status:"completed",
+    metadata:{name:"mcp__project__search",arguments:{query:"customer onboarding"},started:true,mcp_source:{server:"project",destination:"https://original.example.com/mcp"}}});
+  store.replaceTimeline([durable]);
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  assert.equal(tool().started,true);
 });

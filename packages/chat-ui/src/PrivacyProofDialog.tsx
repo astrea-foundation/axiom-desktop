@@ -1,9 +1,11 @@
 /** @jsxRuntime automatic */
+import { McpPrivacyDetails } from "./McpPrivacy";
+import type { DesktopMcpServer } from "@axiom/chat-core/viewTypes";
 import { Check, ChevronRight, CircleHelp, Copy, FileCode2, Globe2, Minus, RotateCcw, Shield, ShieldCheck, ShieldX, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ClientSessionState } from "@axiom/chat-core/viewTypes";
 import type { ProviderModel } from "@axiom/chat-core/types";
-import { proofGroups, proofLabels, replyProof, verificationAge, type ProofState } from "./privacyProof";
+import { proofGroups, proofLabels, verificationAge, type ProofState } from "./privacyProof";
 
 const explanation: Record<ProofState, string> = {
   idle: "Verification is paused after 30 minutes without activity. It resumes when you return; model traffic still requires fresh evidence.",
@@ -12,7 +14,7 @@ const explanation: Record<ProofState, string> = {
   degraded: "You accepted this provider’s outdated TEE until Axiom restarts. Messages are still encrypted and authenticated, but the environment is missing security updates and may be vulnerable.",
   verifying: "Checking the model’s confidential-computing evidence on this device.",
   failed: "Verification failed. Model traffic requires valid evidence before it can be sent.",
-  expired: "This cached report has expired. Axiom requires fresh evidence for new model requests. Ongoing replies still require authentication against the evidence accepted when each request started.",
+  expired: "This environment report has expired. Axiom checks fresh hardware evidence and the encryption key before sending new model messages.",
   unavailable: "A current verification report isn’t available. Refresh to inspect the model’s proof.",
   unverified: "Check the model’s hardware evidence and encryption key before sending model messages.",
   development: "This development session has no production TEE proof.",
@@ -80,13 +82,15 @@ function Fact({ label, children, mono = false }: { label: string; children: Reac
   </div>;
 }
 
-export function PrivacyProofDialog({ session, model, modelId, state, now, webEnabled, error, disabledReason, onRefresh, onClose }: {
+export function PrivacyProofDialog({ session, model, modelId, state, now, webEnabled, mcpServers, selectedMcpTools, error, disabledReason, onRefresh, onClose }: {
   session: ClientSessionState;
   model?: ProviderModel;
   modelId: string;
   state: ProofState;
   now: number;
   webEnabled: boolean;
+  mcpServers?: DesktopMcpServer[];
+  selectedMcpTools?: string[];
   error: string | null;
   disabledReason?: string;
   onRefresh: () => void;
@@ -103,7 +107,8 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
   const providerLabel = evidence ? model?.providerId === evidence.providerId ? model.providerLabel : evidence.providerId : model?.providerLabel;
   const gateway = evidence?.attestationProtocol === "axiom-gateway-v2";
   const verified = state === "verified";
-  const reply = replyProof(session);
+  const hardwareVerified = state === "development"
+    && evidence?.attestationProtocol === "chutes-hardware-development-v1";
   const groups = evidence ? proofGroups(evidence) : [];
   useLayoutEffect(() => {
     mounted.current = true;
@@ -158,32 +163,33 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
           className="-mr-1 rounded-lg p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"><X size={16} /></button>
       </header>
       <div className="min-h-0 overflow-y-auto px-6 pb-5 sm:px-7">
-        <div className="-mx-3 mb-4">
-          <Disclosure title="Latest reply verification" value={reply.label} verified={reply.verified}><p>{reply.detail}</p></Disclosure>
-        </div>
-        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Cached attestation report</h3>
+        <h3 className="mb-3 text-[12px] font-medium text-[var(--color-text-secondary)]">Model inference · Environment attestation</h3>
         <div className="flex items-center gap-3">
           <div className={`shadow-glass-tile flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[var(--surface-tile)] ${verified ? "text-[var(--color-success)]" : state === "failed" ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]"}`}>
             {verified ? <ShieldCheck size={21} aria-hidden="true" /> : state === "failed" ? <ShieldX size={21} aria-hidden="true" /> : <Shield size={21} aria-hidden="true" />}
           </div>
           <div className="min-w-0 flex-1">
-            {verified ? <VerifiedStatus gateway={gateway} /> : <p role="status" className="text-[15px] font-medium">{proofLabels[state]}</p>}
+            {verified ? <VerifiedStatus gateway={gateway} /> : <p role="status" className="text-[15px] font-medium">{hardwareVerified ? "Hardware verified · code unverified" : proofLabels[state]}</p>}
             <p className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-secondary)] [overflow-wrap:anywhere]"><span>{model?.shortLabel ?? modelId}</span>{providerLabel ? <span>{providerLabel}</span> : null}</p>
           </div>
         </div>
-        <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{gateway && state === "verified" ? "Your browser verified the gateway’s hardware and workload. Upstream provider evidence is checked by this gateway for every request." : explanation[state]}</p>
+        <p id={`${id}-description`} className="mb-2 mt-4 text-[13px] leading-[21px] text-[var(--color-text-secondary)]">{session.securityEvidence?.attestationProtocol === "chutes-hardware-development-v1" && state === "development" ? "Local development preview: Intel TDX, NVIDIA GPU evidence, and the Chutes encryption key were checked on this device. Messages are encrypted to this instance. Application provenance and model-file binding are still unqualified." : gateway && state === "verified" ? "Your browser verified the gateway’s hardware and workload. Upstream provider evidence is checked by this gateway for every request." : explanation[state]}</p>
         {evidence ? <p className="mb-4 text-[11.5px] text-[var(--color-text-tertiary)]">
-          {verified || state === "degraded" ? "Report checked locally" : "Previous report checked"}{" "}
+          {verified || state === "degraded" || hardwareVerified ? "Report checked locally" : "Previous report checked"}{" "}
           <time dateTime={new Date(evidence.verifiedAtUnixSeconds * 1000).toISOString()} title={new Date(evidence.verifiedAtUnixSeconds * 1000).toLocaleString()}>{verificationAge(evidence.verifiedAtUnixSeconds, now)}</time>
         </p> : null}
         {evidence ? <div className="-mx-3">
           {groups.map((group) => <Disclosure key={group.title} title={group.title} verified={verified && group.passed}
-            value={group.passed ? verified ? "Verified" : "Passed at check" : "Not established"}>
+            value={group.passed ? verified ? "Verified" : hardwareVerified ? "Passed" : "Passed at check" : "Not established"}>
             <p className="mb-2">{group.explanation}</p>
             {group.checks.map((check) => <div key={check.name} className="flex items-start justify-between gap-3 py-1"><span>{check.name}</span><span className="min-w-0 text-right text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">{check.detail}</span></div>)}
             {group.title === "Freshness" ? <p className="mt-2">{evidence.hardExpiresAtUnixSeconds * 1000 <= now ? "Expired" : "Expires"} {new Date(evidence.hardExpiresAtUnixSeconds * 1000).toLocaleString()}</p> : null}
           </Disclosure>)}
         </div> : <p className="mb-3 mt-4 rounded-[11px] bg-[var(--wash-row)] px-3 py-3 text-[12px] text-[var(--color-text-tertiary)]">{state === "verifying" ? "The report will appear when verification finishes." : "No report available for this model."}</p>}
+        {evidence?.attestationProtocol === "chutes-tdx-nvidia-release-v1" ? <div className="mt-4 rounded-[11px] bg-[var(--wash-row)] p-3 text-[12px] leading-[19px] text-[var(--color-text-secondary)]">
+          <strong className="text-[var(--color-text-primary)]">Verification scope</strong>
+          <p className="mt-1">TEE hardware, encryption and the release authority are verified. Eligible signed updates are accepted automatically. Chutes manages the confidential runtime and application deployment.</p>
+        </div> : null}
         {gateway ? <div className="mt-4 rounded-[11px] bg-[var(--wash-row)] p-3 text-[12px]"><strong>Upstream provider</strong><p className="mt-1 text-[var(--color-text-secondary)]">{model?.providerLabel ?? "Provider"} verification is required for each request inside the verified gateway. This gateway report does not attest the selected model directly.</p></div> : null}
         {evidence ? <details className="group/technical mt-3 border-t border-[var(--color-border)] pt-3">
           <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg py-1.5 text-[12px] text-[var(--color-text-secondary)] [&::-webkit-details-marker]:hidden">
@@ -203,7 +209,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
               {evidence.tlsSpkiFingerprint ? <Fact label="TLS fingerprint" mono>{evidence.tlsSpkiFingerprint}</Fact> : null}
             </dl>
             <section><h3 className="mb-1 font-medium">Local check results</h3>
-              <dl>{evidence.checks.map((check, index) => <Fact key={index} label={check.name === "Signed receipt" ? "Receipt policy" : check.name}>{check.name === "Signed receipt" && check.detail === "required" ? "Required for each reply" : check.detail}</Fact>)}</dl>
+              <dl>{evidence.checks.filter(check => check.name !== "Signed receipt").map((check, index) => <Fact key={index} label={check.name}>{check.detail}</Fact>)}</dl>
             </section>
             {evidence.providerClaims.length ? <section><h3 className="font-medium">Evidence fields</h3>
               <p className="mb-2 mt-1 text-[11.5px] text-[var(--color-text-tertiary)]">Supplied with the report. The local checks above identify what was verified.</p>
@@ -214,6 +220,7 @@ export function PrivacyProofDialog({ session, model, modelId, state, now, webEna
             </details> : null}
           </div>
         </details> : null}
+        <McpPrivacyDetails servers={mcpServers} selectedTools={selectedMcpTools} session={session} />
         {webEnabled ? <p className="mt-4 flex items-start gap-2 text-[12px] leading-[18px] text-[var(--color-text-secondary)]"><Globe2 size={13} className="mt-0.5 shrink-0" aria-hidden="true" />Web search queries are shared with the search service and are not end-to-end encrypted.</p> : null}
         {error ? <p role="alert" className="mt-4 rounded-[10px] bg-[var(--color-danger-soft)] px-3 py-2.5 text-[12px] text-[var(--color-danger-strong)]">{error}</p> : null}
         {state === "failed" && session.security?.detail ? <details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[var(--color-text-secondary)]">Failure details</summary><p className="mt-2 whitespace-pre-wrap text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">{session.security.detail}</p></details> : null}

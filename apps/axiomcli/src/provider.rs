@@ -32,6 +32,79 @@ pub struct ProviderSecurityVerification {
 
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
+    async fn image_capabilities(
+        &self,
+        _cancellation: CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        Ok(axiom_inference::ImageRuntimePolicy::default())
+    }
+    /// Drop account-owned transports at logout or an identity transition.
+    fn clear_account_sessions(&self) {}
+
+    async fn image_request_with_progress(
+        &self,
+        request: axiom_inference::ImageGenerationRequest<'_>,
+        _progress: mpsc::Sender<axiom_inference::ImageGenerationProgress>,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        if request.references.len() > 1 {
+            return Err(AxiomError::Provider(
+                "multiple image references require the managed image adapter".into(),
+            ));
+        }
+        self.image_request(
+            request.chat_model_id,
+            request.prompt,
+            request.references.first().copied(),
+            request.dimensions,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn image_request(
+        &self,
+        chat_model_id: &str,
+        prompt: &str,
+        source: Option<(&str, &axiom_inference::ImageContent)>,
+        dimensions: Option<axiom_inference::ImageDimensions>,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        if dimensions.is_some() {
+            return Err(AxiomError::Provider(
+                "custom image dimensions are unavailable".into(),
+            ));
+        }
+        if let Some((id, image)) = source {
+            self.edit_image(chat_model_id, id, prompt, image, cancellation)
+                .await
+        } else {
+            self.generate_image(chat_model_id, prompt, cancellation)
+                .await
+        }
+    }
+    async fn edit_image(
+        &self,
+        _chat_model_id: &str,
+        _image_id: &str,
+        _prompt: &str,
+        _source: &axiom_inference::ImageContent,
+        _cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        Err(AxiomError::Provider(
+            "encrypted image editing is unavailable".into(),
+        ))
+    }
+    async fn generate_image(
+        &self,
+        _chat_model_id: &str,
+        _prompt: &str,
+        _cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        Err(AxiomError::Provider(
+            "encrypted image generation is unavailable".into(),
+        ))
+    }
     async fn accept_outdated_tee(
         &self,
         _model: &str,
@@ -149,11 +222,18 @@ impl SecureAxiomProvider {
     ) -> Result<Arc<SecureClient>> {
         let value = match &self.credential {
             ProviderCredential::Fixed(value) => value.expose_secret().to_owned(),
-            ProviderCredential::Managed(manager) => manager
-                .access_token_for_secure_operation(cancellation)
-                .await?
-                .expose_for_authorization()
-                .to_owned(),
+            ProviderCredential::Managed(manager) => {
+                match manager
+                    .access_token_for_secure_operation(cancellation)
+                    .await
+                {
+                    Ok(token) => token.expose_for_authorization().to_owned(),
+                    Err(error) => {
+                        self.clear_account_sessions();
+                        return Err(error);
+                    }
+                }
+            }
         };
         let fingerprint: [u8; 32] = Sha256::digest(value.as_bytes()).into();
         let mut cache = self
@@ -229,6 +309,76 @@ impl std::fmt::Debug for SecureAxiomProvider {
 
 #[async_trait]
 impl InferenceProvider for SecureAxiomProvider {
+    async fn image_capabilities(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+        self.client(&cancellation)
+            .await?
+            .image_capabilities(cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+    fn clear_account_sessions(&self) {
+        self.client_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    async fn image_request_with_progress(
+        &self,
+        request: axiom_inference::ImageGenerationRequest<'_>,
+        progress: mpsc::Sender<axiom_inference::ImageGenerationProgress>,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        self.client(&cancellation)
+            .await?
+            .image_request_with_progress(request, progress, cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+
+    async fn image_request(
+        &self,
+        chat_model_id: &str,
+        prompt: &str,
+        source: Option<(&str, &axiom_inference::ImageContent)>,
+        dimensions: Option<axiom_inference::ImageDimensions>,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        self.client(&cancellation)
+            .await?
+            .image_request(chat_model_id, prompt, source, dimensions, cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+    async fn edit_image(
+        &self,
+        chat_model_id: &str,
+        image_id: &str,
+        prompt: &str,
+        source: &axiom_inference::ImageContent,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        self.client(&cancellation)
+            .await?
+            .edit_image(chat_model_id, image_id, prompt, source, cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+    async fn generate_image(
+        &self,
+        chat_model_id: &str,
+        prompt: &str,
+        cancellation: CancellationToken,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        self.client(&cancellation)
+            .await?
+            .generate_image(chat_model_id, prompt, cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
     async fn accept_outdated_tee(
         &self,
         model: &str,
@@ -344,6 +494,12 @@ impl InferenceProvider for SecureAxiomProvider {
                 &cancellation,
             )
             .await?;
+            send_provider_event(
+                &events,
+                ProviderEvent::SecurityEvidence(Box::new(session.evidence().clone())),
+                &cancellation,
+            )
+            .await?;
             let mut established_accounting = initial_accounting.clone();
             established_accounting.provider_id = model.provider_id.clone();
             established_accounting.context_window_tokens = Some(model.context_window_tokens);
@@ -384,7 +540,7 @@ impl InferenceProvider for SecureAxiomProvider {
                         send_provider_event(
                             &retry_events,
                             ProviderEvent::SecurityState(
-                                if session.evidence().state
+                                if refreshed.evidence().state
                                     == axiom_secure_client::SecurityState::Degraded
                                 {
                                     ProviderSecurityState::Degraded
@@ -392,6 +548,12 @@ impl InferenceProvider for SecureAxiomProvider {
                                     ProviderSecurityState::Verified
                                 },
                             ),
+                            &cancellation,
+                        )
+                        .await?;
+                        send_provider_event(
+                            &retry_events,
+                            ProviderEvent::SecurityEvidence(Box::new(refreshed.evidence().clone())),
                             &cancellation,
                         )
                         .await?;
@@ -581,7 +743,7 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError
                 || error.safe_detail().to_owned(),
                 |at| {
                     format!(
-                        "Free trials are currently at capacity. Try again at {} UTC.",
+                        "Free trials are currently at capacity. Check back at {} UTC.",
                         at.format("%Y-%m-%d %H:%M:%S")
                     )
                 },
@@ -590,10 +752,6 @@ fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError
     }
     match error.kind() {
         ProviderFailureKind::Cancelled => AxiomError::Cancelled,
-        ProviderFailureKind::InsufficientCredit => AxiomError::Provider(
-            "HTTP 402 Payment Required: insufficient credit; visit axiom.stream to top up"
-                .to_owned(),
-        ),
         kind => AxiomError::SecureProvider {
             kind,
             code: error.code().as_str(),
@@ -1532,9 +1690,41 @@ mod tests {
             ProviderFailureKind::InsufficientCredit,
             "Axiom credit is exhausted",
         ));
-        let rendered = error.to_string();
-        assert!(rendered.contains("402 Payment Required"));
-        assert!(rendered.contains("insufficient credit"));
+        assert_eq!(
+            error.to_string(),
+            axiom_secure_client::INSUFFICIENT_CREDIT_MESSAGE
+        );
+        assert!(matches!(
+            error,
+            AxiomError::SecureProvider {
+                kind: ProviderFailureKind::InsufficientCredit,
+                code: "INSUFFICIENT_CREDIT",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn account_invalidation_drops_the_cached_secure_client() {
+        let provider = SecureAxiomProvider::new(
+            "https://api.axiom.stream",
+            "fixed-account-fixture".into(),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let first = provider.client(&cancellation).await.unwrap();
+        let second = provider.client(&cancellation).await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        drop(second);
+        assert!(weak.upgrade().is_some());
+        provider.clear_account_sessions();
+        assert!(weak.upgrade().is_none());
+        let replacement = provider.client(&cancellation).await.unwrap();
+        assert!(provider.client_cache.lock().unwrap().is_some());
+        drop(replacement);
     }
 
     #[tokio::test]

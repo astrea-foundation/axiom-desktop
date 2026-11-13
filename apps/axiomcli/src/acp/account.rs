@@ -23,6 +23,7 @@ pub(super) fn account_status(
     let ctx_extension_state = context.extension_state.clone();
     let ctx_sessions = context.sessions.clone();
     let ctx_store = context.store.clone();
+    let ctx_runner = context.runner.clone();
     let task_connection = connection.clone();
     connection.spawn(async move {
         let connection = task_connection;
@@ -56,7 +57,13 @@ pub(super) fn account_status(
                     .await
                     .map_err(agent_error)
             );
-            publish_account_switch_started(&connection, &ctx_extension_state, &ctx_auth).await?;
+            publish_account_switch_started(
+                &connection,
+                &ctx_extension_state,
+                &ctx_auth,
+                ctx_runner.as_ref(),
+            )
+            .await?;
             respond_or_return!(
                 responder,
                 commit_account_store_switch(
@@ -154,6 +161,7 @@ pub(super) fn native_login_complete(
     let ctx_extension_state = context.extension_state.clone();
     let ctx_sessions = context.sessions.clone();
     let ctx_store = context.store.clone();
+    let ctx_runner = context.runner.clone();
     let task_connection = connection.clone();
     connection.spawn(async move {
         let connection = task_connection;
@@ -202,7 +210,13 @@ pub(super) fn native_login_complete(
                 .await
                 .map_err(agent_error)
         );
-        publish_account_switch_started(&connection, &ctx_extension_state, &ctx_auth).await?;
+        publish_account_switch_started(
+            &connection,
+            &ctx_extension_state,
+            &ctx_auth,
+            ctx_runner.as_ref(),
+        )
+        .await?;
         respond_or_return!(
             responder,
             commit_account_store_switch(
@@ -318,13 +332,20 @@ pub(super) fn logout(
     let task_transition = ctx_account_transition.clone();
     let task_connection = connection.clone();
     let request_cancellation = responder.cancellation();
+    let task_runner = context.runner.clone();
     connection.spawn(async move {
         let task_result: agent_client_protocol::Result<_> = async {
             let _account_transition = task_transition.lock().await;
             begin_account_switch(&task_sessions, &task_work, None, None)
                 .await
                 .map_err(agent_error)?;
-            publish_account_switch_started(&task_connection, &task_extension, &task_auth).await?;
+            publish_account_switch_started(
+                &task_connection,
+                &task_extension,
+                &task_auth,
+                task_runner.as_ref(),
+            )
+            .await?;
             commit_account_store_switch(&task_sessions, &task_work, task_store.as_ref(), None)
                 .await
                 .map_err(agent_error)?;
@@ -603,6 +624,40 @@ pub(super) fn redeem_gift_code(
             already_redeemed: receipt.already_redeemed,
             status,
         })
+    })?;
+    Ok(())
+}
+
+pub(super) fn credit_billing(
+    context: &ServerContext,
+    request: extension::CreditBillingRequest,
+    responder: Responder<extension::CreditBillingResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.credit_control(&request.action, &cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let result = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CreditBillingResponse { result })
     })?;
     Ok(())
 }

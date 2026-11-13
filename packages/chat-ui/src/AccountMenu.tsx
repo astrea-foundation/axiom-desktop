@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { createPortal } from "react-dom";
 import type { BillingStatus } from "@axiom/chat-core/viewTypes";
 import type { AccountPresentation } from "@axiom/chat-core/account";
+import { creditAmount, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
 import { usdFromMicrousd } from "./currency";
 import { accountAvatar } from "./accountAvatar";
 
@@ -72,6 +73,8 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
   }, [open, dismiss]);
 
   const balance = account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
+    : billing?.credits ? `${creditAmount((BigInt(billing.credits.allowance.remaining_units)
+        + BigInt(billing.credits.trial.posted_units) - BigInt(billing.credits.trial.held_units)).toString())} credits · ${purchasedCreditAmount(billing.credits.purchased.available_units)}`
     : billing ? usdFromMicrousd(billing.availableMicrousd, 2) : refresh === "loading" ? "Loading…" : "Unavailable";
   const itemClass = "flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2.5 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:text-[var(--color-text-primary)] focus:outline-none";
   return <>
@@ -104,7 +107,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       }}>
       <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenSettings(trigger.current!); }}><Settings size={15} aria-hidden="true" />Settings</button>
       <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenBalance(trigger.current!); }}>
-        <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>Balance</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
+        <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>Billing</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
       </button>
       {account.kind === "valid" ? <>
         <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />

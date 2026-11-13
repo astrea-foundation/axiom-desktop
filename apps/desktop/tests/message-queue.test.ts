@@ -429,3 +429,22 @@ test('an encrypted host commits its outbox before dispatch and rejects failed pe
   assert.equal(f.calls.length, 1);
   assert.equal(f.queue.isPaused('thread'), true);
 });
+
+
+test("queued messages do not capture or forward a per-message image toggle", async () => {
+  const f=fixture(); const calls: unknown[][]=[];
+  f.api.promptWithWebConsent=async (...args)=>{
+    calls.push(args);
+    const [_thread,text,id] = args;
+    f.state.sessions.thread!.timeline.push({id,kind:"user",clientItemId:id,text});
+    return {stopReason:"end_turn"};
+  };
+  const first=f.queue.reserve("thread","draw first",false);
+  f.queue.ready(first,"thread");
+  const second=f.queue.reserve("thread","answer text",false);
+  f.queue.ready(second,"thread");
+  f.state.sessions.thread!.running=false;f.sync();
+  await settle();await settle();
+  assert.equal(calls.length,2);
+  assert.ok(calls.every(args=>args.length===6));
+});

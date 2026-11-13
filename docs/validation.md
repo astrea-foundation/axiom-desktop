@@ -5,7 +5,47 @@ OS, architecture, browser, source revision, artifact SHA-256, signing identity,
 result and limitations in the release's maintainer acceptance record. Unit tests
 and browser fixtures do not establish signed native OS acceptance.
 
+## Confidential pool qualification
+
+The separate registered managed Chutes channel now has account-owned opaque
+backend routing, local vendor verification, publisher authorization, independent
+usage signatures, native cost ceilings and billing settlement. Its runtime
+trust scope is documented in the [managed guide](../../axiom-inference/docs/chutes-managed.md).
+Keep its qualification distinct from the stronger pool requirements below.
+Public staging rollout still needs the authorized source/feed and backend
+deployment, actual worker callback origin and installed native bundle. Windows
+and signed installer helper packaging require separate release validation.
+The optional self-contained helper payload now has macOS Apple Silicon and
+Ubuntu 24.04 x86-64 build, relocation and stdio checks, inventory verification and a packaging hook; its
+native executable pin is checked before startup. Signed installer acceptance
+and older Linux/Intel macOS target builds remain separate; Windows is disabled.
+See the [helper build guide](../../axiom-inference/docs/native-helper.md).
+Warm redundant capacity and
+draining/replacement testing are required for a production availability claim.
+
+The qualified Chutes pool offering remains discovery only. A separate debug-only
+interactive adapter permits local encrypted testing. Its signed staging variant
+verifies hardware, the Chutes recipient key and publisher authorization, with
+execution provenance explicitly outside that claim. Before enabling production
+custom pool inference or claiming exact application/model execution, verify the exact application/model
+release and Rust boot-key endorsement against accepted runtime measurements;
+implement and qualify native/controller verification and instance routing;
+exercise actual two-account concurrent traffic, replacement, cancellation,
+stream truncation/reordering and authenticated completion on the admitted GPU.
+The local native test-account flow has been exercised; the hosted local auth
+frontend and production account flow still need an interactive qualification pass.
+Hardware diagnostics and deterministic encrypted fixtures do not satisfy these
+requirements. See [the pool guide](inference-pool.md).
+
 ## Automated checks
+
+Subscription/credit controls use `billing@7`; new server enrollment and automatic
+charges default off. Local fixtures cover ledger allocations, reset boundaries,
+native account changes, explicit consent, payment recovery and admin job retries.
+Before release, qualify actual sandbox Checkout, saved-card/off-session/SCA,
+monthly renewal/refund/webhook flows and the installed client. No live deployment
+or signed-installer qualification is implied by these source checks. See
+[billing behavior](billing.md).
 
 Run the [development checks](development.md#checks), including Rust formatting,
 strict Clippy, functional tests, dependency policy, generated ACP contract checks,
@@ -22,6 +62,82 @@ packaged main process can start.
 
 ## Interactive qualification
 
+Signed [backend runtime settings](../../axiom-inference/docs/runtime-updates.md)
+now drive image tool defaults/ratios, model-specific LoRA policy, sampling
+validation and hosted deployment selection. Native stdio regressions cover
+changes on a reused helper, substituted policy bindings and unsupported settings
+rejected before dispatch. Initial runtime-capable worker, backend migration and
+installed-helper live qualification remain deployment requirements. The October
+30 GPU record below covers the previous fixed policy.
+
+The development `imageGeneration@3` contract exposes `generate` with up to five
+ordered references and uses the ComfyUI image engine. The October 29 policy
+restores the pinned uncensored LoRA at 0.9 for the exact uncensored model IDs.
+Native helper tests cover alternating model policies on one reused helper and
+rejecting missing or substituted adapter metadata. Regeneration tests preserve
+the original model's policy after a model switch. The
+[October 30 live qualification](../../axiom-inference/docs/qa/image-lora09-b-2026-10-30.json)
+records the deployed private GPU image and installed standalone helper, fresh
+hardware checks, uncensored/base/uncensored generations, five references,
+authenticated progress and exact base-model restoration. These checks used
+synthetic fixtures without opening personal threads or images. Native
+checks cover reference order, five-reference to text-only transitions, duplicate
+and foreign IDs, bounded conditioning copies, output dimensions and optional
+viewing. Broader co-resident load, encrypted multi-account qualification and
+signed installer acceptance remain release requirements for the new build.
+The October 27 evidence below covers the
+previous engine and tool contract.
+
+The [October 28 Comfy qualification](../../axiom-inference/docs/qa/comfy-implementation-2026-10-28.json)
+records five successful private GPU checks, including ordered five-reference
+conditioning, a following text-only request, generated-reference editing and
+two-account isolation. A local Desktop check also completed `generate`, optional
+`view_image`, authenticated chat completion and signed settlement using the
+standalone helper. Managed-request expiry regression checks cover the 15-minute
+deadline, account isolation, no-charge late receipts and safe native admission
+errors; the [expiry validation record](../../axiom-inference/docs/qa/chutes-request-expiry-2026-10-28.json)
+includes background recovery and the updated standalone-helper Desktop run.
+These development results do not replace public staging or signed
+installer acceptance.
+
+The unified `imageGeneration@2` tool and automatic vision-model gating replace
+the earlier Images toggle. Native regression checks cover generation/edit
+dispatch, conversation reference isolation, model switching, unavailable tools
+and nonvision upload rejection. Renderer checks cover toggle removal and the
+generated-image viewer. The
+[October 27 live source-mode qualification](../../axiom-inference/docs/qa/chutes-vision-staging-live-2026-10-27.json)
+records a fresh verified Chutes worker, ordered ten-image vision with streaming,
+no image creation during an analysis-only request, 1536-square generation and
+edits from both source types, signed billing and the full-image viewer. It also
+checks local development credentials across rebuilds and restarts. Installed
+app checks, cross-platform release validation and broader load tests remain
+release requirements; source-mode qualification does not replace them.
+
+Generated-image presentation checks cover metadata-only initial timelines,
+viewport-triggered reads, explicit retry, stable placeholder geometry, bounded
+read concurrency and cache eviction, delayed account/runtime/deletion responses,
+and opaque per-window resource handles. Compatibility checks cover binary IPC payloads,
+stable Blob URLs through streaming updates, account/runtime resource revocation,
+late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
+decoding that yields to UI tasks. These local transport checks do not change
+provider attestation, authenticated completion, original image bytes or size caps.
+
+Optional `view_image` inspection has native regression coverage for uploaded,
+generated and edited images, generation followed by viewing before the final
+answer, tool-batch ordering, persisted restoration, malformed/foreign references,
+decode failures, cancellation, model/service gating and the ten-image context
+limit. Vision-copy checks include transparent images and generated PNGs larger
+than the upload byte limit. The October 27 live record predates this viewing
+tool; live model selection of the new tool remains a separate qualification.
+
+Image-progress checks cover authenticated request/sequence binding, rounded
+sampling percentages, truncation and forged-update rejection, queue cancellation,
+clean transport completion, native propagation and durable tool metadata. Browser
+checks cover percentage bars, the 99%-to-100% completion boundary, and distinct
+random filenames for generated images and repeated Save actions. The matching
+worker/backend/helper rollout and actual GPU preview-progress behavior still
+require live qualification; local encrypted fixtures do not establish it.
+
 | Area | Required evidence |
 |---|---|
 | Installation | Fresh install and uninstall on Windows x64/ARM64, macOS Intel/Apple Silicon, and each supported Linux package; expected publisher, notarization and architecture |
@@ -29,7 +145,7 @@ packaged main process can start.
 | Provider security | Current catalog, fresh local attestation, authenticated encrypted completion, stream cancellation/truncation, proof expiry, and explicit degraded-TEE consent/reset |
 | Conversation state | Draft/queue/history retention, attachments, edit/regenerate, compaction, interrupted-turn recovery, restart and account isolation |
 | Tools | Approval, denial, cancellation and workspace boundaries on each supported OS; Web consent and search's distinct privacy boundary |
-| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
+| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, visible Desktop gift-code entry/redemption, masked TUI gift-code entry, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
 | Automatic updates | Signed A-to-B upgrades from idle and busy Desktop/TUI; same-terminal workspace/session restoration, GUI reopen, matching CLI version and preserved drafts/history |
 | Update failure paths | Denied OS authorization, cancellation, locked-process waits, interruption/repair, corrupt or wrong-target artifacts, rollback rejection and duplicate updater attempts; staging cleanup, including Windows helpers still in use and abandoned downloads |
 | Publication | Matching source tag, signed inventory, complete installer matrix, verified mirrors, feed activation and safe publication retries |
@@ -71,6 +187,16 @@ private keys or real conversation data. Publish a concise qualification summary
 with the release; retain raw operational captures privately.
 
 ## Windows setup and Store acceptance
+
+Factory reset requires Windows VM qualification before release: start with
+synthetic chats in multiple accounts, persisted Desktop/CLI settings, a native
+refresh token and an MCP credential. Confirm from signed-out/disconnected
+Settings, verify cleanup starts after Desktop exits, inspect both application
+folders and Credential Manager, and sign in again to an empty profile. Also
+exercise a locked/denied vault, another active CLI, and a file deletion failure;
+incomplete resets must reopen with a visible error. Native/controller and browser
+tests cover isolated files, mock credentials, exclusion, confirmation and retry;
+these do not replace Windows vault and installer qualification.
 
 The 0.1.12 offline package and website Setup were published after signed Windows
 installation qualification. The live older-to-current first-launch check then
@@ -154,3 +280,14 @@ cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
 the quote deadline and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.
+
+
+## Remote MCP release acceptance
+
+Before publishing remote MCP support, qualify the native credential store and
+browser OAuth callback on macOS, Windows and Linux with real public and
+registered-client OAuth services. Verify refresh, cancellation, account switches,
+locked credential stores, sign-out and factory reset. Confirm the Remote
+connection form, separate Tools picker, destination-aware approvals/activity and
+privacy proof disclosures in each supported platform/theme. Local HTTP fixture
+and browser harness results do not establish live-service or Windows qualification.

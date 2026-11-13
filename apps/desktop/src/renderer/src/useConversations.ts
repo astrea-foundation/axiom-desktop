@@ -167,11 +167,11 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     defaultDirectory: currentAgent?.defaultWorkingDirectory,
     mcpServers: agentState.mcp?.servers,
     mcpError,
-    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure Agent mode."
+    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure tools and Agent mode."
       : typeof window.axiomDesktop?.agent.configureDesktopAgent !== "function" ? "Restart Axiom to enable the Agent controls."
         : surface === "thread" && !currentAgent ? "Agent settings are unavailable. Restart Axiom to load the updated native app."
           : agentSettingsBusy ? "Saving Agent settings…"
-            : activeSession?.running || messageQueue.current!.list(activeThreadId, billingAccountId).length > 0 ? "Finish the current reply and send or remove queued messages before changing Agent settings."
+            : activeSession?.running || messageQueue.current!.list(activeThreadId, billingAccountId).length > 0 ? "Finish the current reply and send or remove queued messages before changing tools or Agent settings."
               : undefined,
     onChooseDirectory: async (current) => {
       const api = window.axiomDesktop?.agent;
@@ -353,7 +353,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     }
     const files = attachmentDraft.attachments;
     if (files.some((file) => !acceptsAttachment(selectedModel, file))) {
-      setUiError("Choose a model that supports these files before sending."); return;
+      setUiError("Choose a model that supports these image or file uploads."); return;
     }
     if (files.length && !api.promptWithAttachments) { setUiError("Restart Axiom to enable attachments. Your draft was kept."); return; }
     const webEnabled = webAccess.enabled;

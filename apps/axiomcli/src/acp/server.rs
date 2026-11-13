@@ -164,6 +164,22 @@ pub async fn serve_stdio(
         async,
         builder,
         context,
+        images::regenerate,
+        extension::RegenerateImageRequest,
+        extension::RegenerateImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
+        images::read,
+        extension::ReadImageRequest,
+        extension::ReadImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
         threads::delete_preview,
         DeletePreviewRequest,
         DeletePreviewResponse
@@ -343,6 +359,14 @@ pub async fn serve_stdio(
         account::crypto_options,
         extension::CryptoOptionsRequest,
         extension::CryptoOptionsResponse
+    );
+    let builder = request_handler!(
+        sync,
+        builder,
+        context,
+        account::credit_billing,
+        extension::CreditBillingRequest,
+        extension::CreditBillingResponse
     );
     let builder = request_handler!(
         sync,

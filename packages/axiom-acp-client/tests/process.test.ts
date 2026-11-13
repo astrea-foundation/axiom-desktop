@@ -130,6 +130,68 @@ function closedInputSidecar(mode = "passive"): AcpProcess {
   });
 }
 
+function framedSidecar(): AcpProcess {
+  return new AcpProcess({
+    command: process.execPath,
+    args: [resolve(here, "fixtures/framed-sidecar.mjs")],
+  });
+}
+
+test("fragmented image frames copy bytes linearly and preserve UTF-8, CRLF and adjacent lines", {
+  timeout: 10_000,
+}, async (t) => {
+  const sidecar = framedSidecar();
+  const concat = Buffer.concat;
+  let copiedBytes = 0;
+  const copying = t.mock.method(Buffer, "concat", (chunks: readonly Uint8Array[], length?: number) => {
+    copiedBytes += length ?? chunks.reduce((total, chunk) => total + chunk.length, 0);
+    return concat(chunks, length);
+  });
+  try {
+    const tail = once(sidecar, "notification");
+    const result = await sidecar.request<{ text: string; data: string }>("fixture/fragmented", {});
+    assert.equal(result.text, "日本語 🌄");
+    assert.equal(result.data, "A".repeat(8 * 1024 * 1024));
+    const [notification] = await tail;
+    assert.equal(notification.method, "fixture/tail");
+    assert.ok(copiedBytes <= 2 * Buffer.byteLength(JSON.stringify(result)),
+      `receiving an 8 MiB image copied ${copiedBytes} bytes`);
+  } finally {
+    copying.mock.restore();
+    await sidecar.close();
+  }
+});
+
+test("a fragmented frame over 64 MiB rejects the request and closes the sidecar", {
+  timeout: 10_000,
+}, async () => {
+  const sidecar = framedSidecar();
+  try {
+    const exited = once(sidecar, "exit");
+    await assert.rejects(sidecar.request("fixture/oversized", {}), /incoming ACP frame exceeds/);
+    const [error] = await exited;
+    assert.ok(error instanceof ProtocolError);
+  } finally {
+    await sidecar.close();
+  }
+});
+
+test("a malformed line stops processing the remaining lines in its pipe chunk", {
+  timeout: 10_000,
+}, async () => {
+  const sidecar = framedSidecar();
+  const notifications: RpcNotification[] = [];
+  sidecar.on("notification", (notification: RpcNotification) => notifications.push(notification));
+  try {
+    const exited = once(sidecar, "exit");
+    await assert.rejects(sidecar.request("fixture/malformed", {}), /malformed JSON/);
+    await exited;
+    assert.deepEqual(notifications, []);
+  } finally {
+    await sidecar.close();
+  }
+});
+
 test("request rejects and aborts when a live sidecar input pipe is closed", { timeout: 10_000 }, async () => {
   const sidecar = closedInputSidecar();
   try {

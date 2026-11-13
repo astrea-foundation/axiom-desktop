@@ -1,5 +1,5 @@
 /** @jsxRuntime automatic */
-import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, Lock, Pencil, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Copy, LoaderCircle, Pencil, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import type { Message } from "@axiom/chat-core/types";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -11,9 +11,10 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true }: {
+export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
   showFailureNotice?: boolean;
+  responseActive?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [revisionMode, setRevisionMode] = useState<"edit" | "regenerate" | null>(null);
@@ -37,7 +38,7 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
   const reasoning = message.reasoningContent?.trim();
 
   const copyMessage = async () => {
-    if (!message.content || isStreaming || terminalFailure) return;
+    if (!message.content || isStreaming || responseActive || terminalFailure) return;
     await navigator.clipboard.writeText(message.content);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
@@ -90,7 +91,7 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
             <span>{thoughtLabel(message.reasoningDurationMs)}</span>
           </button>
           {reasoningOpen ? (
-            <div className="mt-1.5 rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 text-[var(--color-text-secondary)]">
+            <div className="selectable mt-1.5 rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 text-[var(--color-text-secondary)]">
               <ChatMarkdown text={reasoning} />
             </div>
           ) : null}
@@ -116,17 +117,17 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
               <span>Generating</span>
             </div>
           ) : null}
-          {message.finishReason === "length" && message.terminalVerified ? <div className="mt-2 text-[12px] text-[var(--color-text-tertiary)]">The model reached its output limit. You can ask it to continue.</div> : null}
+          {message.finishReason === "length" && message.status === "complete" ? <div className="mt-2 text-[12px] text-[var(--color-text-tertiary)]">The model reached its output limit. You can ask it to continue.</div> : null}
           {terminalFailure && showFailureNotice ? (
             <DismissibleNotice key={message.id} className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
               <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />
-              <span className="min-w-0">This reply couldn't be verified. Try again.</span>
+              <span className="min-w-0">The reply couldn’t finish. Try again.</span>
             </DismissibleNotice>
           ) : null}
         </div>
       </div>
       ) : null}
-      {!message.continues ? <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {!message.continues && !isStreaming && !responseActive ? <div className="flex max-w-full items-center gap-1.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <div className="flex items-center gap-0.5">
             <button
               type="button"
@@ -148,12 +149,6 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
               <RotateCcw size={13} />
             </button>
           </div>
-          {message.status === "complete" && message.content && message.terminalVerified ? (
-            <span className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-[var(--color-text-tertiary)]">
-              <Lock size={11} className="text-[var(--color-cherry)]" />
-              E2EE
-            </span>
-          ) : null}
       </div> : null}
       {revisionControls}
     </div>

@@ -1,9 +1,9 @@
 /** @jsxRuntime automatic */
 import { Check, RotateCcw, Shield, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { ClientSessionState } from "@axiom/chat-core/viewTypes";
+import type { ClientSessionState, DesktopMcpServer } from "@axiom/chat-core/viewTypes";
 import type { ProviderModel } from "@axiom/chat-core/types";
-import { PROOF_IDLE_AFTER_MS, proofBadge, proofState } from "./privacyProof";
+import { PROOF_IDLE_AFTER_MS, PROOF_REFRESH_MAX_RETRY_MS, PROOF_REFRESH_RETRY_MS, proofBadge, proofRefreshDue, proofState } from "./privacyProof";
 import { PrivacyProofDialog } from "./PrivacyProofDialog";
 
 type TeeVerificationBadgeProps = {
@@ -11,19 +11,23 @@ type TeeVerificationBadgeProps = {
   model?: ProviderModel;
   modelId: string;
   webEnabled: boolean;
+  mcpServers?: DesktopMcpServer[];
+  selectedMcpTools?: string[];
   disabledReason?: string;
   onVerify: () => void | Promise<unknown>;
 };
 
-export function TeeVerificationBadge({ session, model, modelId, webEnabled, disabledReason, onVerify }: TeeVerificationBadgeProps) {
+export function TeeVerificationBadge({ session, model, modelId, webEnabled, mcpServers, selectedMcpTools, disabledReason, onVerify }: TeeVerificationBadgeProps) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
+  const nextRefresh = useRef(0);
+  const refreshFailures = useRef(0);
   const mounted = useRef(false);
   const lastActivityAt = useRef(Date.now());
-  const [, wakeActivity] = useReducer((version: number) => version + 1, 0);
+  const [activityVersion, wakeActivity] = useReducer((version: number) => version + 1, 0);
   const running = useRef(session.running);
   useEffect(() => {
     // A running reply is activity, but verification/retry timers are not.
@@ -44,20 +48,21 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
       lastActivityAt.current = time;
       if (wasIdle) { setNow(time); wakeActivity(); }
     };
-    const wake = () => { recordActivity(); updateClock(); };
+    const wake = () => { recordActivity(); updateClock(); wakeActivity(); };
+    const online = () => { updateClock(); wakeActivity(); };
     const visibilityChanged = () => { if (!document.hidden) wake(); else updateClock(); };
     const activityEvents = ["keydown", "pointerdown", "pointermove", "wheel"] as const;
     const timer = setInterval(updateClock, 1000);
     for (const event of activityEvents) document.addEventListener(event, recordActivity, { capture: true, passive: true });
     window.addEventListener("focus", wake);
-    window.addEventListener("online", updateClock);
+    window.addEventListener("online", online);
     document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
       mounted.current = false;
       clearInterval(timer);
       for (const event of activityEvents) document.removeEventListener(event, recordActivity, true);
       window.removeEventListener("focus", wake);
-      window.removeEventListener("online", updateClock);
+      window.removeEventListener("online", online);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
   }, []);
@@ -71,8 +76,16 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
   const refresh = useCallback(async () => {
     if (!mounted.current || busy.current || reason) return;
     busy.current = true; setRefreshing(true); setError(null);
-    try { await onVerify(); }
+    nextRefresh.current = Date.now() + PROOF_REFRESH_RETRY_MS;
+    try {
+      await onVerify();
+      refreshFailures.current = 0;
+      nextRefresh.current = Date.now() + PROOF_REFRESH_RETRY_MS;
+    }
     catch {
+      refreshFailures.current = Math.min(refreshFailures.current + 1, 5);
+      nextRefresh.current = Date.now() + Math.min(PROOF_REFRESH_MAX_RETRY_MS,
+        PROOF_REFRESH_RETRY_MS * 2 ** (refreshFailures.current - 1));
       if (mounted.current) setError("Couldn’t refresh the verification report. Try again.");
     }
     finally {
@@ -80,11 +93,20 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
       if (mounted.current) { setRefreshing(false); setNow(Date.now()); }
     }
   }, [onVerify, reason]);
+  useEffect(() => {
+    // Renew the selected environment, including managed providers, before its
+    // report expires. Hidden/idle windows pause; streams finish before refresh.
+    // An outdated TEE still needs explicit consent, never an automatic override.
+    if (!modelId || idle || reason || refreshing || document.hidden || !navigator.onLine
+      || currentProofState === "outdated" || (currentProofState === "failed" && !refreshFailures.current)) return;
+    if (!proofRefreshDue(session, modelId, now) || now < nextRefresh.current) return;
+    void refresh();
+  }, [modelId, idle, reason, refreshing, currentProofState, session.securityEvidence, now, refresh, activityVersion]);
 
   return <>
     <div className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">
       <button type="button" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}
-        aria-label={`${badge.label}. View privacy proof`} title="View privacy proof"
+        aria-label={`${badge.label}. View privacy proof`} title={`Model inference: ${badge.label}. View privacy proof`}
         className="inline-flex h-full items-center gap-1.5 rounded-l-full pl-2 pr-2 transition-colors hover:bg-[var(--wash-chip-hover)]">
         <span className="relative flex h-4 w-4 items-center justify-center" aria-hidden="true">
           <Shield size={15} strokeWidth={0} fill={color} />
@@ -98,7 +120,7 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
         <RotateCcw size={12} aria-hidden="true" className={verifying ? "animate-spin motion-reduce:animate-none" : ""} />
       </button>
     </div>
-    {open ? <PrivacyProofDialog session={session} model={model} modelId={modelId} state={state} now={now} webEnabled={webEnabled}
+    {open ? <PrivacyProofDialog session={session} model={model} modelId={modelId} state={state} now={now} webEnabled={webEnabled} mcpServers={mcpServers} selectedMcpTools={selectedMcpTools}
       error={error ?? session.securityVerificationError ?? null} disabledReason={reason} onRefresh={() => void refresh()} onClose={() => setOpen(false)} /> : null}
   </>;
 }

@@ -130,18 +130,26 @@ pub(super) async fn get_thread_timeline(
             .clamp(1, extension::MAX_TIMELINE_PAGE_SIZE),
     )
     .unwrap_or(250);
+    let read_page = |store: &SessionStore| {
+        if extension_enabled(&ctx_extension_state, ExtensionFeature::ImageResources) {
+            store.thread_page_with_image_resources(
+                &thread_id,
+                request.after_sequence,
+                request.after_request_id.as_deref(),
+                limit,
+            )
+        } else {
+            store.thread_page(
+                &thread_id,
+                request.after_sequence,
+                request.after_request_id.as_deref(),
+                limit,
+            )
+        }
+    };
     let mut snapshot = respond_or_return!(
         responder,
-        account_store
-            .read(|store| {
-                store.thread_page(
-                    &thread_id,
-                    request.after_sequence,
-                    request.after_request_id.as_deref(),
-                    limit,
-                )
-            })
-            .map_err(agent_error)
+        account_store.read(read_page).map_err(agent_error)
     );
     let ids = if request.after_sequence.is_none() && request.after_request_id.is_none() {
         respond_or_return!(
@@ -163,14 +171,7 @@ pub(super) async fn get_thread_timeline(
         let _ = account_store.read(|store| store.reconcile_request_usage(&thread_id, &records));
         snapshot = respond_or_return!(
             responder,
-            account_store
-                .read(|store| store.thread_page(
-                    &thread_id,
-                    request.after_sequence,
-                    request.after_request_id.as_deref(),
-                    limit
-                ))
-                .map_err(agent_error)
+            account_store.read(read_page).map_err(agent_error)
         );
     }
     account_store.publish(|| {

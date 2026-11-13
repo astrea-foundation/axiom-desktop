@@ -66,6 +66,7 @@ macro_rules! respond_or_return {
 mod account;
 mod catalog;
 mod collections;
+mod images;
 mod mcp;
 mod prompts;
 mod security;
@@ -256,7 +257,7 @@ fn session_config_options(
 fn tool_kind(name: &str) -> protocol::ToolKind {
     match name {
         "read_file" | "list_files" | "glob_files" | "inspect_metadata" | "inspect_git"
-        | "select_context" | "view_session_diff" => protocol::ToolKind::Read,
+        | "select_context" | "view_session_diff" | "view_image" => protocol::ToolKind::Read,
         "apply_patch" | "replace_text" | "plan_create" | "plan_revise" => protocol::ToolKind::Edit,
         "search_text" | "web_search" | "fetch_url" => protocol::ToolKind::Search,
         "run_command" | "run_shell" | "start_background" | "background_wait"
@@ -454,8 +455,46 @@ fn extension_security_evidence(
     let direct_tinfoil = evidence.provider_id == "tinfoil"
         && evidence.attestation_protocol == "tinfoil-snp-sigstore-v1"
         && evidence.e2ee_protocol == "tinfoil-ehbp-v1";
+    // This explicit debug-only adapter uses Chutes directly, with no Axiom
+    // relay lease. Its hardware-only evidence stays degraded/development.
+    #[cfg(debug_assertions)]
+    let direct_preview = evidence.provider_id == "chutes-preview"
+        && evidence.model_id == "chutes-preview:qwen3.8-27b"
+        && evidence.attestation_protocol == "chutes-hardware-development-v1"
+        && evidence.e2ee_protocol == "chutes-mlkem768-desktop-v1"
+        && evidence.e2ee_encryption_version == 1
+        && evidence.state == axiom_secure_client::SecurityState::Degraded
+        && status == crate::app::SecurityStatus::Degraded;
+    #[cfg(not(debug_assertions))]
+    let direct_preview = false;
+    // Direct Chutes sessions use the quoted ML-KEM key, not an Axiom relay
+    // lease. Keep policy sequence separate rather than inventing a generation.
+    let direct_release = ((cfg!(debug_assertions)
+        && evidence.provider_id == "chutes-preview"
+        && evidence.model_id == "chutes-preview:qwen3.8-27b")
+        || (evidence.provider_id == "chutes" && evidence.model_id == "chutes:qwen3.8-27b"))
+        && evidence.attestation_protocol == "chutes-tdx-nvidia-release-v1"
+        && evidence.e2ee_protocol == "chutes-mlkem768-desktop-v1"
+        && evidence.e2ee_encryption_version == 1
+        && evidence.state == axiom_secure_client::SecurityState::Verified
+        && status == crate::app::SecurityStatus::Verified
+        && evidence.checks.iter().all(|check| check.passed)
+        && evidence
+            .checks
+            .iter()
+            .any(|check| check.id == "release_authorization")
+        && evidence.provider_claims.iter().any(|claim| {
+            claim.name == "release_authority_fingerprint"
+                && claim.value.len() == 64
+                && claim.value.bytes().all(|b| b.is_ascii_hexdigit())
+        });
     let attestation_generation = evidence.attestation_generation;
-    if attestation_generation == Some(0) || (attestation_generation.is_none() && !direct_tinfoil) {
+    if attestation_generation == Some(0)
+        || (attestation_generation.is_none()
+            && !direct_tinfoil
+            && !direct_preview
+            && !direct_release)
+    {
         return Err(crate::AxiomError::Protocol(
             "verified provider evidence is missing its attestation generation".into(),
         ));
@@ -741,7 +780,11 @@ async fn publish_account_switch_started(
     connection: &ConnectionTo<Client>,
     extension_state: &ExtensionState,
     auth: &AuthManager,
+    runner: &dyn TurnRunner,
 ) -> agent_client_protocol::Result<()> {
+    // The switch barrier already prevents new account work. Drop idle
+    // credential-bearing helpers before publishing the identity transition.
+    runner.clear_account_sessions();
     // Delete grants are account-local capabilities. Invalidate them at the
     // same publication boundary that tells clients the old account context is
     // no longer usable, before the replacement store can be opened.
@@ -920,7 +963,24 @@ fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
         AppEvent::ContextUsageUpdated { usage } => Some(ActivityEvent::ContextUsageChanged {
             usage: usage.clone(),
         }),
+        AppEvent::SecurityEvidenceUpdated { evidence } => {
+            let state = match evidence.state {
+                axiom_secure_client::SecurityState::Verified => {
+                    crate::app::SecurityStatus::Verified
+                }
+                axiom_secure_client::SecurityState::Degraded => {
+                    crate::app::SecurityStatus::Degraded
+                }
+                _ => return None,
+            };
+            let report = extension_security_evidence(state, *evidence.clone()).ok()?;
+            Some(ActivityEvent::SecurityChanged {
+                status: extension_security_status(state),
+                evidence: Some(Box::new(report)),
+            })
+        }
         AppEvent::SecurityStatusChanged { state } => Some(ActivityEvent::SecurityChanged {
+            evidence: None,
             status: extension_security_status(*state),
         }),
         AppEvent::BackgroundTaskChanged { task_id, state } => Some(ActivityEvent::BackgroundTask {
@@ -958,6 +1018,7 @@ struct AcpSession {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SessionWorkKind {
     Prompt(TurnId),
+    ImageGeneration(TurnId),
     SlashCommand,
     Compaction,
     SecurityVerification,
@@ -1424,7 +1485,8 @@ async fn fail_active_prompt(
     message: &str,
 ) {
     work.cancellation.cancel();
-    let SessionWorkKind::Prompt(turn_id) = &work.kind else {
+    let (SessionWorkKind::Prompt(turn_id) | SessionWorkKind::ImageGeneration(turn_id)) = &work.kind
+    else {
         tracing::warn!(%internal_id, "non-prompt work passed to prompt finalizer");
         release_session_work(sessions, internal_id, work).await;
         return;
@@ -1480,6 +1542,11 @@ enum ExtensionFeature {
     DesktopMcp = 1 << 16,
     CryptoPayments = 1 << 17,
     CryptoInvoices = 1 << 18,
+    ImageGeneration = 1 << 19,
+    ImageRegeneration = 1 << 20,
+    ImageResources = 1 << 21,
+    RemoteMcp = 1 << 22,
+    CreditBilling = 1 << 23,
 }
 
 struct ExtensionState {
@@ -1521,6 +1588,9 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.image_resources >= 1 {
+            mask |= ExtensionFeature::ImageResources as u64;
+        }
         if features.attachments >= 2 {
             mask |= ExtensionFeature::Attachments as u64;
         }
@@ -1557,6 +1627,9 @@ impl ExtensionState {
         if features.billing >= 5 {
             mask |= ExtensionFeature::CryptoInvoices as u64;
         }
+        if features.billing >= 7 {
+            mask |= ExtensionFeature::CreditBilling as u64;
+        }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;
         }
@@ -1577,6 +1650,15 @@ impl ExtensionState {
         }
         if features.desktop_mcp >= 1 {
             mask |= ExtensionFeature::DesktopMcp as u64;
+        }
+        if features.desktop_mcp >= 2 {
+            mask |= ExtensionFeature::RemoteMcp as u64;
+        }
+        if features.image_generation >= 3 {
+            mask |= ExtensionFeature::ImageGeneration as u64;
+        }
+        if features.image_generation >= 4 {
+            mask |= ExtensionFeature::ImageRegeneration as u64;
         }
         self.enabled_features.store(mask, Ordering::Release);
     }
@@ -2014,6 +2096,7 @@ fn send_event(
             call_id,
             name,
             arguments,
+            mcp_source,
             ..
         } => {
             let kind = tool_kind(&name);
@@ -2031,6 +2114,10 @@ fn send_event(
                     protocol::ToolCall::new(call_id, title)
                         .kind(kind)
                         .status(protocol::ToolCallStatus::Pending)
+                        .meta(protocol::Meta::from_iter([(
+                            "axiomMcpSource".into(),
+                            serde_json::to_value(mcp_source).unwrap_or_default(),
+                        )]))
                         .raw_input(arguments),
                 ),
                 revision,
@@ -2045,6 +2132,14 @@ fn send_event(
             protocol::ToolCallUpdateFields::new().status(protocol::ToolCallStatus::InProgress),
             revision,
         ),
+        AppEvent::ImageGenerationProgress { call_id, progress } => send_tool_update(
+            connection,
+            session_id,
+            call_id,
+            protocol::ToolCallUpdateFields::new()
+                .raw_output(serde_json::json!({"imageProgress": progress})),
+            revision,
+        ),
         AppEvent::ToolOutput {
             call_id, content, ..
         } => send_tool_update(
@@ -2053,6 +2148,36 @@ fn send_event(
             call_id,
             protocol::ToolCallUpdateFields::new().content(vec![
                 protocol::ContentBlock::Text(protocol::TextContent::new(content)).into(),
+            ]),
+            revision,
+        ),
+        AppEvent::ImageGenerated { call_id, image }
+            if extension_state
+                .is_some_and(|state| state.feature_enabled(ExtensionFeature::ImageResources)) =>
+        {
+            send_tool_update(
+                connection,
+                session_id,
+                call_id.clone(),
+                protocol::ToolCallUpdateFields::new().raw_output(
+                    serde_json::json!({"imageResource": {
+                        "callId":call_id,"sha256":image.sha256,"mimeType":image.mime_type,
+                        "width":image.width,"height":image.height
+                    }}),
+                ),
+                revision,
+            )
+        }
+        AppEvent::ImageGenerated { call_id, image } => send_tool_update(
+            connection,
+            session_id,
+            call_id,
+            protocol::ToolCallUpdateFields::new().content(vec![
+                protocol::ContentBlock::Image(protocol::ImageContent::new(
+                    &image.data,
+                    &image.mime_type,
+                ))
+                .into(),
             ]),
             revision,
         ),
@@ -2233,6 +2358,23 @@ mod tests {
         features.timeline = 2;
         state.negotiate(Some(features));
         assert!(state.feature_enabled(ExtensionFeature::Timeline));
+    }
+
+    #[test]
+    fn automatic_image_tools_do_not_negotiate_the_legacy_toggle_contract() {
+        let state = ExtensionState::new();
+        let mut features = FeatureVersions::all();
+        features.image_generation = 1;
+        state.negotiate(Some(features));
+        assert!(!state.feature_enabled(ExtensionFeature::ImageGeneration));
+        features.image_generation = 2;
+        state.negotiate(Some(features));
+        assert!(!state.feature_enabled(ExtensionFeature::ImageGeneration));
+        features.image_generation = 3;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::ImageGeneration));
+        state.negotiate(None);
+        assert!(!state.feature_enabled(ExtensionFeature::ImageGeneration));
     }
 
     #[test]
@@ -2617,6 +2759,53 @@ mod tests {
             assert!(
                 extension_security_evidence(crate::app::SecurityStatus::Verified, invalid,)
                     .is_err()
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn signed_direct_chutes_report_keeps_policy_sequence_separate_from_relay_generation() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "chutes-preview".into(),
+            model_id: "chutes-preview:qwen3.8-27b".into(),
+            attestation_protocol: "chutes-tdx-nvidia-release-v1".into(),
+            e2ee_protocol: "chutes-mlkem768-desktop-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "signed-staging-release-authority".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: Some(121),
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: vec![axiom_secure_client::EvidenceCheck {
+                id: "release_authorization".into(),
+                label: "Repository release authorization".into(),
+                status: "verified".into(),
+                passed: true,
+            }],
+            provider_claims: vec![axiom_secure_client::EvidenceClaim {
+                name: "release_authority_fingerprint".into(),
+                value: "ab".repeat(32),
+            }],
+            workload_manifest: None,
+        };
+        let projected =
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence.clone())
+                .unwrap();
+        assert_eq!(projected.attestation_generation, None);
+        for mutation in 0..5 {
+            let mut changed = evidence.clone();
+            match mutation {
+                0 => changed.attestation_protocol = "unrecognized".into(),
+                1 => changed.checks[0].passed = false,
+                2 => changed.provider_claims.clear(),
+                3 => changed.attestation_generation = Some(0),
+                _ => changed.hard_expires_at_unix_seconds = None,
+            }
+            assert!(
+                extension_security_evidence(crate::app::SecurityStatus::Verified, changed).is_err()
             );
         }
     }

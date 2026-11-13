@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     ApiCredential, Result, SecureClientConfig, SecureClientError,
     catalog::{error_for_status, relay_endpoint},
-    http::{bounded_body, pinned_client},
+    http::{bounded_body, relay_client},
     relay::dto::{RelayChatRequest, RelayCompletion},
 };
 
@@ -45,13 +45,8 @@ impl<'a> RelayClient<'a> {
             ));
         }
         let endpoint = relay_endpoint(&self.config.relay_base_url, "/api/v1/usage/requests")?;
-        let client = pinned_client(
-            &endpoint,
-            &self.config.endpoint_policy,
-            std::time::Duration::from_secs(10),
-            false,
-        )
-        .await?;
+        let client =
+            relay_client(self.config, &endpoint, std::time::Duration::from_secs(10)).await?;
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             response = client.post(endpoint).bearer_auth(self.credential.expose()).json(&serde_json::json!({"request_ids":request_ids})).send() =>
@@ -190,13 +185,7 @@ impl<'a> RelayClient<'a> {
         endpoint
             .query_pairs_mut()
             .extend_pairs(query.iter().copied());
-        let client = pinned_client(
-            &endpoint,
-            &self.config.endpoint_policy,
-            self.config.attestation_timeout,
-            false,
-        )
-        .await?;
+        let client = relay_client(self.config, &endpoint, self.config.attestation_timeout).await?;
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             response = client
@@ -233,15 +222,14 @@ impl<'a> RelayClient<'a> {
             &self.config.relay_base_url,
             "/api/v1/relay/chat/completions",
         )?;
-        let client = pinned_client(
+        let client = relay_client(
+            self.config,
             &endpoint,
-            &self.config.endpoint_policy,
             if request.stream {
                 None
             } else {
                 Some(std::time::Duration::from_secs(360))
             },
-            false,
         )
         .await?;
         let body = request.serialize_bounded(self.config.limits.serialized_relay_request_bytes)?;
@@ -285,6 +273,12 @@ impl<'a> RelayClient<'a> {
 
 pub(crate) fn stream_failure(code: Option<&str>) -> SecureClientError {
     use crate::SecureErrorCode;
+    if matches!(code, Some("insufficient_credit" | "INSUFFICIENT_CREDIT")) {
+        return SecureClientError::new(
+            axiom_inference::ProviderFailureKind::InsufficientCredit,
+            crate::INSUFFICIENT_CREDIT_MESSAGE,
+        );
+    }
     let (code, detail) = match code {
         Some("ATTESTATION_KEY_CHANGED") => (
             SecureErrorCode::AttestationKeyChanged,
@@ -338,13 +332,7 @@ pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureCl
                 .as_ref()
                 .and_then(|p| p.detail.as_ref())
                 .and_then(|d| d.retry_at_unix_seconds);
-            SecureClientError::with_code(
-                axiom_inference::ProviderFailureKind::RateLimited,
-                crate::SecureErrorCode::TrialCapacity,
-                "Free trials are currently at capacity. Please try again later.",
-                true,
-            )
-            .with_retry_at(retry_at)
+            SecureClientError::trial_capacity(retry_at)
         }
         Some("ATTESTATION_KEY_CHANGED") => SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::AttestationRejected,
@@ -420,6 +408,18 @@ struct PublicErrorDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insufficient_credit_in_a_stream_requires_top_up_without_retrying() {
+        let error = stream_failure(Some("insufficient_credit"));
+        assert_eq!(
+            error.kind(),
+            axiom_inference::ProviderFailureKind::InsufficientCredit
+        );
+        assert_eq!(error.code(), crate::SecureErrorCode::InsufficientCredit);
+        assert_eq!(error.safe_detail(), crate::INSUFFICIENT_CREDIT_MESSAGE);
+        assert!(!error.retryable());
+    }
 
     #[test]
     fn concurrent_rate_limit_gives_local_advice_without_remote_diagnostics() {

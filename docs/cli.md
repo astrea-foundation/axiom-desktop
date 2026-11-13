@@ -180,6 +180,11 @@ verification is distinct from the terminal authentication of each reply.
 
 ## Credit and funding
 
+The `axiomcli billing` command family adds exact credit status/usage, plans,
+card Checkout, saved cards, next-renewal plan changes and explicitly consented
+automatic top-up. See [billing commands and behavior](billing.md#cli-and-tui).
+The TUI shows weekly and purchased balances separately for enrolled accounts.
+
 Use `/login` for native interactive sign-in before managing credit. An
 `AXIOM_API_KEY` automation credential does not authorize billing operations.
 `/balance` and `/topup` open the credit screen: **R** refreshes, **G** opens gift

@@ -5,10 +5,10 @@ import { initialProxyState, type ProxyState } from "../../../shared/proxy";
 const well = "shadow-glass-card relative rounded-2xl bg-[var(--surface-card)]";
 const failureLabels: Record<string, string> = {
   Transient: "Connection interrupted", Authentication: "Sign-in required", LocalAuthentication: "Sign-in required",
-  InsufficientCredit: "Insufficient credit", RateLimited: "Rate limit reached", ModelUnavailable: "Model unavailable",
+  InsufficientCredit: "Insufficient balance. Top up to continue.", RateLimited: "Rate limit reached", ModelUnavailable: "Model unavailable",
   AttestationUnavailable: "Attestation unavailable", AttestationRejected: "Attestation rejected",
   SessionEstablishment: "Encrypted connection failed", Encryption: "Request encryption failed",
-  Decryption: "Response verification failed", InvalidResponse: "Invalid provider response",
+  Decryption: "Couldn’t read the response", InvalidResponse: "Invalid provider response",
   Cancelled: "Request cancelled", InvalidRequest: "Unsupported request", CapabilityMismatch: "Unsupported request",
   Configuration: "Proxy configuration error",
 };
@@ -99,7 +99,6 @@ export function ProxyView({ accountId, runtimeId, onInspecting }: {
                 <dt>Protocol</dt><dd>{state.evidence.protocol}</dd>
                 <dt>Verified</dt><dd>{new Date(state.evidence.verifiedAt * 1000).toLocaleString()}</dd>
                 <dt>Key fingerprint</dt><dd className="font-mono text-[12px]">{state.evidence.fingerprint}</dd>
-                <dt>Response receipt</dt><dd>{state.evidence.responseVerified ? "Verified" : "No verified completion recorded for this request"}</dd>
               </dl>
             </> : <p className="text-[13px] text-[var(--color-text-tertiary)]">No attestation recorded in this proxy run. Evidence appears after a local client makes a model request.</p>}
           </div>
@@ -129,7 +128,7 @@ export function ProxyView({ accountId, runtimeId, onInspecting }: {
             <p className="mt-2 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Use the URL and token in your local client. Each start creates a new token. Local HTTP traffic is plaintext on this machine; remote model traffic uses locally verified TEE attestation and E2EE. Signing out stops the proxy.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Verified requests</div><div className="mt-1 font-mono text-[18px]">{state.completedRequests.toLocaleString()}</div></div>
+            <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Completed requests</div><div className="mt-1 font-mono text-[18px]">{state.completedRequests.toLocaleString()}</div></div>
             <div className={`${well} px-4 py-3.5`}><div className="text-[11px] uppercase text-[var(--color-text-tertiary)]">Tokens</div><div className="mt-1 font-mono text-[18px]">{state.totalTokens.toLocaleString()}</div><div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">Completed requests</div></div>
           </div>
           {state.errors.length ? <div className={`${well} px-4 py-3`}><h2 className="mb-2 text-[13px]">Recent errors</h2>{state.errors.map((entry, i) => <p key={`${entry.at}:${i}`} className="flex justify-between gap-3 py-1 text-[12px]"><span>{failureLabels[entry.kind] ?? "Request failed"}</span><time>{new Date(entry.at).toLocaleTimeString()}</time></p>)}</div> : null}

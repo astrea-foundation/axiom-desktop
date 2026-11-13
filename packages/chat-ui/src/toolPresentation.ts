@@ -26,6 +26,15 @@ export function toolFailed(tool: ToolActivity): boolean {
   return ["failed", "cancelled", "interrupted"].includes(tool.status);
 }
 
+export function toolImageProgress(tool: ToolActivity): ToolActivity["imageProgress"] | null {
+  const progress = tool.imageProgress;
+  if (!["generate", "generate_image", "edit_image"].includes(toolName(tool)) || tool.status === "completed" || toolFailed(tool) || !progress
+    || !["queued", "generating", "finishing"].includes(progress.stage) || !Number.isInteger(progress.percent)
+    || progress.percent < 0 || progress.percent > 99
+    || (progress.stage === "queued" && progress.percent !== 0) || (progress.stage === "finishing" && progress.percent !== 99)) return null;
+  return { ...progress };
+}
+
 export function isFetchTool(tool: ToolActivity): boolean {
   return toolName(tool) === "fetch_url" || tool.kind === "fetch"
     || (tool.kind === "web" && typeof object(tool.input)?.url === "string");
@@ -79,8 +88,14 @@ export function toolLabel(tool: ToolActivity): string {
   let label: string;
   if (name.startsWith("mcp__")) {
     const [server, ...parts] = name.slice(5).split("__");
-    const target = compact(`${server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
-    label = `${failed ? "Failed to call" : done ? "Called" : "Calling"} ${target} · MCP`;
+    const target = compact(`${tool.mcpSource?.server ?? server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
+    label = `${failed ? "Failed to call" : done ? "Called" : tool.status === "pending" ? "Preparing" : "Calling"} ${target} · MCP`;
+  } else if (name === "view_image") {
+    label = failed ? `Image viewing failed${reason ? `: ${reason}` : ""}` : done ? "Viewed image" : "Viewing image";
+  } else if (name === "edit_image" || ((name === "generate" && Array.isArray(input?.reference_image_ids) && input.reference_image_ids.length > 0) || (name === "generate_image" && typeof input?.image_id === "string"))) {
+    label = failed ? `Image editing failed${reason ? `: ${reason}` : ""}` : done ? "Edited image" : "Editing image";
+  } else if ((name === "generate" || name === "generate_image")) {
+    label = failed ? `Image generation failed${reason ? `: ${reason}` : ""}` : done ? "Generated image" : "Generating image";
   } else if (name === "web_search") {
     const verb = failed ? "Failed to search the web" : done ? "Searched the web" : "Searching the web";
     const query = typeof input?.query === "string" ? compact(input.query, 140) : "";
@@ -105,6 +120,12 @@ export function toolLabel(tool: ToolActivity): string {
       label = `${failed ? "Failed to run" : done ? "Ran" : "Running"} ${name.replace(/_/g, " ")}`;
     }
     if (reason) label = `${reason}: ${label}`;
+  }
+  const progress = toolImageProgress(tool);
+  if (progress) {
+    if (!done && progress.stage === "queued") label = "Waiting for GPU";
+    if (!done && progress.stage === "finishing") label = "Finishing image";
+    label += ` · ${progress.percent}%`;
   }
   return compact(label, 220);
 }

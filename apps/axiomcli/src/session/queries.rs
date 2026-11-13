@@ -106,6 +106,35 @@ pub(super) fn query_thread_summary(
 }
 
 impl SessionStore {
+    /// Read only the exact completed tool under this account's owning thread.
+    pub fn generated_image(
+        &self,
+        id: &SessionId,
+        call_id: &str,
+        sha256: &str,
+    ) -> Result<axiom_secure_client::GeneratedImage> {
+        let connection = self.lock()?;
+        let item = connection.query_row(
+            "SELECT id,thread_id,turn_id,sequence,kind,status,client_item_id,external_id,content,metadata,created_at,updated_at
+             FROM timeline_items WHERE thread_id=?1 AND external_id=?2 AND kind='tool_call' AND status='completed'",
+            params![id.to_string(), call_id], StoredTimelineItem::from_row,
+        ).map_err(storage_error)?.decode()?;
+        drop(connection);
+        let image = super::projection::generated_image(&item)?
+            .ok_or_else(|| AxiomError::Storage("saved image is unavailable".into()))?;
+        if image.sha256 != sha256 || image.mime_type != "image/png" {
+            return Err(AxiomError::Storage("saved image identity differs".into()));
+        }
+        axiom_inference::ImageDimensions {
+            width: image.width,
+            height: image.height,
+        }
+        .validate()
+        .map_err(|error| AxiomError::Storage(error.to_string()))?;
+        crate::image_tool::ImageCatalog::default().add_generated(&image)?;
+        Ok(image)
+    }
+
     pub fn thread_catalog(
         &self,
         query: Option<&str>,
@@ -205,7 +234,7 @@ impl SessionStore {
         after_sequence: Option<u64>,
         limit: usize,
     ) -> Result<ThreadSnapshot> {
-        self.read_snapshot(id, after_sequence, limit, None, false)
+        self.read_snapshot(id, after_sequence, limit, None, false, false)
     }
 
     /// A bounded page for local IPC. Accounting has its own stable cursor.
@@ -216,7 +245,17 @@ impl SessionStore {
         after_request_id: Option<&str>,
         limit: usize,
     ) -> Result<ThreadSnapshot> {
-        self.read_snapshot(id, after_sequence, limit, after_request_id, true)
+        self.read_snapshot(id, after_sequence, limit, after_request_id, true, false)
+    }
+
+    pub fn thread_page_with_image_resources(
+        &self,
+        id: &SessionId,
+        after_sequence: Option<u64>,
+        after_request_id: Option<&str>,
+        limit: usize,
+    ) -> Result<ThreadSnapshot> {
+        self.read_snapshot(id, after_sequence, limit, after_request_id, true, true)
     }
 
     fn read_snapshot(
@@ -226,6 +265,7 @@ impl SessionStore {
         limit: usize,
         after_request_id: Option<&str>,
         paged: bool,
+        image_resources: bool,
     ) -> Result<ThreadSnapshot> {
         if limit == 0 || limit > MAX_TIMELINE_PAGE {
             return Err(AxiomError::Storage(format!(
@@ -285,13 +325,22 @@ impl SessionStore {
         let mut statement = transaction
             .prepare(
                 "SELECT id, thread_id, turn_id, sequence, kind, status, client_item_id,
-                        external_id, content, metadata, created_at, updated_at
+                        external_id, content,
+                        CASE WHEN ?4 AND json_type(metadata,'$.generated_image')='object'
+                        THEN json_set(metadata,'$.content',json_array(json_object(
+                            'type','content','content',json_object(
+                                'type','image','mimeType',json_extract(metadata,'$.generated_image.mimeType'),
+                                'width',json_extract(metadata,'$.generated_image.width'),
+                                'height',json_extract(metadata,'$.generated_image.height'),
+                                'imageResource',json_object('callId',external_id,
+                                    'sha256',json_extract(metadata,'$.generated_image.sha256'))))))
+                        ELSE metadata END, created_at, updated_at
                  FROM timeline_items
                  WHERE thread_id=?1 AND sequence>?2 ORDER BY sequence ASC LIMIT ?3",
             )
             .map_err(storage_error)?;
         let mut rows = statement
-            .query(params![id.to_string(), after, fetch])
+            .query(params![id.to_string(), after, fetch, image_resources])
             .map_err(storage_error)?;
         let mut items: Vec<TimelineItem> = Vec::new();
         let mut bytes = 0;

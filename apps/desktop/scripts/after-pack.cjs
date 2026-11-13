@@ -10,6 +10,15 @@ module.exports = async function afterPack(context) {
   await mkdir(resources, {recursive: true});
   await writeFile(path.join(resources, 'axiom-install.json'), JSON.stringify({schemaVersion: 1, product: 'desktop', format, versioned: false}) + '\n');
   await require('../../../scripts/package-licenses.cjs')(workspace, path.join(resources, 'licenses'));
+  if (process.env.AXIOM_CHUTES_BUNDLE) {
+    await require('./bundle-chutes-runtime.cjs')(resources, process.env.AXIOM_CHUTES_BUNDLE, {
+      platform: context.electronPlatformName,
+      architecture: {0:'ia32',1:'x64',2:'armv7l',3:'arm64',4:'universal'}[context.arch],
+      channel: process.env.AXIOM_CHUTES_RELEASE_CHANNEL || 'production',
+      signed: context.packager.config.forceCodeSigning === true,
+      teamId: process.env.APPLE_TEAM_ID,
+    });
+  }
   if (context.electronPlatformName === 'win32') {
     await mkdir(path.join(resources, 'launchers'), {recursive: true});
     for (const file of ['axiomcli.cmd', 'axiomcli.ps1']) await copyFile(path.join(root, 'build/cli', file), path.join(resources, 'launchers', file));

@@ -17,6 +17,18 @@ export type DesktopMcpAction =
       kind: "test";
     }
   | {
+      name: string;
+      kind: "connect";
+    }
+  | {
+      name: string;
+      kind: "cancel_connect";
+    }
+  | {
+      name: string;
+      kind: "disconnect";
+    }
+  | {
       tools: string[];
       kind: "select";
     }
@@ -47,6 +59,152 @@ export type TimelineItemKind = "user_message" | "assistant_message" | "reasoning
 export type TimelineItemStatus = "pending" | "in_progress" | "completed" | "cancelled" | "failed" | "interrupted";
 export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "unavailable";
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
+/**
+ * A finite operation set. Renderers cannot select arbitrary URLs, headers or principals.
+ */
+export type CreditBillingAction =
+  | {
+      kind: "summary";
+    }
+  | {
+      kind: "plans";
+    }
+  | {
+      kind: "prices";
+    }
+  | {
+      period?: string | null;
+      timezone?: string | null;
+      kind: "usage";
+    }
+  | {
+      id: string;
+      plan_key: string;
+      catalog_version: string;
+      kind: "checkout";
+    }
+  | {
+      id: string;
+      plan_key: string;
+      catalog_version: string;
+      kind: "change";
+    }
+  | {
+      kind: "portal";
+    }
+  | {
+      id: string;
+      kind: "setup_card";
+    }
+  | {
+      kind: "cards";
+    }
+  | {
+      kind: "auto_topup";
+    }
+  | {
+      settings: AutomaticTopupSettings;
+      kind: "configure_auto_topup";
+    }
+  | {
+      enabled: boolean;
+      kind: "fallback";
+    }
+  | {
+      kind: "operations";
+    }
+  | {
+      id: string;
+      kind: "operation";
+    }
+  | {
+      id: string;
+      kind: "check";
+    }
+  | {
+      id: string;
+      kind: "cancel_topup";
+    }
+  | {
+      kind: "card_options";
+    }
+  | {
+      id: string;
+      amount_microusd: number;
+      kind: "create_card_payment";
+    }
+  | {
+      kind: "card_payments";
+    }
+  | {
+      id: string;
+      kind: "check_card_payment";
+    }
+  | {
+      id: string;
+      kind: "cancel_card_payment";
+    };
+export type CreditBillingResult =
+  | {
+      kind: "summary";
+      value: CreditSummary | null;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "plans";
+      value: SubscriptionPlans;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "prices";
+      value: CreditPrices;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "usage";
+      value: CreditUsage;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "operation";
+      value: BillingOperation;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "portal";
+      value: BillingPortal;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "cards";
+      value: SavedBillingCards;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "auto_topup";
+      value: AutomaticTopup;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "operations";
+      value: BillingOperation[];
+      [k: string]: unknown;
+    }
+  | {
+      kind: "card_options";
+      value: CardFundingOptions;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "card_payment";
+      value: CardFundingPayment;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "card_payments";
+      value: CardFundingPayment[];
+      [k: string]: unknown;
+    };
 export type CryptoInvoiceAction = "cancel" | "check" | "refresh";
 export type SecurityState =
   "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
@@ -68,6 +226,10 @@ export type ActivityEvent =
     }
   | {
       status: SecurityStatus;
+      /**
+       * Public report from the locally verified session for this request.
+       */
+      evidence?: SecurityEvidence | null;
       kind: "security_changed";
       [k: string]: unknown;
     }
@@ -137,6 +299,10 @@ export interface ProtocolSchema {
   promptMetadata: PromptMetadata;
   getAttachmentsRequest: GetAttachmentsRequest;
   getAttachmentsResponse: GetAttachmentsResponse;
+  regenerateImageRequest: RegenerateImageRequest;
+  regenerateImageResponse: RegenerateImageResponse;
+  readImageRequest: ReadImageRequest;
+  readImageResponse: ReadImageResponse;
   deliveryMetadata: DeliveryMetadata;
   listThreadsRequest: ListThreadsRequest;
   listThreadsResponse: ListThreadsResponse;
@@ -171,6 +337,8 @@ export interface ProtocolSchema {
   logoutRequest: LogoutRequest;
   billingStatusRequest: BillingStatusRequest;
   billingStatusResponse: BillingStatusResponse;
+  creditBillingRequest: CreditBillingRequest;
+  creditBillingResponse: CreditBillingResponse;
   cryptoOptionsRequest: CryptoOptionsRequest;
   cryptoOptionsResponse: CryptoOptionsResponse;
   createCryptoPaymentRequest: CreateCryptoPaymentRequest;
@@ -208,11 +376,13 @@ export interface DesktopMcpRequest {
   action: DesktopMcpAction;
 }
 /**
- * Local stdio configuration. Environment values are write-only secrets.
+ * Missing remote configuration preserves existing local stdio connections.
+ * Environment values and bearer tokens are write-only secrets.
  */
 export interface DesktopMcpServerInput {
   name: string;
-  command: string;
+  displayName?: string | null;
+  command?: string;
   args?: string[];
   enabled: boolean;
   /**
@@ -221,8 +391,23 @@ export interface DesktopMcpServerInput {
   env?: {
     [k: string]: string;
   } | null;
+  remote?: McpRemoteConnection | null;
+  /**
+   * None preserves the saved token; an empty string clears it.
+   */
+  bearerToken?: string | null;
+}
+/**
+ * Public remote connection identity. Secrets never appear in snapshots.
+ */
+export interface McpRemoteConnection {
+  url: string;
+  auth?: "none" | "bearer" | "oauth";
+  clientId?: string | null;
+  clientMetadataUrl?: string | null;
 }
 export interface DesktopMcpResponse {
+  remoteSupported?: boolean;
   revision: number;
   servers: DesktopMcpServer[];
   selectedTools: string[];
@@ -230,8 +415,10 @@ export interface DesktopMcpResponse {
 }
 export interface DesktopMcpServer {
   name: string;
+  displayName?: string | null;
   command: string;
   args: string[];
+  remote?: McpRemoteConnection | null;
   enabled: boolean;
   environmentKeys: string[];
   credentialId?: string | null;
@@ -314,6 +501,14 @@ export interface FeatureVersions {
   usage?: number;
   securityEvidence?: number;
   webConsent?: number;
+  /**
+   * Version 2 exposes one image tool automatically for vision models.
+   */
+  imageGeneration?: number;
+  /**
+   * Metadata-only image presentation with account-scoped on-demand reads.
+   */
+  imageResources?: number;
   steering?: number;
   messageRevision?: number;
   attachments?: number;
@@ -400,6 +595,27 @@ export interface GetAttachmentsRequest {
 }
 export interface GetAttachmentsResponse {
   attachments: PromptAttachment[];
+  [k: string]: unknown;
+}
+export interface RegenerateImageRequest {
+  threadId: string;
+  callId: string;
+}
+export interface RegenerateImageResponse {
+  callId: string;
+  [k: string]: unknown;
+}
+export interface ReadImageRequest {
+  threadId: string;
+  callId: string;
+  sha256: string;
+}
+export interface ReadImageResponse {
+  data: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sha256: string;
   [k: string]: unknown;
 }
 /**
@@ -771,6 +987,177 @@ export interface TrialCapacity {
   capacity_microusd: number;
   spent_microusd: string;
   retry_at?: string | null;
+}
+export interface CreditBillingRequest {
+  action: CreditBillingAction;
+}
+export interface AutomaticTopupSettings {
+  enabled: boolean;
+  version: string;
+  threshold_units: string;
+  amount_cents: number;
+  monthly_cap_cents: number;
+  payment_method_id?: string | null;
+  consent_version: string;
+  consent_accepted: boolean;
+}
+export interface CreditBillingResponse {
+  result: CreditBillingResult;
+}
+export interface CreditSummary {
+  format: string;
+  enabled: boolean;
+  scale: string;
+  revision: string;
+  policy_version: string;
+  reference_microusd_per_credit: number;
+  default_multiplier_ppm: number;
+  paid_fallback: boolean;
+  payment_review_required: boolean;
+  purchased: PurchasedCredits;
+  trial: TrialCredits;
+  allowance: WeeklyCredits;
+  subscription?: CreditSubscription | null;
+  capabilities: CreditCapabilities;
+}
+export interface PurchasedCredits {
+  currency: string;
+  scale: string;
+  posted_units: string;
+  held_units: string;
+  available_units: string;
+}
+export interface TrialCredits {
+  posted_units: string;
+  held_units: string;
+}
+export interface WeeklyCredits {
+  limit_units: string;
+  remaining_units: string;
+  held_units: string;
+  generation?: string | null;
+  resets_at?: string | null;
+  effective_until?: string | null;
+}
+export interface CreditSubscription {
+  id: string;
+  plan_key: string;
+  state: string;
+  paid_through_at?: string | null;
+  cancel_at_period_end: boolean;
+  pending_plan_key?: string | null;
+}
+export interface CreditCapabilities {
+  subscriptions: boolean;
+  auto_topup: boolean;
+  card: boolean;
+  crypto: boolean;
+  admin: boolean;
+}
+export interface SubscriptionPlans {
+  enabled: boolean;
+  currency: string;
+  billing_interval: string;
+  allowance_interval_days: number;
+  plans: SubscriptionPlan[];
+}
+export interface SubscriptionPlan {
+  key: string;
+  name: string;
+  amount_cents: number;
+  weekly_units: string;
+  version: string;
+}
+export interface CreditPrices {
+  scale: string;
+  reference_microusd_per_credit: number;
+  default_version: string;
+  default_multiplier_ppm: number;
+  overrides: CreditModelPrice[];
+}
+export interface CreditModelPrice {
+  provider: string;
+  model_id: string;
+  version: string;
+  multiplier_ppm: number;
+}
+export interface CreditUsage {
+  period: string;
+  scale: string;
+  total_units: string;
+  allocation: CreditUsageAllocation;
+  models: CreditModelUsage[];
+  purchased: PurchasedUsage;
+}
+export interface CreditUsageAllocation {
+  subscription_units: string;
+  trial_units: string;
+}
+export interface CreditModelUsage {
+  provider: string;
+  model_id: string;
+  units: string;
+}
+export interface PurchasedUsage {
+  currency: string;
+  scale: string;
+  total_units: string;
+  models: CreditModelUsage[];
+}
+export interface BillingOperation {
+  id: string;
+  kind: string;
+  state: string;
+  url?: string | null;
+  amount_cents: number;
+  card?: SavedBillingCard | null;
+  created_at: string;
+}
+export interface SavedBillingCard {
+  id: string;
+  brand: string;
+  last4: string;
+  exp_month: number;
+  exp_year: number;
+}
+export interface BillingPortal {
+  url: string;
+}
+export interface SavedBillingCards {
+  cards: SavedBillingCard[];
+}
+export interface AutomaticTopup {
+  currency: string;
+  scale: string;
+  available: boolean;
+  enabled: boolean;
+  version: string;
+  threshold_units: string;
+  amount_cents: number;
+  monthly_cap_cents: number;
+  payment_method_id?: string | null;
+  paused_reason?: string | null;
+  cap_month: string;
+  used_cents: number;
+  consent_version: string;
+}
+export interface CardFundingOptions {
+  enabled: boolean;
+  currency: string;
+  min_amount_microusd: number;
+  max_amount_microusd: number;
+}
+export interface CardFundingPayment {
+  id: string;
+  amount_microusd: number;
+  credited_microusd: number;
+  refunded_microusd: number;
+  status: string;
+  checkout_url?: string | null;
+  expires_at: string;
+  created_at: string;
+  review_required: boolean;
+  cancel_requested: boolean;
 }
 export interface CryptoOptionsRequest {
   [k: string]: unknown;
