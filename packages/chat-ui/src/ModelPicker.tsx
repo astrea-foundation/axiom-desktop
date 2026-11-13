@@ -83,7 +83,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         .map((capability) => CAPABILITIES[capability].summary),
     ].join(" + "),
     hostOptions.filter((host) => filters.hosts.has(host.id)).map((host) => host.label).join(" or "),
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(", ");
 
   const clearFilters = () => {
     setSearch("");
@@ -238,7 +238,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
       <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-2 text-[11px] text-[var(--color-text-muted)]">
         <span aria-live="polite" className="min-w-0 truncate">
           <span className="font-medium text-[var(--color-text-secondary)]">{visible.length}</span>
-          {" "}{visible.length === 1 ? "model" : "models"}{summary ? ` · ${summary}` : ""}
+          {" "}{visible.length === 1 ? "model" : "models"}{summary ? `: ${summary}` : ""}
         </span>
         {filtering ? (
           <button

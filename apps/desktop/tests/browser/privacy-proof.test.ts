@@ -262,7 +262,7 @@ for (const theme of ["light", "dark"]) test(`successful image turns keep environ
     await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
     assert.equal(await count(page), 0, "refresh waits for the native inference operation to finish");
     await proofButton(page).click();
-    assert.match(await dialog(page).innerText(), /Environment attestation/);
+    assert.match(await dialog(page).innerText(), /environment attestation/);
     assert.doesNotMatch(await dialog(page).innerText(), /Latest reply verification|complete replies|reply.*authenticated/i);
     await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
     await page.waitForFunction(() => (window as any).__privacyTest.calls() === 1);

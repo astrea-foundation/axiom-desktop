@@ -19,7 +19,7 @@ function object(value: unknown): Record<string, unknown> | null {
 }
 
 export function toolName(tool: ToolActivity): string {
-  return tool.name ?? tool.title.split(" · ").at(-1) ?? tool.title;
+  return tool.name ?? tool.title.split(/(?: \u00b7|:) /).at(-1) ?? tool.title;
 }
 
 export function toolFailed(tool: ToolActivity): boolean {
@@ -139,7 +139,7 @@ export function toolLabel(tool: ToolActivity): string {
   if (name.startsWith("mcp__")) {
     const [server, ...parts] = name.slice(5).split("__");
     const target = compact(`${tool.mcpSource?.server ?? server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
-    label = `${failed ? "Failed to call" : done ? "Called" : tool.status === "pending" ? "Preparing" : "Calling"} ${target} · MCP`;
+    label = `${failed ? "Failed to call" : done ? "Called" : tool.status === "pending" ? "Preparing" : "Calling"} ${target} using MCP`;
   } else if (name === "view_image") {
     const id = viewedImageId(tool);
     label = failed ? `Image viewing failed${reason ? `: ${reason}` : ""}`
@@ -167,7 +167,7 @@ export function toolLabel(tool: ToolActivity): string {
     label = reason ? `${reason}: ${target}` : `${verb} ${target}`;
   } else {
     // New snapshots already use the native TUI formatter for every tool.
-    label = tool.title.replace(/ · [a-z][a-z0-9_]*$/, "").replace(/`([^`]+)`/g, "$1");
+    label = tool.title.replace(/(?: \u00b7|:) [a-z][a-z0-9_]*$/, "").replace(/`([^`]+)`/g, "$1");
     if (label === name && /^[a-z][a-z0-9_]*$/.test(name)) {
       label = `${failed ? "Failed to run" : done ? "Ran" : "Running"} ${name.replace(/_/g, " ")}`;
     }
@@ -177,7 +177,7 @@ export function toolLabel(tool: ToolActivity): string {
   if (progress) {
     if (!done && progress.stage === "queued") label = "Waiting for GPU";
     if (!done && progress.stage === "finishing") label = "Finishing image";
-    label += ` · ${progress.percent}%`;
+    label += ` (${progress.percent}%)`;
   }
   return compact(label, 220);
 }

@@ -82,7 +82,7 @@ async function open() {
 test("primary discount, safe retries, quote, network, memo and status restoration", async () => {
   const {page, errors} = await open();
   try {
-    assert.match(await page.locator("body").innerText(), /5% off · \$9\.50 buys \$10 credit/);
+    assert.match(await page.locator("body").innerText(), /Save 5%: \$9\.50 buys \$10 credit/);
     await page.getByRole("button", {name: "Other crypto", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: /^USDT/}).click();
@@ -217,7 +217,7 @@ test("sent transfers survive reopening and keep confirming beyond the quote dead
     await page.evaluate(() => window.dispatchEvent(new Event("axiom-test-remount-funding")));
     await page.getByRole("button", {name: "Other crypto", exact: true}).click();
     await page.locator("summary").filter({hasText: "Recent payments"}).click();
-    await page.getByRole("button", {name: /\$25\.00 · XMR/}).click();
+    await page.getByRole("button", {name: /\$25\.00 in XMR/}).click();
     await page.getByRole("status").filter({hasText: /^Checking payment$/}).waitFor();
     assert.equal(await page.getByRole("timer").count(), 0);
     await page.evaluate(() => (window as any).__cryptoTest.progress("account-a", "confirming"));
@@ -382,7 +382,7 @@ test("six-hour invoices retain their deadline on rate refresh and cancellation f
     assert.equal(await page.getByRole("button", {name: "Create payment", exact: true}).isDisabled(), true);
     assert.match(await page.getByRole("dialog").innerText(), /5 of 5 active invoices/);
     await page.locator("summary").filter({hasText: "Recent payments"}).click();
-    await page.getByRole("button", {name: /\$25\.00 · BTC/}).first().click();
+    await page.getByRole("button", {name: /\$25\.00 in BTC/}).first().click();
     await page.getByRole("button", {name: "Cancel invoice", exact: true}).click();
     await page.getByRole("status").filter({hasText: /^Cancelled$/}).waitFor();
     assert.match(await page.getByRole("dialog").innerText(), /4 of 5 active invoices/);

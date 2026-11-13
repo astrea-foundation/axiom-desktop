@@ -61,7 +61,7 @@ export function AstreaBanner() {
             autoPlay loop muted playsInline preload="auto" />
         ) : null}
       </div>
-      <a className="astrea-banner__link" href="https://astrea.systems" target="_blank" rel="noopener noreferrer" aria-label="Astrea — opens astrea.systems in your browser">
+      <a className="astrea-banner__link" href="https://astrea.systems" target="_blank" rel="noopener noreferrer" aria-label="Astrea: opens astrea.systems in your browser">
         <span className="astrea-banner__copy">RUNS ON</span>
         <img className="astrea-banner__lockup" src={lockup} alt="Astrea" width="60" height="18" draggable={false} />
       </a>

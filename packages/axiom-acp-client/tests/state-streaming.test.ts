@@ -35,7 +35,7 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
     update: {
       sessionUpdate: status === "pending" ? "tool_call" : "tool_call_update",
       toolCallId: callId, status,
-      ...(status === "pending" ? { title: "Searching the web for news · web_search", kind: "search", rawInput: { query: "news" } } : {}),
+      ...(status === "pending" ? { title: "Searching the web for news: web_search", kind: "search", rawInput: { query: "news" } } : {}),
     },
   };
 }
@@ -67,7 +67,7 @@ test("image percentages update the owning tool and survive durable refresh witho
   const store = new AxiomStateStore();
   store.replaceTimeline([page(1)]);
   const proposed = toolUpdate(2, "image");
-  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  Object.assign(proposed.update, {title: "Generating image: generate", kind: "other", rawInput: {prompt: "A blue mug"}});
   store.standardUpdate(proposed);
   const progress = (revision: number, stage: string, percent: number) => ({...toolUpdate(revision, "image", "in_progress"),
     update: {sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: {imageProgress: {stage, percent}}}});
@@ -93,7 +93,7 @@ test("image percentages update the owning tool and survive durable refresh witho
 test("live image references survive tool completion and metadata-only timeline replacement", () => {
   const store = new AxiomStateStore(); store.replaceTimeline([page(1)]);
   const proposed = toolUpdate(2, "image");
-  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  Object.assign(proposed.update, {title: "Generating image: generate", kind: "other", rawInput: {prompt: "A blue mug"}});
   store.standardUpdate(proposed);
   const imageResource = { callId: "image", sha256: "ab".repeat(32), mimeType: "image/png", width: 1024, height: 1024 };
   store.standardUpdate({ ...toolUpdate(3, "image", "in_progress"), update: {

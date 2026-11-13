@@ -110,6 +110,13 @@ escaping.
 
 ## Desktop UI and captures
 
+Write UI labels and status messages as plain sentences, using conjunctions or
+parentheses where needed. Avoid em dashes and middle-dot separators, including in
+accessible labels, the native callback and native-generated tool descriptions.
+Use “Not available” or “N/A” for unknown values and “Loading…” for loading states.
+The ACP title parser accepts both current colon-separated identities and historic
+tool titles so existing stored sessions remain compatible.
+
 The renderer lives in `apps/desktop/src/renderer`; Electron lifecycle, origins,
 updates and sidecar ownership live in `src/main`. Keep the preload API narrow:
 renderer callers use typed operations rather than arbitrary ACP requests.

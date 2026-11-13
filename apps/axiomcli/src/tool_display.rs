@@ -451,7 +451,7 @@ fn describe_mcp(
     let tool = humanize_name(parts.next().unwrap_or("tool"));
     let action = phased(phase, "Calling", "Called", "MCP call failed for");
     let target = generic_target(arguments, cwd)
-        .map(|target| format!(" · {}", inline(&target)))
+        .map(|target| format!(" for {}", inline(&target)))
         .unwrap_or_default();
     format!("{action} MCP {server}: {tool}{target}")
 }
@@ -464,7 +464,7 @@ fn describe_generic(
 ) -> String {
     let action = phased(phase, "Using", "Used", "Failed to use");
     let target = generic_target(arguments, cwd)
-        .map(|target| format!(" · {}", inline(&target)))
+        .map(|target| format!(" for {}", inline(&target)))
         .unwrap_or_default();
     format!("{action} {}{target}", humanize_name(name))
 }
@@ -745,7 +745,7 @@ mod tests {
                 ToolDisplayPhase::Running,
                 None,
             ),
-            "Calling MCP github: create issue · `astrea/axiomai`"
+            "Calling MCP github: create issue for `astrea/axiomai`"
         );
     }
 }

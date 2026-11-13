@@ -303,7 +303,7 @@ fn slash_help_text() -> String {
     let lines = slash::COMMANDS
         .iter()
         .filter(|spec| !matches!(spec.name, "theme" | "web" | "usage"))
-        .map(|spec| format!("{} — {}", spec.usage, spec.description))
+        .map(|spec| format!("{}: {}", spec.usage, spec.description))
         .collect::<Vec<_>>()
         .join("\n");
     format!("AxiomCLI commands:\n{lines}\nCommands run locally and are not model prompts.")
@@ -2236,7 +2236,7 @@ fn send_event(
                     .into_iter()
                     .map(|item| {
                         protocol::PlanEntry::new(
-                            format!("{} · {}", item.id, item.title),
+                            format!("{}: {}", item.id, item.title),
                             protocol::PlanEntryPriority::Medium,
                             match item.status {
                                 crate::app::TaskStatus::Pending => {
@@ -2269,7 +2269,7 @@ fn send_event(
             // that stable identity in the title for generic clients while making
             // the leading text useful to a person watching the task run.
             let title = format!(
-                "{} · {name}",
+                "{}: {name}",
                 describe_tool(&name, &arguments, ToolDisplayPhase::Proposed, cwd)
             );
             send_session_update(
