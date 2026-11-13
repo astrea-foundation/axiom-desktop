@@ -47,7 +47,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   const [usage, setUsage] = useState<CreditUsage | null>(null);
   const [tab, setTab] = useState<"card" | "crypto">("card");
   const [amount, setAmount] = useState("10");
-  const [threshold, setThreshold] = useState("100");
+  const [threshold, setThreshold] = useState("5");
   const [refill, setRefill] = useState("10");
   const [cap, setCap] = useState("50");
   const [card, setCard] = useState("");
@@ -121,12 +121,17 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
     setSummary(null); setPlans([]); setOptions(null); setPayments([]); setAuto(null); setCards([]); setOperations([]);
     setDirty(false); dirtyRef.current = false; setConsent(false); setBusy(false); setError(null); setNotice(null); setChosen(null); setUsage(null);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      if (!pending.current) await load();
-      if (current === generation.current && !unsupportedRef.current) timer = setTimeout(() => void poll(), 10_000);
+    const poll = async (initial = false) => {
+      if (!pending.current && (initial || document.visibilityState === "visible")) await load();
+      if (current === generation.current && !unsupportedRef.current) timer = setTimeout(() => void poll(), 30_000);
     };
-    if (connected && window.axiomDesktop?.agent.creditBilling) void poll();
-    return () => { generation.current++; if (timer) clearTimeout(timer); };
+    const resume = () => { if (!pending.current && !unsupportedRef.current && document.visibilityState === "visible") void load(); };
+    if (connected && window.axiomDesktop?.agent.creditBilling) void poll(true);
+    if (connected) { window.addEventListener("focus", resume); document.addEventListener("visibilitychange", resume); }
+    return () => {
+      generation.current++; if (timer) clearTimeout(timer);
+      window.removeEventListener("focus", resume); document.removeEventListener("visibilitychange", resume);
+    };
   }, [accountId, connected, load]);
   const perform = async (work: () => Promise<unknown>, message?: string) => {
     if (pending.current) return;
@@ -159,6 +164,10 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   };
   if (typeof window === "undefined" || !window.axiomDesktop?.agent.creditBilling) return <>{cryptoContent}</>;
   if (unsupported) return <><p className="mt-4 text-[12px] text-[var(--color-text-secondary)]">Restart with the updated Axiom app to manage cards and subscriptions.</p>{cryptoContent}</>;
+  const subscription = summary?.subscription;
+  const currentSubscription = subscription && !["canceled", "expired"].includes(subscription.state) ? subscription : null;
+  const canChangePlan = currentSubscription?.state === "active";
+  const pendingSubscription = currentSubscription && ["creating", "pending"].includes(currentSubscription.state);
   return <div className="space-y-7 text-[13px] text-[var(--color-text-primary)]">
     {summary ? <>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -184,23 +193,25 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
       {summary.payment_review_required ? <p role="alert" className="text-[var(--color-warning-strong)]">Spending is paused while a payment is reviewed.</p> : null}
       {plans.length ? <section aria-label="Subscription plans"><h3 className="mb-1 font-medium">Choose your plan</h3>
         <p className="mb-3 text-[12px] text-[var(--color-text-secondary)]">Billed monthly. Credits refresh every 7 days.</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{plans.map(plan => { const current = summary.subscription?.plan_key === plan.key; return <div key={plan.key} className={`flex flex-col rounded-xl border p-3 ${current ? "border-[var(--color-border-accent)] bg-[var(--wash-row)]" : "border-[var(--color-border)]"}`}>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{plans.map(plan => { const current = currentSubscription?.plan_key === plan.key; return <div key={plan.key} className={`flex flex-col rounded-xl border p-3 ${current ? "border-[var(--color-border-accent)] bg-[var(--wash-row)]" : "border-[var(--color-border)]"}`}>
           <p className="text-[12px] font-medium">{plan.name}</p>
           <p className="mt-2 text-[22px] font-semibold tabular-nums tracking-[-0.03em]">{money(plan.amount_cents)}<span className="text-[11px] font-normal text-[var(--color-text-tertiary)]">/mo</span></p>
           <p className="mt-1 mb-3 text-[12px] text-[var(--color-text-secondary)]"><span className="font-semibold text-[var(--color-text-primary)]">{creditAmount(plan.weekly_units, true)}</span> credits / week</p>
-          <button className={`${button} mt-auto w-full justify-center`} disabled={busy || !connected || current || !!summary.subscription?.pending_plan_key} onClick={() => setChosen(plan)}>{current ? "Current plan" : summary.subscription ? "Change plan" : "Subscribe"}</button>
+          <button className={`${button} mt-auto w-full justify-center`} disabled={busy || !connected || current || !!currentSubscription?.pending_plan_key || (!!currentSubscription && !canChangePlan)} onClick={() => setChosen(plan)}>{current ? "Current plan" : currentSubscription ? "Change plan" : "Subscribe"}</button>
         </div>; })}</div>
         {chosen ? <div role="dialog" aria-label="Confirm subscription plan" className="mt-3 rounded-xl bg-[var(--wash-row)] p-4">
-          <p>{summary.subscription ? `Change to ${chosen.name} at your next monthly renewal for ${money(chosen.amount_cents)} per month.` : `Subscribe to ${chosen.name} for ${money(chosen.amount_cents)} per month with ${creditAmount(chosen.weekly_units, true)} credits each week.`}</p>
+          <p>{canChangePlan ? `Change to ${chosen.name} at your next monthly renewal for ${money(chosen.amount_cents)} per month.` : `Subscribe to ${chosen.name} for ${money(chosen.amount_cents)} per month with ${creditAmount(chosen.weekly_units, true)} credits each week.`}</p>
           <div className="mt-3 flex gap-2"><button className={button} disabled={busy} onClick={() => void perform(async () => {
-            await call({kind: summary.subscription ? "change" : "checkout", id: intent(accountId, `plan.${chosen.key}.${chosen.version}.${summary.subscription?.id ?? "new"}`), plan_key: chosen.key, catalog_version: chosen.version}, "operation"); setChosen(null);
-          }, summary.subscription ? "Plan change scheduled. Your current allowance remains available until the change takes effect." : "Complete your subscription in the browser, then return here.")}>Confirm</button>
+            const operation = await call({kind: canChangePlan ? "change" : "checkout", id: intent(accountId, `plan.${chosen.key}.${chosen.version}.${currentSubscription?.id ?? "new"}`), plan_key: chosen.key, catalog_version: chosen.version}, "operation");
+            if (["expired", "canceled", "failed", "succeeded"].includes(operation.state)) retireIntent(accountId, operation.id);
+            setChosen(null);
+          }, canChangePlan ? "Plan change scheduled. Your current allowance remains available until the change takes effect." : "Complete your subscription in the browser, then return here.")}>Confirm</button>
           <button className={button} disabled={busy} onClick={() => setChosen(null)}>Cancel</button></div>
         </div> : null}
       </section> : null}
       {summary.subscription ? <div className="space-y-2"><p>Subscription: {summary.subscription.state}{summary.subscription.cancel_at_period_end ? " · Cancels at the end of paid coverage" : ""}{summary.subscription.pending_plan_key ? ` · ${summary.subscription.pending_plan_key} at next renewal` : ""}</p>
         <button className={button} disabled={busy || !connected} onClick={() => void perform(() => call({kind: "portal"}, "portal"))}><ExternalLink size={13} />Manage payment method or cancel</button>
-        {["creating", "pending"].includes(summary.subscription.state) ? <button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "operation", id: summary.subscription!.id}, "operation"))}>Resume subscription checkout</button> : null}
+        {pendingSubscription ? <button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "operation", id: summary.subscription!.id}, "operation"))}>Resume subscription checkout</button> : null}
       </div> : null}
       <label className="flex items-start gap-2"><input type="checkbox" checked={summary.paid_fallback} disabled={busy || !connected} onChange={e => void perform(() => call({kind: "fallback", enabled: e.target.checked}, "summary"))} /><span>Use purchased credit when weekly and trial credits run out.</span></label>
     </> : null}

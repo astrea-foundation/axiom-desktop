@@ -19,7 +19,7 @@
     "install:desktop": "node ./scripts/install-linux-desktop-entry.mjs",
     "build": "electron-vite build",
     "test": "tsx --test tests/*.test.ts ../../packages/desktop-releases/manifest.test.mjs ../../packages/desktop-releases/windows-setup.test.mjs",
-    "test:browser": "tsx --test tests/browser/*.test.ts",
+    "test:browser": "tsx --test --test-concurrency=1 tests/browser/*.test.ts",
     "preview": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json --composite false",
     "capture": "node ./scripts/ensure-electron.mjs && node ./scripts/run-electron.mjs vite build && node ./scripts/run-electron.mjs electron . --capture",

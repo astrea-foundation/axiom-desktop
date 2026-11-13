@@ -4,11 +4,30 @@ import { AxiomAcpClient } from "../src/client.js";
 import { allowedBillingUrl, validateCreditAction } from "../src/credit-billing.js";
 import { creditAmount, purchasedCreditAmount, inputPurchasedCredit, validateCreditBalances, type CreditBalanceSummary } from "@axiom/chat-core/creditBalances";
 import { creditUsageBreakdown, purchasedUsageBreakdown } from "@axiom/chat-core/creditUsage";
+import { AxiomStateStore } from "../src/state.js";
 
 const balances = (): CreditBalanceSummary => ({format: "credits@3", scale: "1000000", revision: "2",
   purchased: {currency: "usd", scale: "100000000", posted_units: "9000000000000000", available_units: "9000000000000000", held_units: "0"},
   trial: {posted_units: "0", held_units: "0"}, allowance: {limit_units: "62500000", remaining_units: "62500000", held_units: "0", generation: null, resets_at: null, effective_until: null},
   subscription: null, paid_fallback: true, payment_review_required: false});
+
+test("billing events preserve credit balances while account switches still clear them", () => {
+  const store = new AxiomStateStore();
+  store.setAccount({revision: 1, state: "valid", account: {id: "account-a", linkedMethods: []}});
+  const status = {revision: 1, ledgerSequence: 2, currency: "microUSD" as const,
+    postedMicrousd: 1_000_000, availableMicrousd: 1_000_000, paidMicrousd: 1_000_000, trialMicrousd: 0};
+  store.setBilling(status);
+  store.setCreditBalances(balances());
+  store.extensionEvent({runtimeInstanceId: "billing-test", sequence: 1, occurredAt: "2026-11-13T12:00:00Z",
+    event: {kind: "billing_changed", status: {...status, revision: 2, ledgerSequence: 3}}});
+  assert.deepEqual(store.snapshot().billing?.credits, balances());
+  store.extensionEvent({runtimeInstanceId: "billing-test", sequence: 2, occurredAt: "2026-11-13T12:00:01Z",
+    event: {kind: "billing_changed", status}});
+  assert.equal(store.snapshot().billing?.revision, 2);
+  assert.deepEqual(store.snapshot().billing?.credits, balances());
+  store.setAccount({revision: 2, state: "valid", account: {id: "account-b", linkedMethods: []}});
+  assert.equal(store.snapshot().billing, null);
+});
 
 test("purchased credit is fixed USD and cannot be interpreted as allowance credits", () => {
   assert.equal(purchasedCreditAmount("1200900000"), "$12.00");

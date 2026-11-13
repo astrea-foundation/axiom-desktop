@@ -14,6 +14,8 @@ remainder below one displays as **Less than 1**. Money uses fixed precision of
 While a request is running, its reservation can reduce available dollars below
 the posted balance. Billing refreshes and gift redemption still report the valid
 available balance during these holds.
+Opening Billing shows eligible legacy balances without enrolling the account in
+credits. One-time card top-ups retain the account's existing spending authority.
 Eligible trial credits are separate. The spending order is weekly, eligible trial,
 then purchased dollars when fallback is enabled. The two balances are never summed.
 
@@ -31,6 +33,8 @@ refreshes every seven days. A month can include five weekly grants. Changing
 plans schedules the new price at the next renewal. **Manage subscription** opens
 Stripe's reviewed payment-method/cancellation portal. Cancelling retains paid
 service until its end. A failed renewal does not grant unpaid allowance.
+After a subscription is canceled or expires, choose Subscribe to start a fresh
+Checkout. Pending subscriptions retain their original operation for resumption.
 
 Purchased credit spends at actual reference API cost: $10 covers $10 of API usage,
 independent of model multipliers or changes to subscription-credit value.

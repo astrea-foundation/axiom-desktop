@@ -72,6 +72,8 @@ pnpm --filter axiom-desktop test:browser
 regression. ACP client tests need the debug AxiomCLI binary built first. Protocol
 generation must leave the committed schema and TypeScript DTOs unchanged unless
 an intentional contract change is part of the patch.
+Browser checks run one test file at a time because fixture servers share Vite's
+development dependency cache; parallel startup can leave a fixture page blank.
 The generator's banner argument uses double quotes so package scripts preserve
 it as one argument in both Windows `cmd.exe` and Unix shells.
 Broken-pipe fixtures close the child's read end on Unix and the parent's writable

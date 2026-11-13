@@ -817,7 +817,7 @@ export class AxiomStateStore extends EventEmitter {
           && event.status.ledgerSequence >= this.value.billing.ledgerSequence
         )
       ) {
-        this.value.billing = event.status;
+        this.value.billing = { ...event.status, ...(this.value.billing?.credits ? {credits: this.value.billing.credits} : {}) };
       }
     }
     else if (event.kind === "security_changed" && sessionId) {
