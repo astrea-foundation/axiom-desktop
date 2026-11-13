@@ -572,9 +572,13 @@ mod tests {
 
     #[test]
     fn pool_trial_capacity_preserves_the_public_retry_time() {
-        let error = pool_error(&anyhow::Error::new(axiom_pool_client::TrialCapacity {
-            retry_at: Some(1_791_849_600),
-        }).context("private upstream diagnostics"), "worker verification failed");
+        let error = pool_error(
+            &anyhow::Error::new(axiom_pool_client::TrialCapacity {
+                retry_at: Some(1_791_849_600),
+            })
+            .context("private upstream diagnostics"),
+            "worker verification failed",
+        );
         assert_eq!(error.code(), crate::SecureErrorCode::TrialCapacity);
         assert_eq!(error.retry_at(), Some(1_791_849_600));
         assert!(error.retryable());

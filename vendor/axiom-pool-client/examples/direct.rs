@@ -38,6 +38,7 @@ struct Config {
     connect_ip: Option<IpAddr>,
     model_manifest: String,
     issuer_key_file: PathBuf,
+    publisher_key_file: Option<PathBuf>,
     verifier: VerifierConfig,
     operation: String,
     prompt: Option<String>,
@@ -136,7 +137,10 @@ async fn run() -> Result<()> {
         );
     }
     ensure!(
-        matches!(cfg.operation.as_str(), "attest" | "chat" | "image"),
+        matches!(
+            cfg.operation.as_str(),
+            "attest" | "chat" | "image" | "boot-stock-next"
+        ),
         "unknown direct operation"
     );
     ensure!(
@@ -206,6 +210,55 @@ async fn run() -> Result<()> {
             "policy_sequence":verified.policy_sequence(),"generation":verified.generation(),
             "capabilities":verified.capabilities()})
         );
+        return Ok(());
+    }
+    if cfg.operation == "boot-stock-next" {
+        use std::os::unix::fs::PermissionsExt;
+        let path = cfg
+            .publisher_key_file
+            .context("local publisher key required for maintenance")?;
+        ensure!(
+            path.metadata()?.permissions().mode() & 0o077 == 0,
+            "private publisher key permissions required"
+        );
+        let pem = Zeroizing::new(std::fs::read_to_string(path)?);
+        let publisher = ed25519_dalek::SigningKey::from_pkcs8_pem(&pem)?;
+        ensure!(
+            hex::encode(publisher.verifying_key().as_bytes()) == cfg.verifier.publisher_key,
+            "maintenance key is not the installed publisher"
+        );
+        let nonce = axiom_pool_protocol::random_challenge();
+        let approval = sign(
+            &json!({"schema":"axiom-direct-boot-stock-next-v1", "worker":expected,
+            "issued_at":now(), "expires_at":now()+120, "nonce":nonce}),
+            &publisher,
+            "axiom-direct-boot-stock-next-v1",
+        )?;
+        // Single dispatch. An uncertain result requires operator reconciliation.
+        let response = client
+            .post(format!("{transport}/v1/maintenance"))
+            .json(&approval)
+            .send()
+            .await?
+            .error_for_status()?;
+        let ack = bounded_json(response, 16 * 1024).await?;
+        let ack: axiom_pool_protocol::SignedDocument = strict::decode(&serde_json::to_vec(&ack)?)?;
+        let identity_key = ed25519_dalek::VerifyingKey::from_bytes(
+            &axiom_pool_protocol::hex_bytes(&expected.identity_key, 32)?
+                .try_into()
+                .unwrap(),
+        )?;
+        let ack: serde_json::Value = axiom_pool_protocol::verify(
+            &ack,
+            &identity_key,
+            "axiom-direct-boot-stock-next-ack-v1",
+        )?;
+        ensure!(
+            ack == json!({"schema":"axiom-direct-boot-stock-next-ack-v1", "worker":expected,
+            "nonce":nonce,"stock_next":true,"admission_closed":true,"rebooted":false}),
+            "maintenance acknowledgement binding differs"
+        );
+        println!("{ack}");
         return Ok(());
     }
     use std::os::unix::fs::PermissionsExt;

@@ -918,24 +918,25 @@ async fn encoded_image_bytes_never_trigger_compaction_below_the_token_threshold(
 fn compaction_bounds_encoded_attachments_including_summary_request_overhead() {
     use base64::Engine as _;
     let model = ContextProvider::new("direct:qwen3.8-27b").model;
-    let mut bytes = vec![0_u8; 4 * 1024 * 1024 - 256];
+    let mut bytes = vec![0_u8; 12 * 1024 * 1024 - 256];
     bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
     let image = ImageContent {
         mime_type: "image/png".into(),
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
     };
     let mut message = ChatMessage::text(ChatRole::User, "Inspect these synthetic images.");
-    message.images = vec![image; 3];
+    message.images = vec![image; 9];
     InferenceRequest::streaming(model.id.clone(), vec![message.clone()], vec![])
         .validate()
         .unwrap();
     let overhead = "s".repeat(32 * 1024);
-    let parts = compaction_inputs(&model, &[message], 16 * 1024, 20_000, overhead.len()).unwrap();
+    let parts =
+        compaction_inputs(&model, &[message], 16 * 1024, 1_000_000, overhead.len()).unwrap();
     assert!(
         parts.len() > 1,
         "summary metadata requires splitting nearly-full image inputs"
     );
-    assert_eq!(parts.iter().map(|p| p.images.len()).sum::<usize>(), 3);
+    assert_eq!(parts.iter().map(|p| p.images.len()).sum::<usize>(), 9);
     for part in parts {
         let mut input = ChatMessage::text(ChatRole::User, format!("{overhead}{}", part.transcript));
         input.images = part.images;

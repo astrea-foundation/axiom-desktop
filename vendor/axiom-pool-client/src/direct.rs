@@ -945,13 +945,23 @@ mod tests {
     #[tokio::test]
     async fn verified_cache_covers_the_entire_deadline_and_never_falls_back_after_refresh_failure()
     {
-        let f = axiom_pool_protocol::test_support::Fixture::new();
+        // Cache behavior needs only an identity, not feature-gated signing fixtures.
+        let expected_worker = WorkerIdentity {
+            worker_id: "11".repeat(16),
+            boot_id: "12".repeat(32),
+            encryption_key: "13".repeat(32),
+            identity_key: "14".repeat(32),
+            model_manifest: "15".repeat(32),
+            logical_origin: "https://worker.example".into(),
+            evidence_profile: "axiom-snp-nvidia-v1".into(),
+            deployment_digest: "16".repeat(32),
+        };
         let cfg:DirectConfig=serde_json::from_value(json!({"origin":"https://worker.invalid:9","connect_ip":"127.0.0.1",
             "model_manifest":"11".repeat(32),"issuer_key_file":"/not-read-by-probe.pem","verifier":{"binary":"/not-run","binary_sha256":"22".repeat(32),"publisher_key":"33".repeat(32),"minimum_policy_sequence":1}})).unwrap();
         let client = DirectClient::new(cfg).unwrap();
         let expiry = now() + 240;
         *client.connection.write().await = Some((
-            VerifiedWorker::for_cache_test(f.worker.clone(), expiry),
+            VerifiedWorker::for_cache_test(expected_worker.clone(), expiry),
             reqwest::Client::new(),
         ));
         let pending_refresh = client.verification_lock.lock().await;
@@ -964,7 +974,7 @@ mod tests {
         .unwrap();
         drop(pending_refresh);
         assert!(reused);
-        assert_eq!(worker.identity(), &f.worker);
+        assert_eq!(worker.identity(), &expected_worker);
         assert_eq!(worker.expires_at(), expiry);
         assert!(
             client
@@ -973,7 +983,7 @@ mod tests {
                 .is_err()
         );
         assert!(client.connection.write().await.is_none());
-        *client.admission.write().await = Some((f.worker, expiry));
+        *client.admission.write().await = Some((expected_worker, expiry));
         client.invalidate().await;
         assert!(client.admission.write().await.is_none());
         assert!(client.public_evidence().await.is_none());

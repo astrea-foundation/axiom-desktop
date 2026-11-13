@@ -91,6 +91,7 @@ impl crate::provider::InferenceProvider for DecodingProvider {
 async fn continuation_and_compaction(
     id: &SessionId,
     history: &[crate::app::EventEnvelope],
+    expected_images: &[String],
 ) -> Vec<AppEvent> {
     use crate::agent::{AgentEngine, TurnContext, TurnRunner as _};
     use tokio_util::sync::CancellationToken;
@@ -144,16 +145,17 @@ async fn continuation_and_compaction(
         requests[0]
             .messages
             .iter()
-            .map(|message| message.images.len())
-            .sum::<usize>(),
-        1
+            .flat_map(|message| &message.images)
+            .map(|image| &image.data)
+            .collect::<Vec<_>>(),
+        expected_images.iter().collect::<Vec<_>>()
     );
     assert!(
         requests
             .iter()
             .flat_map(|request| &request.messages)
             .flat_map(|message| &message.images)
-            .all(|image| image.data == STANDARD.encode(PREVIEW)),
+            .all(|image| expected_images.contains(&image.data)),
         "healthy original image bytes remain exact"
     );
     while let Ok(event) = receiver.try_recv() {
@@ -271,7 +273,9 @@ async fn authenticated_external_bad_images_are_omitted_before_continuation_and_c
                 .generated_image(&fixture.id, "call", &fixture.image.sha256)
                 .is_err()
         );
-        let updates = continuation_and_compaction(&fixture.id, &outcome.events).await;
+        let updates =
+            continuation_and_compaction(&fixture.id, &outcome.events, &[STANDARD.encode(PREVIEW)])
+                .await;
         let connection = store.lock().unwrap();
         let unchanged:(String,String) = connection.query_row("SELECT payload,digest FROM model_messages WHERE json_extract(payload,'$.content')='Preserve readable text'",[],|row| Ok((row.get(0)?,row.get(1)?))).unwrap();
         assert_eq!(
@@ -303,7 +307,7 @@ async fn authenticated_external_bad_images_are_omitted_before_continuation_and_c
 }
 
 #[tokio::test]
-async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slots() {
+async fn large_valid_generated_original_remains_available_in_image_input_slots() {
     let root = tempdir().unwrap();
     let path = root.path().join("state.sqlite3");
     let fixture = legacy(&path, 6);
@@ -348,7 +352,7 @@ async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slot
     drop(raw);
     let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
     assert!(
-        recovery_records(&store, &fixture.id)
+        !recovery_records(&store, &fixture.id)
             .iter()
             .any(|record| record["sourceKind"] == 3)
     );
@@ -372,10 +376,7 @@ async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slot
                 )
                 .unwrap();
             let mut external: Value = serde_json::from_str(&original).unwrap();
-            external["images"]
-                .as_array_mut()
-                .unwrap()
-                .insert(0, json!({"mimeType":"image/png","_axiom_asset":reference}));
+            external["images"][0] = json!({"mimeType":"image/png","_axiom_asset":reference});
             connection
                 .execute(
                     "UPDATE model_messages SET payload=?1 WHERE id=41",
@@ -392,7 +393,11 @@ async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slot
                 _ => None,
             })
             .unwrap();
-        assert_eq!(messages[1]["images"], json!([image(PREVIEW)]), "{phase}");
+        assert_eq!(
+            messages[1]["images"],
+            json!([image(&large), image(PREVIEW)]),
+            "{phase}"
+        );
         assert_eq!(messages[1]["content"], "Large input retains readable text");
         assert_eq!(
             store
@@ -400,7 +405,7 @@ async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slot
                 .unwrap()
                 .data,
             data,
-            "10 MiB generated-original slot remains available"
+            "20 MiB generated-original slot remains available"
         );
         let catalog =
             crate::image_tool::ImageCatalog::from_history(&fixture.id, &outcome.events).unwrap();
@@ -412,28 +417,23 @@ async fn large_valid_generated_original_is_omitted_only_from_five_mib_input_slot
                 .data,
             data
         );
-        continuation_and_compaction(&fixture.id, &outcome.events).await;
+        continuation_and_compaction(
+            &fixture.id,
+            &outcome.events,
+            &[data.clone(), STANDARD.encode(PREVIEW)],
+        )
+        .await;
     }
     let mut draft = payload();
     draft["payload"]["attachments"][0]["image"] = image(&large);
-    assert!(store.set_local_payload("oversized-upload", &draft).is_err());
     assert!(
         store
-            .append(&crate::app::EventEnvelope {
-                schema_version: 1,
-                sequence: 1,
-                turn_id: None,
-                occurred_at: chrono::Utc::now(),
-                correlation_id: crate::app::CorrelationId::new(),
-                origin: crate::app::Origin::Test,
-                session_id: fixture.id.clone(),
-                event: AppEvent::ModelHistoryCheckpoint {
-                    version: 1,
-                    messages: json!([system, message])
-                }
-            })
-            .is_err()
+            .set_local_payload("large-valid-upload", &draft)
+            .is_ok()
     );
+    large.resize(axiom_inference::MAX_IMAGE_BYTES + 1, 0);
+    draft["payload"]["attachments"][0]["image"] = image(&large);
+    assert!(store.set_local_payload("oversized-upload", &draft).is_err());
     store.verify_asset_integrity().unwrap();
 }
 fn recovery_records(store: &SessionStore, id: &SessionId) -> Vec<Value> {

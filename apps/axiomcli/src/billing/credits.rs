@@ -555,11 +555,11 @@ mod tests {
     use super::*;
     #[test]
     fn credit_strings_are_exact_and_bounded() {
-        assert_eq!(credit_integer("120000", false).unwrap(), 120000);
+        assert_eq!(credit_integer("120000", false).unwrap(), 120_000);
         for bad in ["1e6", "01", "-0", "-1", "9000000000000001", "1.2"] {
             assert!(credit_integer(bad, false).is_err());
         }
-        assert_eq!(credit_integer("-120000", true).unwrap(), -120000);
+        assert_eq!(credit_integer("-120000", true).unwrap(), -120_000);
     }
     #[test]
     fn hosted_destinations_are_narrow() {

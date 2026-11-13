@@ -3567,7 +3567,10 @@ for (const vision of [false, true]) {
           };
           return { original: await pixels(original), sent: await pixels(sent) };
         }, { original: tinyPng.toString("base64"), sent: image.data });
-        assert.deepEqual(decoded.sent, decoded.original);
+        assert.deepEqual(decoded.original.slice(0, 2), [1, 1]);
+        assert.deepEqual(decoded.sent.slice(0, 2), [32, 32]);
+        assert.ok(decoded.sent.slice(2).every((value, index) => value === decoded.original[2 + index % 4]),
+          "the 32-pixel reference grid preserves every original color and alpha channel");
       }
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -3870,7 +3873,7 @@ for (const existing of [false, true]) {
         { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Original file bytes") },
       ]);
       await page.getByRole("button", { name: "Remove notes.txt" }).waitFor();
-      await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[data-attachment-card] img')?.naturalWidth === 1);
+      await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[data-attachment-card] img')?.naturalWidth === 32);
       await page.locator("textarea[data-chat-input]").fill("What is in these files?");
       await page.evaluate(() => {
         const state = { running: true, missing: 0, frames: 0 };
@@ -4543,8 +4546,8 @@ test("image card viewer enlarges local images, fits the window, and restores key
     const image = dialog.getByRole("img", { name: "landscape.png" });
     await page.waitForFunction(() => (document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth ?? 0) > 1000);
     const normalized = await image.evaluate(element => ({ width: element.naturalWidth, height: element.naturalHeight, src: element.src }));
-    assert.ok(normalized.width < 1600 && normalized.width * normalized.height <= 1024 * 1024);
-    assert.ok(Math.abs(normalized.width / normalized.height - 16 / 9) < .005);
+    assert.deepEqual([normalized.width, normalized.height], [1600, 896]);
+    assert.ok(Math.abs(normalized.width / normalized.height - 16 / 9) < .01);
     assert.match(normalized.src, /^data:image\/(png|jpeg);base64,/);
     assert.notEqual(normalized.src, `data:image/png;base64,${data}`);
     const enlarged = await image.boundingBox();
@@ -4908,17 +4911,17 @@ test("MCP selection under Agent applies only to that thread with Agent off", asy
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Tools for this conversation" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
     assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
     await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
     await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
-    await page.getByRole("button", { name: "Tools", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

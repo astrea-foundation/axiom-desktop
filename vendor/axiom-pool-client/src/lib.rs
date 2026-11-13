@@ -59,8 +59,11 @@ impl std::error::Error for TrialCapacity {}
 fn unavailable_error(body: &Value) -> anyhow::Error {
     if body["detail"]["code"] == "trial_capacity" {
         TrialCapacity {
-            retry_at: body["detail"]["retry_at_unix_seconds"].as_i64().filter(|at| *at > 0),
-        }.into()
+            retry_at: body["detail"]["retry_at_unix_seconds"]
+                .as_i64()
+                .filter(|at| *at > 0),
+        }
+        .into()
     } else {
         anyhow::anyhow!("pool metadata request rejected")
     }
@@ -594,11 +597,19 @@ mod tests {
     fn trial_capacity_retains_only_the_typed_retry_timestamp() {
         let error = unavailable_error(&json!({"detail": {"code": "trial_capacity",
             "message": "private upstream diagnostic", "retry_at_unix_seconds": 1791849600}}));
-        assert_eq!(error.downcast_ref::<TrialCapacity>().unwrap().retry_at, Some(1_791_849_600));
+        assert_eq!(
+            error.downcast_ref::<TrialCapacity>().unwrap().retry_at,
+            Some(1_791_849_600)
+        );
         assert!(!error.to_string().contains("private"));
         assert!(!unavailable_error(&json!({"detail":{"code":"other"}})).is::<TrialCapacity>());
-        let invalid = unavailable_error(&json!({"detail":{"code":"trial_capacity","retry_at_unix_seconds":-1}}));
-        assert_eq!(invalid.downcast_ref::<TrialCapacity>().unwrap().retry_at, None);
+        let invalid = unavailable_error(
+            &json!({"detail":{"code":"trial_capacity","retry_at_unix_seconds":-1}}),
+        );
+        assert_eq!(
+            invalid.downcast_ref::<TrialCapacity>().unwrap().retry_at,
+            None
+        );
     }
 
     #[test]

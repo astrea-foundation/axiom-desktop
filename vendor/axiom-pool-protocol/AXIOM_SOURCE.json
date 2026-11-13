@@ -15,5 +15,6 @@
     "src/types.rs": "d5c974b856cd731b63894a45377578b2d877f0c94ce76ec638005f4281df8434",
     "src/vision.rs": "876108febd874801313296071ddb5779538f306ad7f5a48c2c25d38be532dfea",
     "examples/generate_vectors.rs": "574e4cfdbec81f69484b922d2b3d0acf21c61ba3f7894216e302f79812c13fdb"
-  }
+  },
+  "canonical_revision": "4d85c5c8aa002663db164e7b39393c58abc9bf40"
 }

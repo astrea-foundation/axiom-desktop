@@ -82,8 +82,9 @@ async function open() {
 test("primary discount, safe retries, quote, network, memo and status restoration", async () => {
   const {page, errors} = await open();
   try {
+    await page.getByText("Zcash direct deposit", {exact: true}).click();
     assert.match(await page.locator("body").innerText(), /Save 5%: \$9\.50 buys \$10 credit/);
-    await page.getByRole("button", {name: "Other crypto", exact: true}).click();
+    await page.getByRole("button", {name: "Choose a currency", exact: true}).click();
     await page.getByRole("combobox", {name: "Crypto", exact: true}).click();
     await page.getByRole("option", {name: /^USDT/}).click();
     const networkWarning = page.getByRole("alert").filter({hasText: "Funds sent on other networks may be permanently lost."});

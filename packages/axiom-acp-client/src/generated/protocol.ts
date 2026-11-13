@@ -80,6 +80,152 @@ export type AccountState = "starting" | "signed_out" | "valid" | "expired" | "un
 export type LoginMethod = "passkey" | "google" | "password" | "ethereum_wallet";
 export type AccountPreparationPhase = "checking_sign_in" | "opening_chats" | "decrypting_chats" | "switching_account";
 export type StorageMigrationPhase = "encrypting" | "moving_media" | "checking" | "finalizing" | "failed";
+/**
+ * A finite operation set. Renderers cannot select arbitrary URLs, headers or principals.
+ */
+export type CreditBillingAction =
+  | {
+      kind: "summary";
+    }
+  | {
+      kind: "plans";
+    }
+  | {
+      kind: "prices";
+    }
+  | {
+      period?: string | null;
+      timezone?: string | null;
+      kind: "usage";
+    }
+  | {
+      id: string;
+      plan_key: string;
+      catalog_version: string;
+      kind: "checkout";
+    }
+  | {
+      id: string;
+      plan_key: string;
+      catalog_version: string;
+      kind: "change";
+    }
+  | {
+      kind: "portal";
+    }
+  | {
+      id: string;
+      kind: "setup_card";
+    }
+  | {
+      kind: "cards";
+    }
+  | {
+      kind: "auto_topup";
+    }
+  | {
+      settings: AutomaticTopupSettings;
+      kind: "configure_auto_topup";
+    }
+  | {
+      enabled: boolean;
+      kind: "fallback";
+    }
+  | {
+      kind: "operations";
+    }
+  | {
+      id: string;
+      kind: "operation";
+    }
+  | {
+      id: string;
+      kind: "check";
+    }
+  | {
+      id: string;
+      kind: "cancel_topup";
+    }
+  | {
+      kind: "card_options";
+    }
+  | {
+      id: string;
+      amount_microusd: number;
+      kind: "create_card_payment";
+    }
+  | {
+      kind: "card_payments";
+    }
+  | {
+      id: string;
+      kind: "check_card_payment";
+    }
+  | {
+      id: string;
+      kind: "cancel_card_payment";
+    };
+export type CreditBillingResult =
+  | {
+      kind: "summary";
+      value: CreditSummary | null;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "plans";
+      value: SubscriptionPlans;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "prices";
+      value: CreditPrices;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "usage";
+      value: CreditUsage;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "operation";
+      value: BillingOperation;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "portal";
+      value: BillingPortal;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "cards";
+      value: SavedBillingCards;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "auto_topup";
+      value: AutomaticTopup;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "operations";
+      value: BillingOperation[];
+      [k: string]: unknown;
+    }
+  | {
+      kind: "card_options";
+      value: CardFundingOptions;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "card_payment";
+      value: CardFundingPayment;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "card_payments";
+      value: CardFundingPayment[];
+      [k: string]: unknown;
+    };
 export type CryptoInvoiceAction = "cancel" | "check" | "refresh";
 export type SecurityState =
   "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";

@@ -1736,7 +1736,7 @@ enum ExtensionFeature {
     RemoteMcp = 1 << 24,
     ImageResolution = 1 << 25,
     ToolCallDrafting = 1 << 26,
-    CreditBilling = 1 << 27,
+    CreditBilling = 1 << 28,
 }
 
 struct ExtensionState {

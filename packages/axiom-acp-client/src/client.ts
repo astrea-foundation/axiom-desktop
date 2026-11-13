@@ -484,27 +484,6 @@ export class AxiomAcpClient extends EventEmitter {
     }
   }
 
-  async regenerateImage(threadId: string, callId: string): Promise<{ callId: string }> {
-    if (!this.supportsImageRegeneration) throw new ProtocolError("Restart Axiom to regenerate individual images.");
-    if (!callId || callId.length > 512 || !threadId || threadId.length > 128) throw new ProtocolError("Invalid image identity");
-    if (this.state.snapshot().sessions[threadId]?.running) throw new ProtocolError("Wait for the current response or stop it first.");
-    const context = this.state.accountContextToken();
-    const cancellation = new AbortController();
-    this.pendingImageRequests.set(threadId, cancellation);
-    this.state.setRunning(threadId, true);
-    try {
-      const result = await this.process.request<{ callId: string }>("_axiom/image/regenerate", { threadId, callId }, 0, cancellation.signal);
-      this.assertAccountContext(context);
-      return result;
-    } finally {
-      if (this.pendingImageRequests.get(threadId) === cancellation) this.pendingImageRequests.delete(threadId);
-      if (this.state.accountContextToken() === context) {
-        this.state.setRunning(threadId, false);
-        await this.refreshThread(threadId).catch(() => undefined);
-      }
-    }
-  }
-
   async getAttachments(threadId: string, userItemId: string): Promise<GetAttachmentsResponse> {
     if (!this.supportsAttachments) throw new ProtocolError("Restart Axiom to view attachments.");
     const context = this.state.accountContextToken();

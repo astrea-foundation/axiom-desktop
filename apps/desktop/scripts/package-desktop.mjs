@@ -55,7 +55,6 @@ if (platform === '--win' && !unsigned) builder.push('--config', 'electron-builde
 // app separately first adds a redundant Apple queue wait for each architecture.
 if (platform === '--mac') builder.push('--config.mac.notarize=false');
 const env = unsigned ? unsignedEnvironment(process.env) : { ...process.env };
-if (env.AXIOM_CHUTES_BUNDLE) env.AXIOM_CHUTES_BUNDLE = path.resolve(env.AXIOM_CHUTES_BUNDLE);
 if (combined && platform === '--win') env.AXIOM_NATIVE_INPUT = nativeInput;
 if (platform === '--win') {
   env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ';
