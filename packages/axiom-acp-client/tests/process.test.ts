@@ -5,68 +5,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   AcpProcess,
-  DESKTOP_SIDECAR_INHERITED_ENV,
   ProtocolError,
-  createChildEnvironment,
   type IncomingRequest,
   type RpcNotification,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-
-test("sidecar environment overrides endpoints and removes credentials case-insensitively", () => {
-  const environment = createChildEnvironment(
-    {
-      AXIOM_API_KEY: "axm_inherited",
-      axiom_api_key: "axm_mixed_case",
-      AXIOM_BASE_URL: "https://wrong.example",
-      KEEP: "yes",
-    },
-    { AXIOM_BASE_URL: "https://api.axiom.stream" },
-    ["AXIOM_API_KEY"],
-  );
-  assert.equal(environment.AXIOM_API_KEY, undefined);
-  assert.equal(environment.axiom_api_key, undefined);
-  assert.equal(environment.AXIOM_BASE_URL, "https://api.axiom.stream");
-  assert.equal(environment.KEEP, "yes");
-});
-
-test("Desktop sidecar allowlist excludes inherited application secrets", () => {
-  const environment = createChildEnvironment(
-    {
-      Path: "C:\\Windows\\System32",
-      HOME: "/home/ada",
-      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
-      AXIOM_API_KEY: "axm_secret",
-      axiom_auth_url: "https://attacker.example",
-      DATABASE_URL: "postgres://secret",
-      WALLET_SEED: "zcash-secret",
-      OPENAI_API_KEY: "provider-secret",
-    },
-    {
-      AXIOM_AUTH_URL: "https://auth.axiom.stream",
-      AXIOM_BASE_URL: "https://api.axiom.stream",
-    },
-    ["AXIOM_API_KEY"],
-    DESKTOP_SIDECAR_INHERITED_ENV,
-  );
-
-  assert.equal(environment.Path, "C:\\Windows\\System32");
-  assert.equal(environment.HOME, "/home/ada");
-  assert.equal(environment.DBUS_SESSION_BUS_ADDRESS, "unix:path=/run/user/1000/bus");
-  assert.equal(environment.AXIOM_AUTH_URL, "https://auth.axiom.stream");
-  assert.equal(environment.AXIOM_BASE_URL, "https://api.axiom.stream");
-  for (const name of [
-    "AXIOM_API_KEY",
-    "axiom_api_key",
-    "axiom_auth_url",
-    "DATABASE_URL",
-    "WALLET_SEED",
-    "OPENAI_API_KEY",
-  ]) {
-    assert.equal(environment[name], undefined, `${name} leaked into the sidecar`);
-  }
-});
 
 function processExists(pid: number): boolean {
   try {
@@ -115,9 +59,6 @@ function fixtureReady(sidecar: AcpProcess): Promise<number> {
         return;
       }
       clearTimeout(timer);
-      // closeSync(0) is a no-op on Windows. Close the actual parent pipe there;
-      // Unix keeps exercising EPIPE from a child that closes its read end.
-      if (process.platform === "win32") sidecar.child.stdin.destroy();
       resolvePid(pid);
     });
   });
@@ -130,7 +71,7 @@ function closedInputSidecar(mode = "passive"): AcpProcess {
   });
 }
 
-test("request rejects and aborts when a live sidecar input pipe is closed", { timeout: 10_000 }, async () => {
+test("request rejects and aborts when a live sidecar has closed stdin", { timeout: 10_000 }, async () => {
   const sidecar = closedInputSidecar();
   try {
     const ready = fixtureReady(sidecar);
@@ -139,7 +80,7 @@ test("request rejects and aborts when a live sidecar input pipe is closed", { ti
     assert.equal(processExists(pid), true);
 
     await assert.rejects(
-      sidecar.request("fixture/request", {}, 5_000),
+      sidecar.request("fixture/request", {}),
       (error: unknown) => error instanceof ProtocolError && /write|input stream/i.test(error.message),
     );
     const [error] = await exited;
@@ -150,7 +91,7 @@ test("request rejects and aborts when a live sidecar input pipe is closed", { ti
   }
 });
 
-test("notification rejects and aborts when a live sidecar input pipe is closed", {
+test("notification rejects and aborts when a live sidecar has closed stdin", {
   timeout: 10_000,
 }, async () => {
   const sidecar = closedInputSidecar();
@@ -172,7 +113,7 @@ test("notification rejects and aborts when a live sidecar input pipe is closed",
   }
 });
 
-test("permission response to a closed pipe during shutdown exits without an unhandled rejection", {
+test("permission response EPIPE during shutdown exits without an unhandled rejection", {
   timeout: 10_000,
 }, async () => {
   const sidecar = closedInputSidecar("permission");

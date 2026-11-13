@@ -3,7 +3,6 @@
 use std::{
     io::{Read as _, Write as _},
     path::Path,
-    process::Command,
     sync::mpsc,
     thread,
     time::Duration,
@@ -15,27 +14,6 @@ use axiomcli::{
     app::{AppCommand, Origin, PermissionProfile, Runtime, SessionId, ThinkingLevel},
     session::{SessionStore, model_for_resume, thinking_for_resume},
 };
-
-const TEST_ACCOUNT_ID: &str = "local-test-account";
-
-fn test_account_database(state_path: &Path) -> std::path::PathBuf {
-    state_path
-        .join("data")
-        .join("axiom")
-        .join("accounts")
-        .join(TEST_ACCOUNT_ID)
-        .join("cli")
-        .join("state.sqlite3")
-}
-
-fn test_cli_command(state_path: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_axiomcli"));
-    command
-        .env("AXIOMCLI_TEST_RUNNER", "echo")
-        .env("XDG_CONFIG_HOME", state_path.join("config"))
-        .env("XDG_DATA_HOME", state_path.join("data"));
-    command
-}
 
 fn seed_tui_session_settings(
     store: &SessionStore,
@@ -98,50 +76,25 @@ fn run_tui_at(
     for argument in extra_args {
         command.arg(argument);
     }
-    let test_runner = if matches!(
-        runner,
-        "resume"
-            | "resume_reconcile"
-            | "remembered_model"
-            | "preference_bootstrap"
-            | "delete"
-            | "composer"
-            | "appearance"
-            | "gift"
-            | "usage"
-            | "paste_picker"
-    ) {
-        "echo"
-    } else if runner == "input_active" {
-        "blocking"
-    } else {
-        runner
-    };
-    command.env("AXIOMCLI_TEST_RUNNER", test_runner);
+    command.env(
+        "AXIOMCLI_TEST_RUNNER",
+        if matches!(
+            runner,
+            "resume"
+                | "resume_reconcile"
+                | "remembered_model"
+                | "preference_bootstrap"
+                | "delete"
+                | "composer"
+        ) {
+            "echo"
+        } else {
+            runner
+        },
+    );
     command.env("AXIOMCLI_ASCII", "1");
-    // Native credentials are scoped to the API origin, not the XDG directory.
-    // Use a fresh loopback origin so this production-runner test cannot discover
-    // the developer's signed-in session or contact the production service.
-    let signed_out_service = (runner == "signed_out").then(|| {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("isolated origin");
-        listener.set_nonblocking(true).unwrap();
-        listener
-    });
-    if runner == "signed_out" {
-        command.env_remove("AXIOMCLI_TEST_RUNNER");
-        command.env_remove("AXIOM_API_KEY");
-        command.env_remove("AXIOMCLI_CREDENTIAL_STORE");
-        let origin = format!(
-            "https://{}",
-            signed_out_service.as_ref().unwrap().local_addr().unwrap()
-        );
-        command.env("AXIOM_BASE_URL", &origin);
-        command.env("AXIOM_AUTH_URL", &origin);
-    }
+    command.env("AXIOMCLI_CREDENTIAL_STORE", "file");
     command.env("NO_COLOR", "1");
-    if runner == "appearance" {
-        command.env("AXIOMCLI_COLOR", "truecolor");
-    }
     command.env("XDG_CONFIG_HOME", state_path.join("config"));
     command.env("XDG_DATA_HOME", state_path.join("data"));
     if runner == "workspace_edit" {
@@ -175,27 +128,11 @@ fn run_tui_at(
     let mut writer = pair.master.take_writer().expect("PTY writer");
     // Crossterm asks the terminal for its cursor position while initializing.
     // A real terminal answers this DSR request; the PTY harness must emulate it.
-    wait_for_output(
-        &output_rx,
-        &mut output,
-        b"\x1b[6n",
-        "cursor position request",
-    );
     writer
         .write_all(b"\x1b[1;1R")
         .expect("cursor position response");
     writer.flush().expect("flush cursor response");
-    if !panic_probe {
-        // Wait for the first frame's cursor visibility command before resizing.
-        // Resizing during initialization can make the first frame already wide,
-        // which does not acknowledge that the input loop consumed the resize.
-        wait_for_output(
-            &output_rx,
-            &mut output,
-            b"\x1b[?25",
-            "initial interactive frame",
-        );
-    }
+    thread::sleep(Duration::from_millis(120));
     pair.master
         .resize(PtySize {
             rows: 30,
@@ -205,95 +142,17 @@ fn run_tui_at(
         })
         .expect("resize PTY");
     if !panic_probe {
-        // The expanded footer appears after the 100-column resize,
-        // proving the input loop is active.
+        // "view" is clipped to "vi" at 60 columns and appears in full only
+        // after the 100-column resize, proving the input loop is active.
         wait_for_output(
             &output_rx,
             &mut output,
-            if runner == "signed_out" {
-                b"Sign in"
-            } else {
-                b"help"
-            },
+            b"view",
             "resized interactive screen",
         );
-        let completed_before_probe = completed_turns(state_path);
-        if runner != "signed_out" {
-            writer.write_all(b"probe\r").expect("submit prompt");
-            writer.flush().expect("flush prompt");
-            if test_runner == "echo" {
-                wait_for_completed_turn(
-                    state_path,
-                    &completed_before_probe,
-                    &output_rx,
-                    &mut output,
-                );
-            }
-        }
-        if runner == "input_active" {
-            wait_for_output(&output_rx, &mut output, b"Working", "active task");
-            writer
-                .write_all(b"/usage\r")
-                .expect("inspect usage while running");
-            writer.flush().unwrap();
-            wait_for_output(
-                &output_rx,
-                &mut output,
-                b"Usage",
-                "usage inspector during task",
-            );
-            writer
-                .write_all(b"\x1b")
-                .expect("close usage without stopping");
-            writer.flush().unwrap();
-            thread::sleep(Duration::from_millis(100));
-            writer
-                .write_all(b"/logout\r")
-                .expect("reject session mutation while running");
-            writer.flush().unwrap();
-            wait_for_output(&output_rx, &mut output, b"Stop", "active command guard");
-            writer
-                .write_all(&[127; 7])
-                .expect("clear preserved logout draft");
-            writer
-                .write_all(b"aBcD\x1b[200~ PaStEd\nFollowUp\x1b[201~")
-                .expect("type and paste steering draft");
-            writer.flush().unwrap();
-            writer.write_all(b"\x1b").expect("stop task and keep draft");
-            writer.flush().unwrap();
-            wait_for_output(&output_rx, &mut output, b"Cancelled", "cancel active task");
-            writer
-                .write_all(b"\r")
-                .expect("submit preserved draft after cancellation");
-            writer.flush().unwrap();
-            thread::sleep(Duration::from_millis(250));
-        } else if runner == "paste_picker" {
-            writer.write_all(b"/model\r").expect("open model picker");
-            writer.flush().unwrap();
-            wait_for_output(&output_rx, &mut output, b"Select model", "model picker");
-            wait_for_output(
-                &output_rx,
-                &mut output,
-                b"medium-only",
-                "loaded model catalog",
-            );
-            writer
-                .write_all(b"\x1b[200~alternate-model\x1b[201~\r")
-                .expect("paste filter and select model");
-            writer.flush().unwrap();
-            wait_for_output(
-                &output_rx,
-                &mut output,
-                b"Model changed",
-                "pasted model filter",
-            );
-            let completed_before = completed_turns(state_path);
-            writer
-                .write_all(b"AfterPicker\r")
-                .expect("submit clean draft");
-            writer.flush().unwrap();
-            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
-        } else if runner == "blocking" {
+        writer.write_all(b"probe\r").expect("submit prompt");
+        writer.flush().expect("flush prompt");
+        if runner == "blocking" {
             wait_for_output(&output_rx, &mut output, b"Working", "blocking turn");
         } else if runner == "questions" {
             wait_for_output(
@@ -314,26 +173,7 @@ fn run_tui_at(
                 b"Permission required",
                 "approval card",
             );
-            // An approval can arrive in the middle of ordinary typing. Neither
-            // lowercase, uppercase nor pasted letters may authorize or deny it.
-            writer
-                .write_all(b"negpyNEGPY\x05\x1b[200~yNeP\x1b[201~\r")
-                .expect("ordinary typing during approval");
-            writer.flush().expect("flush ordinary typing");
-            thread::sleep(Duration::from_millis(200));
-            while let Ok(chunk) = output_rx.try_recv() {
-                output.extend(chunk);
-            }
-            let before_decision = String::from_utf8_lossy(&output);
-            assert!(
-                !before_decision.contains("allow_once"),
-                "typing authorized the tool: {before_decision}"
-            );
-            assert!(
-                !before_decision.contains("Cancelled"),
-                "typing cancelled the tool: {before_decision}"
-            );
-            writer.write_all(&[25]).expect("Ctrl+Y allows once");
+            writer.write_all(b"y").expect("allow once");
             writer.flush().expect("flush approval");
             wait_for_output(&output_rx, &mut output, b"allow_once", "approval result");
         } else if runner == "plan_review" {
@@ -352,13 +192,24 @@ fn run_tui_at(
                 .expect("revision comment");
             writer.flush().expect("flush revision comment");
             thread::sleep(Duration::from_millis(180));
-        } else if runner == "usage" {
-            writer.write_all(b"/usage\r").expect("open usage");
-            writer.flush().expect("flush usage command");
-            wait_for_output(&output_rx, &mut output, b"Usage", "usage inspector");
-            writer.write_all(b"\x1b").expect("close usage");
-            writer.flush().expect("flush close");
         } else if runner == "echo" {
+            // Ratatui delta redraws can place cursor-control bytes inside the
+            // visual status text, so use the deterministic runner's bounded
+            // completion time instead of matching that rendered phrase.
+            thread::sleep(Duration::from_millis(500));
+            // Move to transcript focus, then prove `/` returns to the composer.
+            // The first Enter completes the invalid prefix as if Tab were
+            // pressed; the second executes the completed command.
+            writer
+                .write_all(b"\t/thinking h\r\r")
+                .expect("focus slash composer and complete thinking");
+            writer.flush().expect("flush thinking command");
+            wait_for_output(
+                &output_rx,
+                &mut output,
+                b"Thinking set to high",
+                "slash thinking result",
+            );
             writer
                 // Open the permission window on Confirm, move to Full Access,
                 // then apply the selected tool profile.
@@ -377,11 +228,11 @@ fn run_tui_at(
             wait_for_output(
                 &output_rx,
                 &mut output,
-                b"medium-only",
+                b"grok-code",
                 "loaded model catalog",
             );
             writer
-                // The default model is the second deterministic catalog
+                // The default glm model is the second deterministic catalog
                 // entry, so Arrow Up selects alternate-model.
                 .write_all(b"\x1b[A\r")
                 .expect("move and select model");
@@ -389,29 +240,16 @@ fn run_tui_at(
             wait_for_output(
                 &output_rx,
                 &mut output,
-                b"Model changed",
+                b"Model changed to alternate-model",
                 "selected model result",
             );
-            // Move to transcript focus, then prove `/` returns to the composer.
-            // The first Enter completes the invalid prefix as if Tab were
-            // pressed; the second executes the completed command.
-            writer
-                .write_all(b"\t/thinking h\r\r")
-                .expect("focus slash composer and complete thinking");
-            writer.flush().expect("flush thinking command");
-            wait_for_output(
-                &output_rx,
-                &mut output,
-                b"Thinking set to high",
-                "slash thinking result",
-            );
-            let completed_before = completed_turns(state_path);
             writer
                 .write_all(b"remember this model\r")
                 .expect("submit prompt with selected model");
             writer.flush().expect("flush selected-model prompt");
-            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
+            thread::sleep(Duration::from_millis(300));
         } else if runner == "delete" {
+            thread::sleep(Duration::from_millis(500));
             writer.write_all(b"/delete\r").expect("open delete picker");
             writer.flush().expect("flush delete command");
             wait_for_output(
@@ -438,6 +276,7 @@ fn run_tui_at(
             writer.flush().expect("flush permanent deletion");
             wait_for_output(&output_rx, &mut output, b"Deleted", "deletion result");
         } else if runner == "resume" {
+            thread::sleep(Duration::from_millis(500));
             writer.write_all(b"/resume\r").expect("open resume picker");
             writer.flush().expect("flush resume command");
             wait_for_output(
@@ -451,54 +290,8 @@ fn run_tui_at(
                 .expect("search and select transcript");
             writer.flush().expect("flush transcript selection");
             wait_for_output(&output_rx, &mut output, b"Resumed", "resumed transcript");
-        } else if runner == "appearance" {
-            for (command, expected) in [
-                ("/theme light\r", "#f2f2f4"),
-                ("/theme terminal\r", "\x1b]111"),
-                ("/theme dark\r", "Dark"),
-                ("/web on\r", "Web enabled"),
-                ("/web off\r", "disabled"),
-            ] {
-                writer
-                    .write_all(command.as_bytes())
-                    .expect("appearance command");
-                writer.flush().expect("flush appearance command");
-                // Inspect fresh output: a previous frame may contain the same control label.
-                let mut command_output = Vec::new();
-                wait_for_output(
-                    &output_rx,
-                    &mut command_output,
-                    expected.as_bytes(),
-                    expected,
-                );
-                output.extend(command_output);
-            }
-        } else if runner == "gift" {
-            writer
-                .write_all(b"/redeem\r")
-                .expect("open private gift entry");
-            writer.flush().unwrap();
-            wait_for_output(&output_rx, &mut output, b"hidden", "masked gift entry");
-            writer
-                .write_all(b"\x1b[200~AXG-ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567\x1b[201~")
-                .unwrap();
-            writer.flush().unwrap();
-            wait_for_output(
-                &output_rx,
-                &mut output,
-                b"********",
-                "masked pasted gift code",
-            );
-            writer.write_all(b"\x1b").unwrap();
-            writer.flush().unwrap();
-            thread::sleep(Duration::from_millis(100));
-            let completed_before = completed_turns(state_path);
-            writer.write_all(b"aftergift\r").unwrap();
-            writer.flush().unwrap();
-            wait_for_output(&output_rx, &mut output, b"aftergift", "composer restored");
-            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
         } else if runner == "composer" {
-            let completed_before = completed_turns(state_path);
+            thread::sleep(Duration::from_millis(500));
             writer
                 .write_all(b"\x1b[200~first line\nsecond line\x1b[201~\x1b[D!\x1b\rthird\r")
                 .expect("paste, edit, and submit multiline prompt");
@@ -509,17 +302,9 @@ fn run_tui_at(
                 b"thirde",
                 "edited multiline prompt",
             );
-            wait_for_completed_turn(state_path, &completed_before, &output_rx, &mut output);
+            thread::sleep(Duration::from_millis(500));
         } else {
             thread::sleep(Duration::from_millis(250));
-        }
-        if matches!(
-            test_runner,
-            "questions" | "approval" | "plan_review" | "workspace_edit"
-        ) {
-            // Answer submission does not acknowledge that the runner and its
-            // terminal UI event have finished. Escape must test idle focus.
-            wait_for_completed_turn(state_path, &completed_before_probe, &output_rx, &mut output);
         }
     }
     if !panic_probe {
@@ -570,13 +355,6 @@ fn run_tui_at(
         }
         thread::sleep(Duration::from_millis(80));
     };
-    if let Some(listener) = signed_out_service {
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock,
-            "signed-out startup must not make service requests"
-        );
-    }
     drop(writer);
     reader_thread.join().expect("reader thread");
     while let Ok(chunk) = output_rx.try_recv() {
@@ -584,48 +362,6 @@ fn run_tui_at(
     }
     let output = String::from_utf8_lossy(&output).into_owned();
     (output, status.success())
-}
-
-// Terminal delta redraws are not a stable text protocol. Wait for the persisted
-// terminal event instead of assuming the deterministic runner finishes in 500 ms.
-fn completed_turns(state_path: &Path) -> std::collections::HashSet<String> {
-    let database = test_account_database(state_path);
-    if !database.exists() {
-        return std::collections::HashSet::new();
-    }
-    // SessionStore::open performs crash recovery; monitoring a live owner must
-    // use a read-only connection so it cannot interrupt the running test turn.
-    let connection =
-        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .expect("read PTY session state");
-    let mut statement = connection
-        .prepare("SELECT id FROM turns WHERE status = 'completed'")
-        .expect("query completed PTY turns");
-    statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .expect("read completed PTY turns")
-        .collect::<rusqlite::Result<_>>()
-        .expect("decode completed PTY turns")
-}
-
-fn wait_for_completed_turn(
-    state_path: &Path,
-    previous: &std::collections::HashSet<String>,
-    receiver: &mpsc::Receiver<Vec<u8>>,
-    output: &mut Vec<u8>,
-) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while completed_turns(state_path).is_subset(previous) {
-        while let Ok(chunk) = receiver.try_recv() {
-            output.extend_from_slice(&chunk);
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "PTY runner did not complete a new turn; output: {:?}",
-            String::from_utf8_lossy(output)
-        );
-        thread::sleep(Duration::from_millis(25));
-    }
 }
 
 fn wait_for_output(
@@ -649,87 +385,10 @@ fn wait_for_output(
 }
 
 #[test]
-fn usage_command_opens_an_inspector_without_submitting_a_prompt() {
-    let root = tempfile::tempdir().unwrap();
-    let (output, success) = run_tui_at("usage", false, root.path(), &[]);
-    assert!(success, "usage session failed: {output:?}");
-    assert!(output.contains("Usage"));
-    let store = SessionStore::open(test_account_database(root.path())).unwrap();
-    let sessions = store.list(false).unwrap();
-    assert!(!sessions.is_empty());
-    for session in sessions {
-        let id = session.id.parse().unwrap();
-        let loaded = store.load(&id).unwrap();
-        assert!(!loaded.iter().any(|envelope| matches!(&envelope.event,
-            axiomcli::app::AppEvent::PromptAccepted { text, .. } if text == "/usage")));
-    }
-}
-
-fn saved_prompts(root: &Path) -> Vec<String> {
-    let store = SessionStore::open(test_account_database(root)).unwrap();
-    store
-        .list(false)
-        .unwrap()
-        .into_iter()
-        .flat_map(|session| {
-            store
-                .load(&session.id.parse().unwrap())
-                .unwrap()
-                .into_iter()
-                .filter_map(|event| match event.event {
-                    axiomcli::app::AppEvent::PromptAccepted { text, .. } => Some(text),
-                    _ => None,
-                })
-        })
-        .collect()
-}
-
-#[test]
-fn active_input_keeps_commands_local_and_preserves_uppercase_and_paste() {
-    let root = tempfile::tempdir().unwrap();
-    let (output, success) = run_tui_at("input_active", false, root.path(), &[]);
-    assert!(success, "active input session failed: {output:?}");
-    assert!(
-        !output.contains("Steering"),
-        "commands must never enter steering"
-    );
-    assert_eq!(
-        saved_prompts(root.path()),
-        ["probe", "aBcD PaStEd\nFollowUp"]
-    );
-}
-
-#[test]
-fn signed_out_production_runner_reaches_login_without_model_discovery() {
-    let root = tempfile::tempdir().unwrap();
-    let (output, success) = run_tui_at("signed_out", false, root.path(), &[]);
-    assert!(success, "signed-out TUI failed: {output:?}");
-    assert!(output.contains("Sign in"));
-    assert!(
-        std::fs::read_dir(root.path().join("data/axiom/accounts"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
-}
-
-#[test]
-fn model_picker_paste_filters_without_polluting_the_next_prompt() {
-    let root = tempfile::tempdir().unwrap();
-    let (output, success) = run_tui_at("paste_picker", false, root.path(), &[]);
-    assert!(success, "picker session failed: {output:?}");
-    assert_eq!(saved_prompts(root.path()), ["probe", "AfterPicker"]);
-    let store = SessionStore::open(test_account_database(root.path())).unwrap();
-    let session = store.list(false).unwrap().pop().unwrap();
-    let events = store.load(&session.id.parse().unwrap()).unwrap();
-    assert_eq!(model_for_resume(&events, "fallback"), "alternate-model");
-}
-
-#[test]
 fn resize_prompt_and_double_ctrl_c_restore_the_terminal() {
     let (output, success) = run_tui("echo", false);
     assert!(success, "TUI failed; output: {output:?}");
-    assert!(output.contains("Axiom"));
+    assert!(output.contains("AXIOMCLI"));
     assert!(
         output.contains("Full Access"),
         "slash command did not render"
@@ -739,7 +398,7 @@ fn resize_prompt_and_double_ctrl_c_restore_the_terminal() {
         "invalid Enter completion or slash focus shortcut did not run"
     );
     assert!(
-        output.contains("Model changed") && output.contains("alternate-model"),
+        output.contains("Model changed to alternate-model"),
         "model picker did not select the keyboard-highlighted model"
     );
     assert!(
@@ -830,17 +489,17 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
     let state = tempfile::tempdir().expect("shared TUI state");
     let (first_output, first_success) = run_tui_at("echo", false, state.path(), &[]);
     assert!(first_success, "first TUI failed: {first_output:?}");
-    let listed = test_cli_command(state.path())
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
         .output()
         .expect("list sessions");
     assert!(listed.status.success());
     let stdout = String::from_utf8(listed.stdout).expect("session list utf8");
-    // Background title generation may finish before the first TUI exits. Both
-    // the prompt-derived title and the fixture's generated title are valid.
     assert!(
-        stdout.contains("\tprobe\t") || stdout.contains("\tGenerated conversation title\t"),
-        "initial title was not persisted: {stdout}"
+        stdout.contains("probe"),
+        "background title was not persisted: {stdout}"
     );
     let id = stdout
         .lines()
@@ -867,7 +526,12 @@ fn durable_tui_session_resumes_in_the_same_workspace() {
 fn resumed_tui_sessions_reconcile_retired_models_and_changed_reasoning_support() {
     let state = tempfile::tempdir().expect("shared TUI state");
     let workspace = tempfile::tempdir().expect("workspace");
-    let database = test_account_database(state.path());
+    let database = state
+        .path()
+        .join("data")
+        .join("axiom")
+        .join("cli")
+        .join("state.sqlite3");
     let (retired_id, changed_reasoning_id) = {
         let store = SessionStore::open(&database).expect("state store");
         (
@@ -902,10 +566,7 @@ fn resumed_tui_sessions_reconcile_retired_models_and_changed_reasoning_support()
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
-    assert_eq!(
-        model_for_resume(&retired.events, "fallback"),
-        "retired-model"
-    );
+    assert_eq!(model_for_resume(&retired.events, "fallback"), "glm-5-2");
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
         ThinkingLevel::High
@@ -932,7 +593,7 @@ fn a_new_tui_session_starts_with_the_last_model_that_ran() {
     let (next_output, next_success) = run_tui_at("remembered_model", false, state.path(), &[]);
     assert!(next_success, "next TUI failed: {next_output:?}");
     assert!(
-        next_output.contains("alternate-model") && next_output.contains("High"),
+        next_output.contains("alternate-model") && next_output.contains("high"),
         "new session did not start with the last used model and thinking: {next_output:?}"
     );
 }
@@ -940,7 +601,12 @@ fn a_new_tui_session_starts_with_the_last_model_that_ran() {
 #[test]
 fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
     let state = tempfile::tempdir().expect("shared TUI state");
-    let database = test_account_database(state.path());
+    let database = state
+        .path()
+        .join("data")
+        .join("axiom")
+        .join("cli")
+        .join("state.sqlite3");
 
     {
         let store = SessionStore::open(&database).expect("seed retired preference");
@@ -953,7 +619,7 @@ fn a_new_tui_session_reconciles_preferences_against_the_current_catalog() {
     {
         let store = SessionStore::open(&database).expect("read corrected preference");
         let preferences = store.profile_preferences().expect("profile preferences");
-        assert_eq!(preferences.model.as_deref(), Some("alternate-model"));
+        assert_eq!(preferences.model.as_deref(), Some("glm-5-2"));
         assert_eq!(preferences.thinking_level, ThinkingLevel::High);
         store
             .set_profile_preferences("medium-only", ThinkingLevel::ExtraHigh)
@@ -985,8 +651,10 @@ fn slash_delete_multiselects_and_permanently_removes_saved_transcripts() {
     assert!(output.contains("Permanently delete"));
     assert!(output.contains("Deleted"));
 
-    let listed = test_cli_command(state.path())
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
         .output()
         .expect("list sessions after deletion");
     assert!(listed.status.success());
@@ -1005,8 +673,10 @@ fn slash_resume_picker_searches_and_restores_a_saved_transcript() {
     let state = tempfile::tempdir().expect("shared TUI state");
     let (first_output, first_success) = run_tui_at("echo", false, state.path(), &[]);
     assert!(first_success, "first TUI failed: {first_output:?}");
-    let listed = test_cli_command(state.path())
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
         .output()
         .expect("list sessions");
     let id = String::from_utf8(listed.stdout)
@@ -1016,8 +686,10 @@ fn slash_resume_picker_searches_and_restores_a_saved_transcript() {
         .and_then(|line| line.split('\t').next())
         .expect("session ID")
         .to_owned();
-    let renamed = test_cli_command(state.path())
+    let renamed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "rename", &id, "Earlier cherry task"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
         .output()
         .expect("rename session");
     assert!(renamed.status.success());
@@ -1028,7 +700,7 @@ fn slash_resume_picker_searches_and_restores_a_saved_transcript() {
     assert!(output.contains("Earlier cherry task"));
     assert!(output.contains("Resumed"));
     assert!(
-        output.contains("Full") && output.contains("access"),
+        output.contains("Full Access"),
         "saved permission state was not restored"
     );
 }
@@ -1053,8 +725,10 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
         output.contains("Edited") || output.contains("Changed"),
         "missing folded workspace-change summary"
     );
-    let listed = test_cli_command(state.path())
+    let listed = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "list"])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
         .output()
         .expect("list TUI session");
     assert!(listed.status.success());
@@ -1065,8 +739,10 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
         .and_then(|line| line.split('\t').next())
         .expect("session ID")
         .to_owned();
-    let exported = test_cli_command(state.path())
+    let exported = std::process::Command::new(env!("CARGO_BIN_EXE_axiomcli"))
         .args(["sessions", "show", &session_id])
+        .env("XDG_CONFIG_HOME", state.path().join("config"))
+        .env("XDG_DATA_HOME", state.path().join("data"))
         .output()
         .expect("export TUI session");
     assert!(exported.status.success());
@@ -1113,7 +789,6 @@ fn workspace_edit_reaches_the_expected_tui_semantics_and_final_workspace() {
 
 #[test]
 #[cfg(target_os = "linux")]
-#[ignore = "CPU/RSS benchmark; run scripts/axiomcli-eval deterministic explicitly"]
 fn idle_tui_stays_within_linux_memory_and_cpu_budgets() {
     let state = tempfile::tempdir().expect("state");
     let pair = native_pty_system()
@@ -1128,8 +803,8 @@ fn idle_tui_stays_within_linux_memory_and_cpu_budgets() {
     command.arg("tui");
     command.env("AXIOMCLI_TEST_RUNNER", "echo");
     command.env("AXIOMCLI_ASCII", "1");
+    command.env("AXIOMCLI_CREDENTIAL_STORE", "file");
     command.env("NO_COLOR", "1");
-
     command.env("XDG_CONFIG_HOME", state.path().join("config"));
     command.env("XDG_DATA_HOME", state.path().join("data"));
     let mut child = pair.slave.spawn_command(command).expect("spawn TUI");
@@ -1201,29 +876,4 @@ fn linux_process_ticks(pid: u32) -> u64 {
     let user = fields[11].parse::<u64>().expect("user ticks");
     let system = fields[12].parse::<u64>().expect("system ticks");
     user + system
-}
-
-#[test]
-fn appearance_and_web_controls_work_in_a_real_terminal_and_restore_background() {
-    let (output, success) = run_tui("appearance", false);
-    assert!(success, "appearance session failed: {output:?}");
-    assert!(output.contains("#f2f2f4"));
-    assert!(output.contains("#141416"));
-    assert!(output.contains("Web enabled"));
-    assert!(output.contains("\x1b]111"));
-    assert!(output.contains("\x1b[?1049l"));
-}
-
-#[test]
-fn gift_entry_never_echoes_or_persists_the_code_as_chat() {
-    let directory = tempfile::tempdir().unwrap();
-    let (output, success) = run_tui_at("gift", false, directory.path(), &[]);
-    assert!(success);
-    assert!(!output.contains("AXG-ABCD"));
-    let data = std::fs::read(test_account_database(directory.path())).unwrap();
-    assert!(
-        !data
-            .windows(b"AXG-ABCD".len())
-            .any(|bytes| bytes == b"AXG-ABCD")
-    );
 }

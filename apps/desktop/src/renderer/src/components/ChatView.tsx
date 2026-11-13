@@ -1,124 +1,90 @@
 import { ArrowDown } from "lucide-react";
-import type { ReactNode } from "react";
-import type { ClientSessionState, PromptAttachment } from "@axiom/axiom-acp-client";
-import type { AttachmentPreviews } from "../attachmentPreviews";
+import { useEffect, useRef, useState } from "react";
+import type { ClientSessionState } from "@axiom/axiom-acp-client";
 import type { PendingUserMessage, ProviderModel, ReasoningEffort } from "../types";
-import type { AttachmentControl } from "./Attachments";
 import { ChatComposer } from "./ChatComposer";
-import type { AgentControlOptions } from "./AgentModeControl";
 import { TimelineView } from "./TimelineView";
-import { PreparingThreadView } from "./PreparingThreadView";
-import { useChatAutoScroll } from "../useChatAutoScroll";
-import { OutdatedTeeNotice } from "./OutdatedTeeNotice";
-import { outdatedTeeState } from "../privacyProof";
 
 interface ChatViewProps {
-  attachments?: AttachmentControl;
-  agentControl?: AgentControlOptions;
-  queue?: ReactNode;
-  session: ClientSessionState | null;
-  preparation?: { id: string; text: string; attachments: PromptAttachment[] } | null;
-  attachmentPreviews?: AttachmentPreviews;
+  session: ClientSessionState;
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void;
-  onRevise?: (userItemId: string, text: string) => Promise<void>;
   isStreaming: boolean;
   models: ProviderModel[];
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
-  requiresSignIn: boolean;
-  onSignIn: () => void;
   reasoningEffort: ReasoningEffort;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
-  onVerifySecurity: () => void | Promise<unknown>;
-  onAcceptOutdatedTee?: () => Promise<void>;
-  securityScope?: string;
-  securityRefreshDisabledReason?: string;
-  webEnabled: boolean;
-  webDisabled: boolean;
-  onWebToggle: () => void;
+  onVerifySecurity: () => void;
 }
 
 export function ChatView({
-  attachments,
-  agentControl,
-  queue,
   session,
-  preparation,
-  attachmentPreviews,
   draft,
   onDraftChange,
   onSubmit,
   onStop,
-  onRevise,
   isStreaming,
   models,
   selectedModelId,
   modelStatusLabel,
   onModelChange,
-  requiresSignIn,
-  onSignIn,
   reasoningEffort,
   onReasoningEffortChange,
   pendingUserMessage,
   onVerifySecurity,
-  onAcceptOutdatedTee,
-  securityScope,
-  securityRefreshDisabledReason,
-  webEnabled,
-  webDisabled,
-  onWebToggle,
 }: ChatViewProps) {
-  const autoScroll = useChatAutoScroll(preparation?.id ?? session?.sessionId ?? "");
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    if (followRef.current) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
+  }, [session.timeline, isStreaming, pendingUserMessage?.id]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-      {preparation ? <PreparingThreadView {...preparation} /> : session ? <>
+    <div className="relative flex h-full min-h-0 flex-col">
       <div
-        ref={autoScroll.viewportRef}
-        data-chat-scroll
-        role="region"
-        aria-label="Chat messages"
-        tabIndex={0}
-        className="title-fade h-full overflow-y-auto px-6"
-        style={{ overflowAnchor: "none" }}
-        {...autoScroll.handlers}
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto px-6"
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          followRef.current = atBottom;
+          setShowJump(!atBottom);
+        }}
       >
-        <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} attachmentPreviews={attachmentPreviews} />
+        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-5 pb-5 pt-12">
+          <TimelineView session={session} pendingUserMessage={pendingUserMessage} />
+          <div ref={bottomRef} />
         </div>
       </div>
 
-      {autoScroll.showJump ? (
+      {showJump ? (
         <button
           type="button"
-          onClick={autoScroll.resume}
-          aria-label="Scroll to latest"
-          className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[var(--surface-float)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
+          onClick={() => {
+            followRef.current = true;
+            bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+            setShowJump(false);
+          }}
+          className="absolute bottom-[118px] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] shadow-lg transition-colors hover:text-[var(--color-text-primary)]"
         >
-          <ArrowDown size={16} />
+          <ArrowDown size={13} />
+          Jump to latest
         </button>
       ) : null}
-      </> : null}
-      </div>
 
-      <div className="shrink-0 px-6 pb-5 pt-2">
+      <div className="shrink-0 px-6 pb-3 pt-1">
         <div className="mx-auto w-full max-w-[760px]">
-          {!preparation && onAcceptOutdatedTee ? <OutdatedTeeNotice key={`${securityScope}:${session?.sessionId}:${selectedModelId}`} state={outdatedTeeState(session, selectedModelId)}
-            disabled={isStreaming || !!securityRefreshDisabledReason} onContinue={onAcceptOutdatedTee} /> : null}
-          {!preparation && queue}
           <ChatComposer
-            preparing={!!preparation}
-            attachments={attachments}
-            agentControl={agentControl}
-            webEnabled={webEnabled}
-            webDisabled={webDisabled}
-            onWebToggle={onWebToggle}
             value={draft}
             onChange={onDraftChange}
             onSubmit={onSubmit}
@@ -128,16 +94,9 @@ export function ChatView({
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}
-            requiresSignIn={requiresSignIn}
-            onSignIn={onSignIn}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={onReasoningEffortChange}
-            security={preparation ? undefined : session ?? undefined}
-            securityScope={securityScope}
-            securityRefreshDisabledReason={securityRefreshDisabledReason}
-            contextUsage={session?.contextUsage ?? null}
-            requestUsage={session?.requestUsage}
-            activeTurnId={session?.activeTurnId}
+            security={session.security}
             onVerifySecurity={onVerifySecurity}
           />
         </div>

@@ -1,13 +1,5 @@
 # ADR 0012: Expiring attestation leases and signed trust policy
 
-> September 21, 2026: Phala is retired. Current providers and dynamic discovery
-> are documented in [provider catalogs](../provider-catalogs.md); Phala details
-> below describe the historical decision only.
-
-> Partially superseded by [ADR 0013](0013-near-worker-sessions.md), provider
-> retirement and policy schema 2. Current verification and rollout requirements
-> are maintained in [trust operations](../threat-model.md#trust-policy-operations).
-
 Status: accepted
 
 Date: 2026-08-28
@@ -40,18 +32,24 @@ a routine provider rotation/outage into a complete product outage.
    and nonces are never cached.
 6. The model catalog negotiates an explicit secure contract and quarantines a
    malformed/unsupported entry without hiding healthy providers.
-7. Mandatory TCB rules, NVIDIA intermediate fingerprints,
+7. Mandatory TCB rules, NVIDIA intermediate fingerprints, workload identities,
    version, validity, and a monotonic sequence live in an Ed25519-signed policy.
    The authenticated API distributes it but cannot forge it. CLI and desktop
    share an atomic rollback journal and use a still-valid last-known-good policy
    during transport outages.
+8. The Phala verifier is an owned in-tree fork. It exposes the full quote-bound
+   repository and commit for signed-policy evaluation and retains receipt-gated
+   output.
 
 ## Consequences
 
 Normal attestation work is amortized without weakening per-request encryption.
 Key and certificate rotations have an overlap path, while compromised or
 expired evidence fails closed. Operations must publish policy updates before
-the previous policy expires and must overlap old/new NVIDIA anchors.
+the previous policy expires and must overlap old/new NVIDIA anchors. Workload
+enforcement progresses from observe to warn to enforce only after canaries show
+complete approved identities; an empty allowlist never silently approves a
+workload.
 
 NVIDIA NRAS, Intel collateral services, NEAR, and Phala remain external
 availability dependencies. The design bounds their outage effect but cannot

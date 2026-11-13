@@ -13,7 +13,6 @@ use syntect::{
 struct HighlightAssets {
     syntaxes: SyntaxSet,
     theme: Theme,
-    light_theme: Theme,
 }
 
 static ASSETS: OnceLock<HighlightAssets> = OnceLock::new();
@@ -30,11 +29,6 @@ fn assets() -> &'static HighlightAssets {
         HighlightAssets {
             syntaxes: SyntaxSet::load_defaults_newlines(),
             theme,
-            light_theme: themes
-                .themes
-                .get("InspiredGitHub")
-                .cloned()
-                .unwrap_or_default(),
         }
     })
 }
@@ -56,15 +50,7 @@ pub(super) fn code_lines(
     let assets = assets();
     let language = info.split_whitespace().next().unwrap_or_default();
     let syntax = syntax_for_token(&assets.syntaxes, language);
-    let light = matches!(base_style.bg, Some(Color::Rgb(r, g, b)) if u16::from(r) + u16::from(g) + u16::from(b) > 384);
-    let mut highlighter = HighlightLines::new(
-        syntax,
-        if light {
-            &assets.light_theme
-        } else {
-            &assets.theme
-        },
-    );
+    let mut highlighter = HighlightLines::new(syntax, &assets.theme);
 
     source_lines
         .into_iter()

@@ -2,10 +2,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Result, SecureClientError};
 
-pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 40 * 1024 * 1024 + 1024;
-// Version-2 NEAR envelopes contain a 32-byte ephemeral key, 24-byte
-// nonce and 16-byte authentication tag before any plaintext content.
-const MIN_CIPHERTEXT_HEX_CHARS: usize = 144;
+pub(crate) const MAX_CIPHERTEXT_HEX_CHARS: usize = 524_288;
+// NEAR envelopes are currently at least 144 characters; Phala ACI v2
+// envelopes have a 120-character minimum. Provider implementations perform
+// their exact protocol validation after this transport-level bound.
+const MIN_CIPHERTEXT_HEX_CHARS: usize = 120;
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
@@ -118,10 +119,6 @@ pub(crate) struct EncryptedMessage {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RelayChatRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_request_id: Option<String>,
-    pub provider_id: String,
-    pub inference_encryption: &'static str,
     pub model_id: String,
     pub encryption_version: u16,
     pub e2ee_protocol: String,
@@ -144,8 +141,6 @@ pub(crate) struct RelayChatRequest {
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_mode: Option<axiom_inference::ThinkingMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_e2ee_context: Option<serde_json::Value>,
     pub attestation_generation: u64,
@@ -209,6 +204,7 @@ pub(crate) struct NearCompletionProof {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_field_names)]
 pub(crate) struct RelayUsage {
     #[serde(default)]
@@ -222,6 +218,7 @@ pub(crate) struct RelayUsage {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RelayCompletion {
     pub id: String,
     #[serde(default)]
@@ -263,12 +260,14 @@ pub(crate) struct EncryptedToolCallDelta {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreatedPayload {
     pub run_id: String,
     pub inference_encryption: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeltaPayload {
     pub run_id: String,
     #[serde(default)]
@@ -291,6 +290,7 @@ pub(crate) struct DeltaPayload {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CompletedPayload {
     pub run_id: String,
     #[serde(default)]
@@ -301,11 +301,13 @@ pub(crate) struct CompletedPayload {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RunPayload {
     pub run_id: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CancelledPayload {
     pub run_id: String,
     #[serde(default)]
@@ -313,43 +315,10 @@ pub(crate) struct CancelledPayload {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FailedPayload {
     pub run_id: String,
-    // Preserve wire validation but never reflect untrusted remote error text.
-    #[serde(rename = "error")]
-    pub _error: String,
+    pub error: String,
     #[serde(default)]
     pub code: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relay_response_metadata_is_additive_but_encrypted_tool_calls_stay_exact() {
-        let completion: RelayCompletion = serde_json::from_value(serde_json::json!({
-            "id": "response-1",
-            "encrypted_content": "a".repeat(144),
-            "finish_reason": "stop",
-            "usage": {
-                "prompt_tokens": 4,
-                "future_cached_tokens": 2
-            },
-            "future_provider_metadata": {"revision": 2}
-        }))
-        .unwrap();
-        assert_eq!(completion.usage.prompt_tokens, Some(4));
-
-        let strict_tool_call = serde_json::from_value::<EncryptedToolCall>(serde_json::json!({
-            "id": "call-1",
-            "type": "function",
-            "function": {
-                "encrypted_name": "a".repeat(144),
-                "encrypted_arguments": "b".repeat(144)
-            },
-            "future_execution_semantics": true
-        }));
-        assert!(strict_tool_call.is_err());
-    }
 }

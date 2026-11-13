@@ -202,7 +202,6 @@ pub async fn connect_tools(
                 trusted_read_only,
                 connection: connection.clone(),
                 max_output_bytes: max_output_bytes.max(MIN_OUTPUT_BYTES),
-                tool_timeout: Duration::from_secs(config.tool_timeout_secs),
             }));
         }
     }
@@ -422,11 +421,6 @@ async fn verify_reconnected_tool(
 }
 
 fn validate_server_config(config: &McpServerConfig) -> Result<()> {
-    if !(1..=86_400).contains(&config.tool_timeout_secs) {
-        return Err(AxiomError::Config(
-            "MCP tool_timeout_secs must be between 1 and 86400".into(),
-        ));
-    }
     if config.name.trim().is_empty() || config.command.trim().is_empty() {
         return Err(AxiomError::Config(
             "MCP server name and command cannot be empty".into(),
@@ -469,7 +463,6 @@ struct McpTool {
     trusted_read_only: bool,
     connection: Arc<McpConnection>,
     max_output_bytes: usize,
-    tool_timeout: Duration,
 }
 
 #[async_trait]
@@ -530,39 +523,23 @@ impl Tool for McpTool {
             CallToolRequestParams::new(self.remote_name.clone()).with_arguments(arguments.clone())
         };
 
-        let first = call_with_limits(
-            &service,
-            request(),
-            &cancellation,
-            &self.server_name,
-            self.tool_timeout,
-        )
-        .await;
+        let first = call_with_limits(&service, request(), &cancellation, &self.server_name).await;
         let result = match first {
             Ok(result) => result,
             Err(_error) if cancellation.is_cancelled() => return Err(AxiomError::Cancelled),
-            // Deadline expiry has an unknown outcome even if the connection
-            // also closed. It is never eligible for the read-only reconnect retry.
-            Err(error @ AxiomError::Tool(_)) => return Err(error),
             Err(_error) if connection_closed(&service) && self.trusted_read_only => {
                 (service, generation) = self
                     .connection
                     .reconnect_if_current(&service, &self.remote_name, &self.schema)
                     .await?;
-                call_with_limits(
-                    &service,
-                    request(),
-                    &cancellation,
-                    &self.server_name,
-                    self.tool_timeout,
-                )
-                .await
-                .map_err(|retry_error| {
-                    bounded_mcp_error(
-                        &self.server_name,
-                        format!("read-only retry failed after reconnect: {retry_error}"),
-                    )
-                })?
+                call_with_limits(&service, request(), &cancellation, &self.server_name)
+                    .await
+                    .map_err(|retry_error| {
+                        bounded_mcp_error(
+                            &self.server_name,
+                            format!("read-only retry failed after reconnect: {retry_error}"),
+                        )
+                    })?
             }
             Err(error) if connection_closed(&service) => {
                 return Err(bounded_mcp_error(
@@ -606,35 +583,15 @@ async fn call_with_limits(
     request: CallToolRequestParams,
     cancellation: &CancellationToken,
     server_name: &str,
-    timeout: Duration,
 ) -> Result<rmcp::model::CallToolResult> {
-    let mut handle = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
-        result = service.peer().send_cancellable_request(
-            rmcp::model::ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(request)),
-            rmcp::service::PeerRequestOptions::no_options(),
-        ) => result.map_err(|error| bounded_mcp_error(server_name, error))?,
-    };
-    let result = tokio::select! {
-        biased;
+    tokio::select! {
         () = cancellation.cancelled() => Err(AxiomError::Cancelled),
-        result = tokio::time::timeout(timeout, &mut handle.rx) => match result {
-            Ok(Ok(Ok(rmcp::model::ServerResult::CallToolResult(result)))) => return Ok(result),
-            Ok(Ok(Ok(_))) => return Err(bounded_mcp_error(server_name, "unsupported tool response")),
-            Ok(Ok(Err(error))) => return Err(bounded_mcp_error(server_name, error)),
-            Ok(Err(_)) => return Err(bounded_mcp_error(server_name, "tool connection closed")),
-            Err(_) => Err(AxiomError::Tool(format!("MCP server `{server_name}`: tool call timed out after {} seconds; increase this server's tool_timeout_secs for longer operations", timeout.as_secs()))),
-        },
-    };
-    // Notify the server instead of merely abandoning the local future. A
-    // timeout never authorizes replay of an operation with an unknown outcome.
-    let _ = tokio::time::timeout(
-        Duration::from_secs(1),
-        handle.cancel(Some("Axiom stopped waiting for this tool call".into())),
-    )
-    .await;
-    result
+        result = tokio::time::timeout(MCP_REQUEST_TIMEOUT, service.call_tool(request)) => {
+            result
+                .map_err(|_| bounded_mcp_error(server_name, "tool call timed out"))?
+                .map_err(|error| bounded_mcp_error(server_name, error))
+        }
+    }
 }
 
 fn clean_and_truncate(input: &str, max_bytes: usize) -> String {

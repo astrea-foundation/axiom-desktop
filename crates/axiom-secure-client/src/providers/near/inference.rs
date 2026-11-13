@@ -1,11 +1,12 @@
 use std::io::Write;
 
 use base64::{Engine, engine::general_purpose};
-use ed25519_dalek::{Signature, VerifyingKey};
 use futures_util::StreamExt;
+use k256::ecdsa::{RecoveryId, Signature as Secp256k1Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::ser::Formatter;
 use sha2::{Digest, Sha256};
+use sha3::Keccak256;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -33,8 +34,8 @@ use crate::{
 use super::crypto;
 
 const INFERENCE_ENCRYPTION: &str = "provider_e2ee_v2";
-const MAX_PLAINTEXT_STREAM_BYTES: usize = axiom_inference::MAX_MESSAGE_TEXT_BYTES;
-const NEAR_RECEIPT_RAW_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PLAINTEXT_STREAM_BYTES: usize = 16 * 1024 * 1024;
+const NEAR_RECEIPT_RAW_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) struct NearInferenceContext<'a> {
     pub(crate) config: &'a SecureClientConfig,
@@ -43,7 +44,6 @@ pub(crate) struct NearInferenceContext<'a> {
     pub(crate) model_key: crypto::Ed25519PublicKey,
     pub(crate) response_signing_address: &'a str,
     pub(crate) binding: &'a AttestationBinding,
-    pub(crate) worker_session_id: &'a str,
 }
 
 pub(crate) async fn complete(
@@ -58,20 +58,15 @@ pub(crate) async fn complete(
         model_key,
         response_signing_address,
         binding,
-        worker_session_id,
     } = context;
-    let (identity, mut relay_request, request_hash) = build_request(
+    let (identity, relay_request, request_hash) = build_request(
         model,
         model_key,
         response_signing_address,
         binding,
-        &request,
+        request,
         false,
     )?;
-    relay_request
-        .provider_e2ee_context
-        .as_mut()
-        .expect("built context")["worker_session_id"] = worker_session_id.into();
     let completion = RelayClient::new(config, credential)
         .complete(&relay_request, cancellation)
         .await?;
@@ -97,20 +92,15 @@ pub(crate) async fn stream(
         model_key,
         response_signing_address,
         binding,
-        worker_session_id,
     } = context;
-    let (identity, mut relay_request, request_hash) = build_request(
+    let (identity, relay_request, request_hash) = build_request(
         model,
         model_key,
         response_signing_address,
         binding,
-        &request,
+        request,
         true,
     )?;
-    relay_request
-        .provider_e2ee_context
-        .as_mut()
-        .expect("built context")["worker_session_id"] = worker_session_id.into();
     let response = RelayClient::new(config, credential)
         .stream(&relay_request, cancellation)
         .await?;
@@ -125,24 +115,14 @@ pub(crate) async fn stream(
         model.upstream_model.clone(),
     );
 
-    let mut deadline = crate::relay::deadline::StreamDeadline::new();
     loop {
         let next = tokio::select! {
-            () = tokio::time::sleep_until(deadline.at()) => return Err(deadline.error()),
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             next = bytes.next() => next,
         };
         let Some(chunk) = next else { break };
-        let chunk = chunk.map_err(|_| {
-            SecureClientError::with_code(
-                axiom_inference::ProviderFailureKind::Transient,
-                crate::SecureErrorCode::ProviderDisconnected,
-                "The connection to the provider was interrupted.",
-                true,
-            )
-        })?;
+        let chunk = chunk.map_err(|_| invalid("relay stream transport failed"))?;
         for event in decoder.feed(&chunk)? {
-            deadline.observe(&event);
             state
                 .accept(event, &identity, &events, cancellation)
                 .await?;
@@ -159,32 +139,15 @@ fn build_request(
     model_key: crypto::Ed25519PublicKey,
     response_signing_address: &str,
     binding: &AttestationBinding,
-    request: &InferenceRequest,
+    request: InferenceRequest,
     stream: bool,
 ) -> Result<(crypto::ClientIdentity, RelayChatRequest, String)> {
     request
         .validate()
         .map_err(|_| invalid_request("inference request validation failed"))?;
-    let response_format = public_response_format(&request.response_format)?;
-    if request.messages.iter().any(|message| {
-        (!model.supports_images && !message.images.is_empty()) || !message.files.is_empty()
-    }) {
-        return Err(invalid_request(
-            "this NEAR model does not support the attached file format",
-        ));
-    }
     if request.model != model.id {
         return Err(invalid_request(
             "request model does not match verified session",
-        ));
-    }
-    if request.thinking_mode != axiom_inference::ThinkingMode::ProviderDefault
-        && !model
-            .supported_thinking_modes
-            .contains(&request.thinking_mode)
-    {
-        return Err(invalid_request(
-            "thinking mode is not supported by the model",
         ));
     }
     if request.reasoning_effort == ReasoningEffort::Minimal
@@ -279,10 +242,14 @@ fn build_request(
                 .map_err(|_| invalid_request("sampling parameters are invalid"))
         })
         .transpose()?;
+    let response_format = match request.response_format {
+        ResponseFormat::Text => None,
+        other => Some(
+            serde_json::to_value(other)
+                .map_err(|_| invalid_request("response format is invalid"))?,
+        ),
+    };
     let mut relay = RelayChatRequest {
-        client_request_id: request.request_id.clone(),
-        provider_id: model.provider_id.clone(),
-        inference_encryption: INFERENCE_ENCRYPTION,
         model_id: model.id.clone(),
         encryption_version: model.e2ee_encryption_version,
         e2ee_protocol: model.e2ee_protocol.clone(),
@@ -297,8 +264,6 @@ fn build_request(
         max_tokens: Some(max_tokens),
         sampling,
         response_format,
-        thinking_mode: (request.thinking_mode != axiom_inference::ThinkingMode::ProviderDefault)
-            .then_some(request.thinking_mode),
         reasoning_effort: (!model.supported_reasoning_efforts.is_empty())
             .then(|| request.reasoning_effort.as_str().to_owned()),
         provider_e2ee_context: None,
@@ -330,18 +295,11 @@ struct NearUpstreamRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    chat_template_kwargs: Option<NearThinkingControl>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<NearUpstreamTool<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<NearUpstreamToolChoice<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
-}
-
-#[derive(Serialize)]
-struct NearThinkingControl {
-    thinking: bool,
 }
 
 #[derive(Serialize)]
@@ -414,15 +372,6 @@ struct NearUpstreamNamedFunction<'a> {
 }
 
 fn near_upstream_request_bytes(model: &ModelInfo, relay: &RelayChatRequest) -> Result<Vec<u8>> {
-    if relay
-        .response_format
-        .as_ref()
-        .is_some_and(|value| !is_fixed_json_object_format(value))
-    {
-        return Err(invalid_request(
-            "schema-bearing response formats cannot cross the provider-E2EE boundary",
-        ));
-    }
     let messages = relay
         .encrypted_messages
         .iter()
@@ -508,9 +457,6 @@ fn near_upstream_request_bytes(model: &ModelInfo, relay: &RelayChatRequest) -> R
         top_p: number("top_p"),
         response_format: relay.response_format.as_ref(),
         reasoning_effort,
-        chat_template_kwargs: relay.thinking_mode.map(|mode| NearThinkingControl {
-            thinking: mode == axiom_inference::ThinkingMode::Enabled,
-        }),
         tools,
         tool_choice,
         parallel_tool_calls: relay.parallel_tool_calls,
@@ -522,23 +468,6 @@ fn near_upstream_request_bytes(model: &ModelInfo, relay: &RelayChatRequest) -> R
         .serialize(&mut serializer)
         .map_err(|_| invalid_request("NEAR upstream request could not be serialized"))?;
     Ok(bytes)
-}
-
-fn public_response_format(format: &ResponseFormat) -> Result<Option<serde_json::Value>> {
-    match format {
-        ResponseFormat::Text => Ok(None),
-        ResponseFormat::JsonObject => Ok(Some(serde_json::json!({"type": "json_object"}))),
-        ResponseFormat::JsonSchema { .. } => Err(invalid_request(
-            "JSON Schema response format is unavailable until its metadata is provider-E2EE",
-        )),
-    }
-}
-
-fn is_fixed_json_object_format(value: &serde_json::Value) -> bool {
-    value.as_object().is_some_and(|object| {
-        object.len() == 1
-            && object.get("type").and_then(serde_json::Value::as_str) == Some("json_object")
-    })
 }
 
 struct PythonCompactUtf8Formatter;
@@ -650,17 +579,8 @@ fn encrypt_message(
         message.role,
         ChatRole::System | ChatRole::Developer | ChatRole::User | ChatRole::Tool
     );
-    // The upstream proxy decrypts and restores JSON content arrays. Inline
-    // image bytes and text are encrypted together, never placed in relay JSON.
-    let content = if message.images.is_empty() {
-        message.content.clone()
-    } else {
-        let mut parts = vec![serde_json::json!({"type": "text", "text": message.content})];
-        parts.extend(message.images.iter().map(|image| serde_json::json!({"type": "image_url", "image_url": {"url": image.data_url()}})));
-        serde_json::to_string(&parts).map_err(|_| invalid_request("invalid image content"))?
-    };
-    let encrypted_content = (required_content || !content.is_empty())
-        .then(|| encrypt(model_key, content.as_bytes()))
+    let encrypted_content = (required_content || !message.content.is_empty())
+        .then(|| encrypt(model_key, message.content.as_bytes()))
         .transpose()?;
     let encrypted_tool_calls = (!message.tool_calls.is_empty())
         .then(|| {
@@ -851,21 +771,13 @@ fn decrypt_relay_completion(
         .map(|value| decrypt(identity, value))
         .transpose()?;
     let tool_calls = decrypt_tool_calls(identity, completion.encrypted_tool_calls)?;
-    if text.is_empty()
-        && reasoning.as_deref().is_none_or(str::is_empty)
-        && refusal.is_none()
-        && tool_calls.is_empty()
-    {
+    if text.is_empty() && refusal.is_none() && tool_calls.is_empty() {
         return Err(invalid("relay completion has no usable output"));
     }
     let finish_reason = parse_finish_reason(&completion.finish_reason)?;
     validate_finish_shape(&finish_reason, &tool_calls)?;
     Ok(InferenceResponse {
-        assistant: AssistantTurn {
-            reasoning: None,
-            text,
-            tool_calls,
-        },
+        assistant: AssistantTurn { text, tool_calls },
         reasoning,
         refusal,
         usage: normalize_usage(&completion.usage)?,
@@ -1069,11 +981,24 @@ fn verify_near_proof(
     }
     let hash_pair = format!("{}:{}", proof.request_hash, proof.response_hash);
     let model_hash_pair = format!("{}:{hash_pair}", proof.model);
-    if proof.signed_text != model_hash_pair {
+    if proof.signed_text != hash_pair && proof.signed_text != model_hash_pair {
         return Err(invalid("NEAR completion receipt signed text is invalid"));
     }
-    verify_ed25519_signature(&proof.signed_text, &proof.signature, &proof.signing_address)?;
+    verify_personal_signature(&proof.signed_text, &proof.signature, &proof.signing_address)?;
     Ok((proof, raw_body))
+}
+
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_parse_receipt(input: &[u8]) {
+    let Ok(value) = serde_json::from_slice(input) else {
+        return;
+    };
+    let _ = verify_near_proof(
+        value,
+        &"00".repeat(32),
+        &format!("0x{}", "00".repeat(20)),
+        "fuzz/model",
+    );
 }
 
 fn canonical_hash(value: &str) -> bool {
@@ -1084,35 +1009,62 @@ fn canonical_hash(value: &str) -> bool {
 }
 
 fn canonical_signing_address(value: &str) -> bool {
-    canonical_hash(value)
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn verify_ed25519_signature(
+fn verify_personal_signature(
     signed_text: &str,
     encoded_signature: &str,
     expected_address: &str,
 ) -> Result<()> {
-    if signed_text.len() > 1024
-        || !canonical_signing_address(expected_address)
-        || encoded_signature.len() != 128
-        || !encoded_signature
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-    {
+    if signed_text.len() > 1024 || !canonical_signing_address(expected_address) {
+        return Err(invalid("NEAR completion signature binding is invalid"));
+    }
+    let signature_hex = encoded_signature
+        .strip_prefix("0x")
+        .unwrap_or(encoded_signature);
+    if signature_hex.len() != 130 {
         return Err(invalid("NEAR completion signature encoding is invalid"));
     }
-    let key_bytes: [u8; 32] = hex::decode(expected_address)
-        .map_err(|_| invalid("NEAR receipt key is invalid"))?
-        .try_into()
-        .map_err(|_| invalid("NEAR receipt key is invalid"))?;
-    let key =
-        VerifyingKey::from_bytes(&key_bytes).map_err(|_| invalid("NEAR receipt key is invalid"))?;
-    let signature_bytes =
-        hex::decode(encoded_signature).map_err(|_| invalid("NEAR receipt signature is invalid"))?;
-    let signature = Signature::from_slice(&signature_bytes)
-        .map_err(|_| invalid("NEAR receipt signature is invalid"))?;
-    key.verify_strict(signed_text.as_bytes(), &signature)
-        .map_err(|_| invalid("NEAR completion signature does not match attestation"))
+    let signature_bytes = hex::decode(signature_hex)
+        .map_err(|_| invalid("NEAR completion signature encoding is invalid"))?;
+    let recovery_byte = match signature_bytes[64] {
+        0 | 1 => signature_bytes[64],
+        27 | 28 => signature_bytes[64] - 27,
+        _ => return Err(invalid("NEAR completion signature recovery ID is invalid")),
+    };
+    let signature = Secp256k1Signature::from_slice(&signature_bytes[..64])
+        .map_err(|_| invalid("NEAR completion signature is invalid"))?;
+    if signature.normalize_s().is_some() {
+        return Err(invalid("NEAR completion signature is not canonical"));
+    }
+    let recovery_id = RecoveryId::from_byte(recovery_byte)
+        .ok_or_else(|| invalid("NEAR completion signature recovery ID is invalid"))?;
+    let prefix = format!("\x19Ethereum Signed Message:\n{}", signed_text.len());
+    let mut digest = Keccak256::new();
+    digest.update(prefix.as_bytes());
+    digest.update(signed_text.as_bytes());
+    let message_hash = digest.finalize();
+    let verifying_key =
+        VerifyingKey::recover_from_prehash(message_hash.as_slice(), &signature, recovery_id)
+            .map_err(|_| invalid("NEAR completion signature recovery failed"))?;
+    let encoded_key = verifying_key.to_encoded_point(false);
+    let key_bytes = encoded_key.as_bytes();
+    if key_bytes.len() != 65 || key_bytes[0] != 4 {
+        return Err(invalid("NEAR completion signature key is invalid"));
+    }
+    let recovered_hash = Keccak256::digest(&key_bytes[1..]);
+    let recovered_address = format!("0x{}", hex::encode(&recovered_hash[12..]));
+    if recovered_address != expected_address {
+        return Err(invalid(
+            "NEAR completion signature does not match attestation",
+        ));
+    }
+    Ok(())
 }
 
 fn decrypt_tool_calls(
@@ -1199,7 +1151,7 @@ struct RawNearStreamDelta {
     #[serde(default)]
     refusal: Option<String>,
     #[serde(default)]
-    tool_calls: Option<Vec<RawNearToolCallDelta>>,
+    tool_calls: Vec<RawNearToolCallDelta>,
 }
 
 #[derive(Deserialize)]
@@ -1312,11 +1264,7 @@ fn parse_raw_stream(
         };
         let encrypted_reasoning = optional_ciphertext(choice.delta.reasoning_content)?;
         let encrypted_refusal = optional_ciphertext(choice.delta.refusal)?;
-        let has_tool_calls = choice
-            .delta
-            .tool_calls
-            .as_ref()
-            .is_some_and(|calls| !calls.is_empty());
+        let has_tool_calls = !choice.delta.tool_calls.is_empty();
         if encrypted_content.is_some()
             || encrypted_reasoning.is_some()
             || encrypted_refusal.is_some()
@@ -1335,7 +1283,7 @@ fn parse_raw_stream(
         if let Some(value) = encrypted_refusal {
             append_bounded(&mut refusal, &decrypt(identity, &value)?)?;
         }
-        for encrypted in choice.delta.tool_calls.unwrap_or_default() {
+        for encrypted in choice.delta.tool_calls {
             let delta = ToolCallDelta {
                 index: encrypted.index,
                 id: encrypted.id,
@@ -1385,7 +1333,6 @@ fn parse_raw_stream(
         sequence_count,
         response: InferenceResponse {
             assistant: AssistantTurn {
-                reasoning: None,
                 text: content,
                 tool_calls: calls,
             },
@@ -1421,8 +1368,9 @@ struct StreamState {
     tool_calls: ToolCallAccumulator,
     usage: Option<Usage>,
     finish_reason: Option<FinishReason>,
-    /// Text is emitted as provisional after AEAD decryption. Tool-call deltas,
-    /// usage and success remain gated on the exact signed transcript and EOF.
+    /// Decrypted response material is provisional until the signed receipt
+    /// and the terminal run event have both been validated. Keeping it here
+    /// prevents a truncated or forged stream from reaching the agent journal.
     verified_events: Vec<ProviderEvent>,
     message_completed: bool,
     run_completed: bool,
@@ -1464,21 +1412,6 @@ impl StreamState {
             return Err(invalid("relay emitted data after terminal completion"));
         }
         match event {
-            RelayEvent::Finalizing(payload) => {
-                self.require_run(&payload.run_id)?;
-            }
-            RelayEvent::Accounting(usage) => {
-                self.require_run(&usage.request_id)?;
-                if !usage.validate_counters() || usage.response_verified {
-                    return Err(invalid("invalid operational accounting"));
-                }
-                send(
-                    sink,
-                    ProviderEvent::Accounting(Box::new(usage)),
-                    cancellation,
-                )
-                .await?;
-            }
             RelayEvent::RunCreated(payload) => {
                 if self.run_id.is_some() || payload.inference_encryption != INFERENCE_ENCRYPTION {
                     return Err(invalid("relay run creation contract is invalid"));
@@ -1530,17 +1463,19 @@ impl StreamState {
                 if let Some(value) = payload.encrypted_delta {
                     let value = decrypt(identity, &value)?;
                     append_bounded(&mut self.text, &value)?;
-                    send(sink, ProviderEvent::TextDelta(value), cancellation).await?;
+                    self.verified_events.push(ProviderEvent::TextDelta(value));
                 }
                 if let Some(value) = payload.encrypted_reasoning_delta {
                     let value = decrypt(identity, &value)?;
                     append_bounded(&mut self.reasoning, &value)?;
-                    send(sink, ProviderEvent::ReasoningDelta(value), cancellation).await?;
+                    self.verified_events
+                        .push(ProviderEvent::ReasoningDelta(value));
                 }
                 if let Some(value) = payload.encrypted_refusal_delta {
                     let value = decrypt(identity, &value)?;
                     append_bounded(&mut self.refusal, &value)?;
-                    send(sink, ProviderEvent::RefusalDelta(value), cancellation).await?;
+                    self.verified_events
+                        .push(ProviderEvent::RefusalDelta(value));
                 }
                 for encrypted in payload.encrypted_tool_calls {
                     let delta = ToolCallDelta {
@@ -1648,8 +1583,10 @@ impl StreamState {
             }
             RelayEvent::Failed(payload) => {
                 self.require_run(&payload.run_id)?;
-                return Err(crate::relay::client::stream_failure(
-                    payload.code.as_deref(),
+                let _ = (payload.error, payload.code);
+                return Err(SecureClientError::new(
+                    axiom_inference::ProviderFailureKind::Transient,
+                    "remote encrypted inference failed",
                 ));
             }
         }
@@ -1681,7 +1618,6 @@ impl StreamState {
         validate_finish_shape(&finish_reason, &tool_calls)?;
         Ok(InferenceResponse {
             assistant: AssistantTurn {
-                reasoning: None,
                 text: self.text.clone(),
                 tool_calls,
             },
@@ -1710,7 +1646,6 @@ impl StreamState {
         validate_finish_shape(&finish_reason, &tool_calls)?;
         let response = InferenceResponse {
             assistant: AssistantTurn {
-                reasoning: None,
                 text: self.text,
                 tool_calls,
             },
@@ -1778,7 +1713,7 @@ mod tests {
         EncryptedToolCallDelta, RunPayload,
     };
     use axiom_inference::{FunctionDefinition, ToolDefinition};
-    use ed25519_dalek::{Signer, SigningKey};
+    use k256::ecdsa::SigningKey;
 
     #[derive(Serialize)]
     struct SerializationVector<'a> {
@@ -1805,61 +1740,6 @@ mod tests {
             model_key_fingerprint: "00".repeat(32),
             keyset_digest: None,
             hard_expires_at_unix_seconds: u64::MAX,
-        }
-    }
-
-    #[test]
-    fn image_parts_are_encrypted_together_and_decrypt_to_the_upstream_array() {
-        let worker = crypto::ClientIdentity::generate();
-        let key = crypto::Ed25519PublicKey::from_hex(&worker.public_key_hex()).unwrap();
-        let mut message = ChatMessage::text(ChatRole::User, "private image question");
-        let image = axiom_inference::ImageContent {
-            mime_type: "image/png".into(),
-            data: "iVBORw0KGgpmaXh0dXJl".into(),
-        };
-        message.images.push(image.clone());
-        let encrypted = encrypt_message(key, &message).unwrap();
-        let wire = serde_json::to_string(&encrypted).unwrap();
-        assert!(!wire.contains("private image question"));
-        assert!(!wire.contains(&image.data));
-        assert!(!wire.contains("image_url"));
-        let plaintext = worker
-            .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
-            .unwrap();
-        let content: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
-        assert_eq!(content[0]["text"], message.content);
-        assert_eq!(content[1]["image_url"]["url"], image.data_url());
-        let other_worker = crypto::ClientIdentity::generate();
-        assert!(
-            other_worker
-                .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn signed_stream_optional_tool_calls_accepts_null_but_not_wrong_types() {
-        let identity = crypto::ClientIdentity::generate();
-        for delta in [
-            serde_json::json!({}),
-            serde_json::json!({"tool_calls": null}),
-            serde_json::json!({"tool_calls": []}),
-        ] {
-            let chunk = serde_json::json!({"id": "signed-chat", "model": "provider/model", "choices": [{"delta": delta, "finish_reason": "stop"}]});
-            let raw = format!("data: {chunk}\n\ndata: [DONE]\n\n");
-            let transcript = parse_raw_stream(raw.as_bytes(), &identity).unwrap();
-            assert_eq!(transcript.sequence_count, 0);
-            assert!(transcript.response.assistant.tool_calls.is_empty());
-        }
-        for invalid in [
-            serde_json::json!({}),
-            serde_json::json!(false),
-            serde_json::json!("not-an-array"),
-            serde_json::json!([null]),
-        ] {
-            let chunk = serde_json::json!({"id": "signed-chat", "choices": [{"delta": {"tool_calls": invalid}}]});
-            let raw = format!("data: {chunk}\n\ndata: [DONE]\n\n");
-            assert!(parse_raw_stream(raw.as_bytes(), &identity).is_err());
         }
     }
 
@@ -1891,48 +1771,11 @@ mod tests {
     }
 
     #[test]
-    fn json_schema_metadata_is_rejected_before_near_relay_construction() {
-        let recipient = crypto::ClientIdentity::generate();
-        let recipient_key =
-            crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
-        let sentinel = "plaintext-schema-instruction-must-not-cross";
-        let mut request = InferenceRequest::streaming(
-            "secure-model",
-            vec![ChatMessage::text(ChatRole::User, "encrypted message")],
-            Vec::new(),
-        );
-        request.response_format = ResponseFormat::JsonSchema {
-            name: sentinel.into(),
-            schema: serde_json::json!({"description": sentinel}),
-            strict: true,
-        };
-
-        let error = build_request(
-            &model(),
-            recipient_key,
-            &response_signer().1,
-            &binding(),
-            &request,
-            true,
-        )
-        .expect_err("schema metadata must fail closed");
-        assert_eq!(
-            error.kind(),
-            axiom_inference::ProviderFailureKind::InvalidRequest
-        );
-        assert!(!error.safe_detail().contains(sentinel));
-    }
-
-    #[test]
     fn upstream_request_hash_uses_effective_cap_and_raw_utf8() {
         let mut offered_model = model();
         offered_model.max_output_tokens = 8_192;
         let ciphertext = "ab".repeat(72);
-        let mut relay = RelayChatRequest {
-            client_request_id: None,
-            thinking_mode: None,
-            provider_id: offered_model.provider_id.clone(),
-            inference_encryption: INFERENCE_ENCRYPTION,
+        let relay = RelayChatRequest {
             model_id: offered_model.id.clone(),
             encryption_version: offered_model.e2ee_encryption_version,
             e2ee_protocol: offered_model.e2ee_protocol.clone(),
@@ -1954,7 +1797,10 @@ mod tests {
             stream: false,
             max_tokens: Some(offered_model.max_output_tokens),
             sampling: Some(serde_json::json!({"temperature": 1e-5})),
-            response_format: Some(serde_json::json!({"type": "json_object"})),
+            response_format: Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {"name": "résumé-😀", "strict": true},
+            })),
             reasoning_effort: Some("medium".into()),
             provider_e2ee_context: None,
             attestation_generation: 1,
@@ -1966,19 +1812,14 @@ mod tests {
         assert_eq!(
             body,
             format!(
-                "{{\"model\":\"provider/model\",\"messages\":[{{\"role\":\"user\",\"content\":\"{ciphertext}\"}}],\"stream\":false,\"max_tokens\":8192,\"temperature\":1e-05,\"response_format\":{{\"type\":\"json_object\"}},\"reasoning_effort\":\"medium\",\"tool_choice\":\"none\"}}"
+                "{{\"model\":\"provider/model\",\"messages\":[{{\"role\":\"user\",\"content\":\"{ciphertext}\"}}],\"stream\":false,\"max_tokens\":8192,\"temperature\":1e-05,\"response_format\":{{\"type\":\"json_schema\",\"json_schema\":{{\"name\":\"résumé-😀\",\"strict\":true}}}},\"reasoning_effort\":\"medium\",\"tool_choice\":\"none\"}}"
             )
         );
         assert!(!body.contains("\\u00e9"));
         assert_eq!(
             hex::encode(Sha256::digest(&bytes)),
-            "3f4a823af653ec0d07fd480eaecbe3bbbcec9ea9ad82ec9e6f3d8a29177610c3"
+            "2ea91d920dc231525a7ef219550731d3c7e0aed9ab599fad4f345b3fdf868e3c"
         );
-        relay.response_format = Some(serde_json::json!({
-            "type": "json_schema",
-            "json_schema": {"description": "plaintext must not cross"},
-        }));
-        assert!(near_upstream_request_bytes(&offered_model, &relay).is_err());
     }
 
     #[test]
@@ -2008,10 +1849,6 @@ mod tests {
         offered_model.upstream_model = "deepseek-ai/DeepSeek-V4-Flash".into();
         offered_model.max_output_tokens = 8_192;
         let relay = RelayChatRequest {
-            client_request_id: None,
-            thinking_mode: None,
-            provider_id: offered_model.provider_id.clone(),
-            inference_encryption: INFERENCE_ENCRYPTION,
             model_id: offered_model.id.clone(),
             encryption_version: offered_model.e2ee_encryption_version,
             e2ee_protocol: offered_model.e2ee_protocol.clone(),
@@ -2044,7 +1881,14 @@ mod tests {
             stream: true,
             max_tokens: Some(offered_model.max_output_tokens),
             sampling: Some(serde_json::json!({"temperature": 0.25, "top_p": 0.9})),
-            response_format: Some(serde_json::json!({"type": "json_object"})),
+            response_format: Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "unicode_vector",
+                    "description": "résumé 日本語 ✓",
+                    "schema": {"type": "object"},
+                },
+            })),
             reasoning_effort: Some("medium".into()),
             provider_e2ee_context: None,
             attestation_generation: 1,
@@ -2057,9 +1901,10 @@ mod tests {
     }
 
     fn response_signer() -> (SigningKey, String) {
-        let key = SigningKey::from_bytes(&[7_u8; 32]);
-        let address = hex::encode(key.verifying_key().to_bytes());
-        (key, address)
+        let key = SigningKey::from_bytes((&[7_u8; 32]).into()).unwrap();
+        let encoded = key.verifying_key().to_encoded_point(false);
+        let hash = Keccak256::digest(&encoded.as_bytes()[1..]);
+        (key, format!("0x{}", hex::encode(&hash[12..])))
     }
 
     fn signed_proof(
@@ -2071,17 +1916,26 @@ mod tests {
     ) -> serde_json::Value {
         let response_hash = hex::encode(Sha256::digest(raw_body));
         let signed_text = format!("{}:{request_hash}:{response_hash}", model().upstream_model);
-        let signature_bytes = signing_key.sign(signed_text.as_bytes()).to_bytes();
+        let prefix = format!("\x19Ethereum Signed Message:\n{}", signed_text.len());
+        let mut digest = Keccak256::new();
+        digest.update(prefix.as_bytes());
+        digest.update(signed_text.as_bytes());
+        let message_hash = digest.finalize();
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_slice())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte() + 27);
         serde_json::json!({
             "provider": "near",
-            "protocol": "near-v3",
+            "protocol": "near-v2",
             "chat_id": chat_id,
             "model": model().upstream_model,
             "request_hash": request_hash,
             "response_hash": response_hash,
             "response_body_base64": general_purpose::STANDARD.encode(raw_body),
             "signed_text": signed_text,
-            "signature": hex::encode(signature_bytes),
+            "signature": format!("0x{}", hex::encode(signature_bytes)),
             "signing_address": signing_address,
         })
     }
@@ -2093,8 +1947,6 @@ mod tests {
             crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
         let sentinel = "SENTINEL-private-🌸";
         let request = InferenceRequest {
-            request_id: None,
-            thinking_mode: axiom_inference::ThinkingMode::ProviderDefault,
             model: "secure-model".to_owned(),
             messages: vec![ChatMessage::text(ChatRole::User, sentinel)],
             tools: vec![ToolDefinition {
@@ -2129,14 +1981,11 @@ mod tests {
             recipient_key,
             &response_signer().1,
             &binding(),
-            &request,
+            request,
             false,
         )
         .unwrap();
         let json = serde_json::to_string(&relay).unwrap();
-        let wire: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(wire["provider_id"], model().provider_id);
-        assert_eq!(wire["inference_encryption"], "provider_e2ee_v2");
         assert!(!json.contains(sentinel));
         assert!(!json.contains("sentinel_tool"));
         assert!(json.contains("encrypted_messages"));
@@ -2165,7 +2014,7 @@ mod tests {
             recipient_key,
             &response_signer().1,
             &binding(),
-            &request,
+            request,
             false,
         )
         .unwrap();
@@ -2198,8 +2047,6 @@ mod tests {
             crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
         let messages = [
             ChatMessage {
-                images: Vec::new(),
-                files: Vec::new(),
                 role: ChatRole::Assistant,
                 content: String::new(),
                 reasoning_content: None,
@@ -2216,8 +2063,6 @@ mod tests {
                 }],
             },
             ChatMessage {
-                images: Vec::new(),
-                files: Vec::new(),
                 role: ChatRole::Tool,
                 content: "SECRET_RESULT".to_owned(),
                 reasoning_content: None,
@@ -2332,90 +2177,6 @@ mod tests {
     }
 
     #[test]
-    fn signed_reasoning_only_completion_is_preserved_and_still_requires_its_exact_receipt() {
-        let identity = crypto::ClientIdentity::generate();
-        let client_key = crypto::Ed25519PublicKey::from_hex(&identity.public_key_hex()).unwrap();
-        let request_hash = "22".repeat(32);
-        let (signing_key, signing_address) = response_signer();
-        for reasoning in ["reasoning reached the output budget", ""] {
-            let encrypted = encrypt(client_key, reasoning.as_bytes()).unwrap();
-            let raw_body = serde_json::to_vec(&serde_json::json!({
-                "id": "reasoning-chat",
-                "model": "provider/model",
-                "choices": [{"message": {
-                    "role": "assistant", "content": null, "reasoning_content": encrypted.as_str(),
-                }, "finish_reason": "length"}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
-            }))
-            .unwrap();
-            let proof = signed_proof(
-                &raw_body,
-                &request_hash,
-                "reasoning-chat",
-                &signing_key,
-                &signing_address,
-            );
-            let completion = || RelayCompletion {
-                id: "reasoning-chat".into(),
-                model: Some("provider/model".into()),
-                encrypted_content: None,
-                encrypted_reasoning_content: Some(encrypted.clone()),
-                encrypted_refusal: None,
-                encrypted_tool_calls: Vec::new(),
-                finish_reason: "length".into(),
-                usage: RelayUsage {
-                    prompt_tokens: Some(10),
-                    completion_tokens: Some(4),
-                    total_tokens: Some(14),
-                    cached_prompt_tokens: None,
-                },
-                proof: Some(proof.clone()),
-            };
-            let result = decrypt_completion(
-                &model(),
-                &identity,
-                &request_hash,
-                &signing_address,
-                completion(),
-            );
-            if reasoning.is_empty() {
-                assert!(result.is_err());
-            } else {
-                let verified = result.unwrap();
-                assert!(verified.assistant.text.is_empty());
-                assert_eq!(verified.reasoning.as_deref(), Some(reasoning));
-                assert_eq!(verified.finish_reason, Some(FinishReason::Length));
-                assert_eq!(verified.usage.total_tokens, 14);
-            }
-            let mut missing_receipt = completion();
-            missing_receipt.proof = None;
-            assert!(
-                decrypt_completion(
-                    &model(),
-                    &identity,
-                    &request_hash,
-                    &signing_address,
-                    missing_receipt
-                )
-                .is_err()
-            );
-            let mut changed = completion();
-            changed.encrypted_reasoning_content =
-                Some(encrypt(client_key, b"different reasoning").unwrap());
-            assert!(
-                decrypt_completion(
-                    &model(),
-                    &identity,
-                    &request_hash,
-                    &signing_address,
-                    changed
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
     fn signed_receipt_rejects_every_critical_binding_mutation() {
         let raw_body = br#"{"id":"chat-1","choices":[]}"#;
         let request_hash = "44".repeat(32);
@@ -2439,7 +2200,7 @@ mod tests {
 
         for (field, replacement) in [
             ("provider", serde_json::json!("other")),
-            ("protocol", serde_json::json!("near-v2")),
+            ("protocol", serde_json::json!("near-v3")),
             ("model", serde_json::json!("other/model")),
             ("request_hash", serde_json::json!("55".repeat(32))),
             ("response_hash", serde_json::json!("66".repeat(32))),
@@ -2489,94 +2250,6 @@ mod tests {
                 &model().upstream_model,
             )
             .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn large_encrypted_stream_verifies_chunked_receipt_and_replays_in_next_request() {
-        let identity = crypto::ClientIdentity::generate();
-        let key = crypto::Ed25519PublicKey::from_hex(&identity.public_key_hex()).unwrap();
-        let text = "a".repeat(3 * 1024 * 1024);
-        let encrypted = encrypt(key, text.as_bytes()).unwrap();
-        let raw = format!(
-            "data: {}\n\ndata: [DONE]\n\n",
-            serde_json::json!({
-                "id":"chat-1", "model":"provider/model",
-                "choices":[{"delta":{"content":encrypted.as_str()},"finish_reason":"stop"}],
-                "usage":{"prompt_tokens":2,"completion_tokens":8,"total_tokens":10}
-            })
-        );
-        assert!(raw.len() > 2 * 1024 * 1024);
-        let hash = "55".repeat(32);
-        let (signer, address) = response_signer();
-        let mut proof = signed_proof(raw.as_bytes(), &hash, "chat-1", &signer, &address);
-        let encoded = proof
-            .as_object_mut()
-            .unwrap()
-            .remove("response_body_base64")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let limits = crate::SecureClientLimits::default();
-        let mut decoder = SseDecoder::new(limits.relay_sse_event_bytes, limits.relay_stream_bytes);
-        let mut state = StreamState::new(hash, address, model().upstream_model);
-        let (tx, mut rx) = mpsc::channel(16);
-        let cancel = CancellationToken::new();
-        let mut frames = vec![
-            (
-                "run.created",
-                serde_json::json!({"run_id":"r","inference_encryption":INFERENCE_ENCRYPTION}),
-            ),
-            (
-                "message.encrypted_delta",
-                serde_json::json!({"run_id":"r","sequence":1,"encrypted_delta":encrypted.as_str()}),
-            ),
-        ];
-        for (index, chunk) in encoded.as_bytes().chunks(256 * 1024).enumerate() {
-            frames.push(("message.proof_chunk", serde_json::json!({"run_id":"r","index":index,"data":std::str::from_utf8(chunk).unwrap()})));
-        }
-        proof["response_body_chunk_count"] = serde_json::json!(encoded.len().div_ceil(256 * 1024));
-        frames.push((
-            "message.encrypted_completed",
-            serde_json::json!({"run_id":"r","finish_reason":"stop",
-            "usage":{"prompt_tokens":2,"completion_tokens":8,"total_tokens":10},"proof":proof}),
-        ));
-        frames.push(("run.completed", serde_json::json!({"run_id":"r"})));
-        for (name, value) in frames {
-            let frame = format!("event: {name}\ndata: {value}\n\n");
-            for chunk in frame.as_bytes().chunks(8191) {
-                for event in decoder.feed(chunk).unwrap() {
-                    state.accept(event, &identity, &tx, &cancel).await.unwrap();
-                }
-            }
-        }
-        decoder.finish().unwrap();
-        let (response, _) = state.finish().unwrap();
-        assert_eq!(response.assistant.text, text);
-        assert!(rx.try_recv().is_ok());
-        let request = InferenceRequest::streaming(
-            "secure-model",
-            vec![
-                ChatMessage::text(ChatRole::Assistant, response.assistant.text),
-                ChatMessage::text(ChatRole::User, "Continue."),
-            ],
-            vec![],
-        );
-        request.validate().unwrap();
-        let (_, relay, _) = build_request(
-            &model(),
-            key,
-            &response_signer().1,
-            &binding(),
-            &request,
-            true,
-        )
-        .unwrap();
-        assert!(
-            relay
-                .serialize_bounded(limits.serialized_relay_request_bytes)
-                .is_ok()
         );
     }
 
@@ -2743,11 +2416,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(
-            output.try_recv(),
-            Ok(ProviderEvent::TextDelta(value)) if value == "working "
-        ));
-        assert!(output.try_recv().is_err(), "tools must await verification");
+        assert!(
+            output.try_recv().is_err(),
+            "plaintext escaped before receipt"
+        );
         state
             .accept(
                 RelayEvent::Delta(DeltaPayload {
@@ -2776,11 +2448,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(
-            output.try_recv(),
-            Ok(ProviderEvent::TextDelta(value)) if value == "done"
-        ));
-        assert!(output.try_recv().is_err(), "tools must await verification");
+        assert!(
+            output.try_recv().is_err(),
+            "plaintext escaped before receipt"
+        );
         state
             .accept(
                 RelayEvent::MessageCompleted(CompletedPayload {
@@ -2829,7 +2500,15 @@ mod tests {
             .unwrap();
         assert!(matches!(
             output.recv().await,
+            Some(ProviderEvent::TextDelta(value)) if value == "working "
+        ));
+        assert!(matches!(
+            output.recv().await,
             Some(ProviderEvent::ToolCallDelta(_))
+        ));
+        assert!(matches!(
+            output.recv().await,
+            Some(ProviderEvent::TextDelta(value)) if value == "done"
         ));
         assert!(matches!(
             output.recv().await,
@@ -2850,7 +2529,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_or_missing_receipt_never_completes_provisional_output() {
+    async fn invalid_or_missing_receipt_never_releases_decrypted_deltas() {
         let identity = crypto::ClientIdentity::generate();
         let client_key = crypto::Ed25519PublicKey::from_hex(&identity.public_key_hex()).unwrap();
         let (sink, mut output) = mpsc::channel(8);
@@ -2898,10 +2577,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(
-            output.try_recv(),
-            Ok(ProviderEvent::TextDelta(value)) if value == "provisional secret"
-        ));
         assert!(output.try_recv().is_err());
 
         let missing = state
@@ -2935,6 +2610,9 @@ mod tests {
         invalid_state.response_id = Some("chat-1".to_owned());
         invalid_state.next_sequence = Some(2);
         invalid_state.text = "provisional secret".to_owned();
+        invalid_state
+            .verified_events
+            .push(ProviderEvent::TextDelta("provisional secret".to_owned()));
         let invalid = invalid_state
             .accept(
                 RelayEvent::MessageCompleted(CompletedPayload {
@@ -2953,7 +2631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interruption_and_cancellation_never_complete_provisional_output() {
+    async fn interruption_and_cancellation_do_not_release_buffered_plaintext() {
         let identity = crypto::ClientIdentity::generate();
         let client_key = crypto::Ed25519PublicKey::from_hex(&identity.public_key_hex()).unwrap();
         let (sink, mut output) = mpsc::channel(8);
@@ -2965,7 +2643,7 @@ mod tests {
             .accept(
                 RelayEvent::Delta(DeltaPayload {
                     run_id: "run-1".to_owned(),
-                    encrypted_delta: Some(encrypt(client_key, b"partial answer").unwrap()),
+                    encrypted_delta: Some(encrypt(client_key, b"never publish").unwrap()),
                     encrypted_reasoning_delta: None,
                     encrypted_refusal_delta: None,
                     encrypted_tool_calls: Vec::new(),
@@ -2981,10 +2659,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(
-            output.try_recv(),
-            Ok(ProviderEvent::TextDelta(value)) if value == "partial answer"
-        ));
         assert!(
             state.finish().is_err(),
             "an interrupted stream was accepted"

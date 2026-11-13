@@ -27,7 +27,7 @@ use crate::{
 };
 
 pub(crate) const PROVIDER_ID: &str = "axiom-test-fixture";
-const E2EE_PROTOCOL: &str = "near-v3";
+const E2EE_PROTOCOL: &str = "near-v2";
 const ENCRYPTION_VERSION: u16 = 2;
 const ATTESTATION_PROTOCOL: &str = "signed-test-fixture-v1";
 const SIGNING_SEED: [u8; 32] = [0xA5; 32];
@@ -63,17 +63,6 @@ impl SecureProvider for FixtureProvider {
             ));
         }
         Ok(())
-    }
-
-    fn supports_contract(
-        &self,
-        e2ee_protocol: &str,
-        e2ee_encryption_version: u16,
-        attestation_protocol: &str,
-    ) -> bool {
-        e2ee_protocol == E2EE_PROTOCOL
-            && e2ee_encryption_version == ENCRYPTION_VERSION
-            && attestation_protocol == ATTESTATION_PROTOCOL
     }
 
     fn populate_capabilities(&self, model: &mut ModelInfo) {
@@ -142,7 +131,6 @@ impl VerifiedSession for FixtureSession {
                 model_key: self.model_key,
                 response_signing_address: &self.response_signing_address,
                 binding: &self.binding,
-                worker_session_id: "00000000000000000000000000000001",
             },
             request,
             &cancellation,
@@ -164,7 +152,6 @@ impl VerifiedSession for FixtureSession {
                 model_key: self.model_key,
                 response_signing_address: &self.response_signing_address,
                 binding: &self.binding,
-                worker_session_id: "00000000000000000000000000000001",
             },
             request,
             events,
@@ -291,6 +278,8 @@ async fn verify_fixture_evidence(
                 },
             ],
             workload_manifest: None,
+            workload_identity_allowlist_configured: false,
+            approved_workload_identity: false,
         },
     ))
 }

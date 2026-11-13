@@ -124,12 +124,15 @@ impl AcpProcess {
             command.env("AXIOM_PERMISSION_PROFILE", "full_access");
         }
         if let Some(base_url) = runner.strip_prefix("unreachable-provider:") {
-            command.env("AXIOM_BASE_URL", base_url);
+            command
+                .env("AXIOM_BASE_URL", base_url)
+                .env("AXIOMCLI_CREDENTIAL_STORE", "file");
         }
         if let Some(base_url) = runner.strip_prefix("blocked-auth:") {
             command
                 .env("AXIOM_BASE_URL", base_url)
-                .env("AXIOM_API_KEY", "axm_0123456789abcdef");
+                .env("AXIOM_API_KEY", "axm_0123456789abcdef")
+                .env("AXIOMCLI_CREDENTIAL_STORE", "file");
         }
         let mut child = command.spawn().expect("spawn ACP");
         let stdin = child.stdin.take().expect("stdin");
@@ -185,18 +188,16 @@ impl AcpProcess {
         self.initialize_with_capabilities(json!({
             "_meta": {
                 "axiom": {
-                    "protocolVersion": "0.2",
+                    "protocolVersion": "0.1",
                     "features": {
                         "desktopChat": 1,
                         "threadCatalog": 1,
-                        "timeline": 2,
+                        "timeline": 1,
                         "modelCatalog": 1,
                         "profilePreferences": 1,
                         "collections": 1,
-                        "account": 2,
-                        "billing": 2,
-                        "usage": 1,
-                        "securityEvidence": 3,
+                        "account": 1,
+                        "securityEvidence": 1,
                         "compaction": 1,
                         "activity": 1
                     }
@@ -284,7 +285,7 @@ async fn desktop_bootstrap_is_local_and_does_not_require_provider_or_auth() {
     assert!(bootstrap.get("error").is_none(), "{bootstrap}");
     assert_eq!(bootstrap["result"]["frontend"], "desktop-chat");
     assert_eq!(bootstrap["result"]["permissionProfile"], "web");
-    assert_eq!(bootstrap["result"]["newThreadSettings"]["model"], "auto");
+    assert_eq!(bootstrap["result"]["newThreadSettings"]["model"], "glm-5-2");
     assert_eq!(
         bootstrap["result"]["newThreadSettings"]["thinkingLevel"],
         "medium"
@@ -357,20 +358,6 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
         models["result"]["models"][0]["shortLabel"],
         "alternate-model"
     );
-    assert_eq!(models["result"]["models"][0]["contextWindowTokens"], 8192);
-    assert_eq!(models["result"]["models"][0]["maxOutputTokens"], 2048);
-    assert_eq!(
-        models["result"]["models"][0]["inputPriceMicrousdPerMillionTokens"],
-        440_000
-    );
-    assert_eq!(
-        models["result"]["models"][0]["outputPriceMicrousdPerMillionTokens"],
-        1_320_000
-    );
-    assert_eq!(
-        models["result"]["models"][0]["autoCompactThresholdTokens"],
-        6963
-    );
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":4,"method":"session/set_config_option",
@@ -441,63 +428,18 @@ async fn axiom_extension_negotiates_and_exposes_typed_settings_security_and_comp
         "params":{"sessionId":session,"prompt":[{"type":"text","text":"desktop title notification"}]}
     }))
     .await;
-    let mut saw_title_notification = false;
+    let mut prompt_wire = String::new();
     loop {
         let value = acp.read().await;
-        saw_title_notification |= value.to_string().contains("title_changed")
-            || value.to_string().contains("session_info_update");
+        prompt_wire.push_str(&value.to_string());
         if value.get("id").and_then(Value::as_i64) == Some(11) {
             break;
         }
     }
     assert!(
-        saw_title_notification,
-        "initial titles must be published before the prompt completes"
+        prompt_wire.contains("title_changed") || prompt_wire.contains("session_info_update"),
+        "generated titles must be published without polling"
     );
-    acp.close().await;
-}
-
-#[tokio::test]
-async fn generated_title_arrives_after_the_first_prompt_and_survives_reload() {
-    let workspace = tempfile::tempdir().unwrap();
-    let mut acp = AcpProcess::spawn("echo");
-    acp.initialize_extension().await;
-    let session = acp.new_session(2, workspace.path()).await;
-    acp.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"Please fix my login redirect"}]}})).await;
-    let mut completed = false;
-    let mut saw_fallback = false;
-    loop {
-        let value = acp.read().await;
-        if value["id"] == 3 {
-            assert_eq!(value["result"]["stopReason"], "end_turn");
-            completed = true;
-        }
-        if value["params"]["update"]["sessionUpdate"] == "session_info_update" {
-            let title = value["params"]["update"]["title"].as_str().unwrap();
-            if title == "Please fix my login redirect" {
-                saw_fallback = true;
-            }
-            if title == "Generated conversation title" {
-                assert!(saw_fallback);
-                assert!(
-                    completed,
-                    "title work must outlive a successfully completed prompt"
-                );
-                break;
-            }
-        }
-    }
-    acp.send(&json!({"jsonrpc":"2.0","id":4,"method":"_axiom/thread/list","params":{"limit":20}}))
-        .await;
-    let listed = acp.response(4).await;
-    let thread = listed["result"]["threads"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|thread| thread["threadId"] == session)
-        .unwrap();
-    assert_eq!(thread["title"], "Generated conversation title");
     acp.close().await;
 }
 
@@ -550,10 +492,7 @@ async fn model_changes_reconcile_disjoint_reasoning_capabilities_atomically() {
     .await;
     let retained = acp.response(6).await;
     assert_eq!(retained["result"]["preferences"]["model"], "grok-code");
-    assert_eq!(
-        retained["result"]["preferences"]["thinkingLevel"],
-        "provider_default"
-    );
+    assert_eq!(retained["result"]["preferences"]["thinkingLevel"], "xhigh");
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":7,"method":"session/set_config_option",
@@ -695,8 +634,6 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
         .path()
         .join("data")
         .join("axiom")
-        .join("accounts")
-        .join("local-test-account")
         .join("cli")
         .join("state.sqlite3");
 
@@ -719,9 +656,9 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
         .as_array()
         .expect("new-session config options");
     assert!(
-        options.iter().any(|option| {
-            option["id"] == "model" && option["currentValue"] == "alternate-model"
-        })
+        options
+            .iter()
+            .any(|option| { option["id"] == "model" && option["currentValue"] == "glm-5-2" })
     );
     retired
         .send(&json!({
@@ -729,10 +666,7 @@ async fn new_acp_sessions_reconcile_stale_catalog_preferences_before_use() {
         }))
         .await;
     let corrected = retired.response(3).await;
-    assert_eq!(
-        corrected["result"]["preferences"]["model"],
-        "alternate-model"
-    );
+    assert_eq!(corrected["result"]["preferences"]["model"], "glm-5-2");
     assert_eq!(corrected["result"]["preferences"]["thinkingLevel"], "high");
     retired.close().await;
 
@@ -785,37 +719,12 @@ async fn axiom_extension_is_silent_until_negotiated_and_rejects_custom_requests(
 }
 
 #[tokio::test]
-async fn gift_redemption_requires_billing_three_and_an_interactive_account() {
-    for version in [2, 3] {
-        let mut acp = AcpProcess::spawn("echo");
-        acp.initialize_with_capabilities(json!({"_meta": {"axiom": {
-            "protocolVersion": "0.2", "features": {"billing": version}
-        }}}))
-        .await;
-        acp.send(
-            &json!({"jsonrpc":"2.0", "id":2, "method":"_axiom/billing/redeem_gift_code",
-            "params":{"code":"AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"}}),
-        )
-        .await;
-        let response = acp.response(2).await;
-        assert!(response.get("error").is_some());
-        if version == 2 {
-            assert_eq!(response["error"]["code"], -32601);
-        } else {
-            assert_ne!(response["error"]["code"], -32601);
-        }
-        assert!(!response.to_string().contains("AXG-AAAA"));
-        acp.close().await;
-    }
-}
-
-#[tokio::test]
 async fn axiom_extension_negotiates_each_feature_independently() {
     let mut acp = AcpProcess::spawn("echo");
     acp.initialize_with_capabilities(json!({
         "_meta": {
             "axiom": {
-                "protocolVersion": "0.2",
+                "protocolVersion": "0.1",
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 1,
@@ -824,7 +733,6 @@ async fn axiom_extension_negotiates_each_feature_independently() {
                     "profilePreferences": 0,
                     "collections": 0,
                     "account": 0,
-                    "billing": 1,
                     "securityEvidence": 0,
                     "compaction": 0,
                     "activity": 0
@@ -847,76 +755,6 @@ async fn axiom_extension_negotiates_each_feature_independently() {
     let rejected = acp.response(3).await;
     assert_eq!(rejected["error"]["code"], -32601);
     assert_eq!(rejected["error"]["data"]["code"], "unsupported_feature");
-
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":4,"method":"_axiom/billing/status","params":{}
-    }))
-    .await;
-    let rejected_billing = acp.response(4).await;
-    assert_eq!(rejected_billing["error"]["code"], -32601);
-    assert_eq!(
-        rejected_billing["error"]["data"]["code"],
-        "unsupported_feature"
-    );
-    acp.close().await;
-}
-
-#[tokio::test]
-async fn billing_extension_requires_native_account_and_rejects_removed_invoice_methods() {
-    let mut acp = AcpProcess::spawn("echo");
-    acp.initialize_extension().await;
-
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":2,"method":"_axiom/billing/status","params":{}
-    }))
-    .await;
-    let signed_out = acp.response(2).await;
-    assert!(signed_out.get("error").is_some(), "{signed_out}");
-    assert!(!signed_out.to_string().contains("axm_"), "{signed_out}");
-
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":3,"method":"_axiom/billing/invoice_create",
-        "params":{"amountUsdCents":0,"clientRequestId":"../bad"}
-    }))
-    .await;
-    let invalid_create = acp.response(3).await;
-    assert_eq!(invalid_create["error"]["code"], -32601, "{invalid_create}");
-
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":4,"method":"_axiom/billing/invoice_status",
-        "params":{"invoiceId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
-    }))
-    .await;
-    let invalid_id = acp.response(4).await;
-    assert_eq!(invalid_id["error"]["code"], -32601, "{invalid_id}");
-
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":5,"method":"_axiom/thread/list","params":{}
-    }))
-    .await;
-    assert!(acp.response(5).await.get("result").is_some());
-    acp.close().await;
-}
-
-#[tokio::test]
-async fn usage_extension_requires_negotiation_and_a_native_account() {
-    let mut acp = AcpProcess::spawn("echo");
-    acp.initialize().await;
-    acp.send(&json!({"jsonrpc":"2.0","id":2,"method":"_axiom/usage/summary","params":{}}))
-        .await;
-    assert_eq!(
-        acp.response(2).await["error"]["data"]["code"],
-        "unsupported_feature"
-    );
-    acp.close().await;
-
-    let mut acp = AcpProcess::spawn("echo");
-    acp.initialize_extension().await;
-    acp.send(&json!({"jsonrpc":"2.0","id":2,"method":"_axiom/usage/summary","params":{}}))
-        .await;
-    let response = acp.response(2).await;
-    assert!(response.get("error").is_some(), "{response}");
-    assert_ne!(response["error"]["data"]["code"], "unsupported_feature");
     acp.close().await;
 }
 
@@ -1043,15 +881,13 @@ async fn resumed_acp_sessions_restore_model_thinking_and_permissions() {
 }
 
 #[tokio::test]
-async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reasoning_support() {
+async fn resumed_acp_sessions_reconcile_retired_models_and_changed_reasoning_support() {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("shared state");
     let database = state
         .path()
         .join("data")
         .join("axiom")
-        .join("accounts")
-        .join("local-test-account")
         .join("cli")
         .join("state.sqlite3");
     let (retired_id, changed_reasoning_id) = {
@@ -1076,8 +912,8 @@ async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reason
     let mut acp = AcpProcess::spawn_with_state("echo", state.path());
     acp.initialize_extension().await;
     for (request_id, session_id, expected_model, expected_thinking) in [
-        (2, &retired_id, "retired-model", None),
-        (3, &changed_reasoning_id, "medium-only", Some("medium")),
+        (2, &retired_id, "glm-5-2", "high"),
+        (3, &changed_reasoning_id, "medium-only", "medium"),
     ] {
         acp.send(&json!({
             "jsonrpc":"2.0","id":request_id,"method":"session/load",
@@ -1097,24 +933,17 @@ async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reason
                 option["id"] == "model" && option["currentValue"] == expected_model
             })
         );
-        if let Some(expected_thinking) = expected_thinking {
-            assert!(options.iter().any(|option| {
-                option["id"] == "thinking" && option["currentValue"] == expected_thinking
-            }));
-        } else {
-            assert!(options.iter().all(|option| option["id"] != "thinking"));
-        }
+        assert!(options.iter().any(|option| {
+            option["id"] == "thinking" && option["currentValue"] == expected_thinking
+        }));
     }
     acp.close().await;
 
-    let store = SessionStore::open(&database).expect("reopen preserved state");
+    let store = SessionStore::open(&database).expect("reopen corrected state");
     let retired = store
         .load_recovering(&retired_id)
         .expect("load retired-model correction");
-    assert_eq!(
-        model_for_resume(&retired.events, "fallback"),
-        "retired-model"
-    );
+    assert_eq!(model_for_resume(&retired.events, "fallback"), "glm-5-2");
     assert_eq!(
         thinking_for_resume(&retired.events, ThinkingLevel::Medium),
         ThinkingLevel::High
@@ -1130,19 +959,6 @@ async fn resumed_acp_sessions_retain_retired_models_and_reconcile_changed_reason
         thinking_for_resume(&changed_reasoning.events, ThinkingLevel::ExtraHigh),
         ThinkingLevel::Medium
     );
-    drop(store);
-    let mut replacement = AcpProcess::spawn_with_state("echo", state.path());
-    replacement.initialize_extension().await;
-    replacement
-        .send(&json!({"jsonrpc":"2.0","id":2,"method":"session/load",
-        "params":{"sessionId":retired_id.to_string(),"cwd":workspace.path(),"mcpServers":[]}}))
-        .await;
-    assert!(replacement.response(2).await.get("result").is_some());
-    replacement.send(&json!({"jsonrpc":"2.0","id":3,"method":"session/set_config_option",
-        "params":{"sessionId":retired_id.to_string(),"configId":"model","value":"alternate-model"}})).await;
-    let selected = replacement.response(3).await;
-    assert!(selected.get("error").is_none(), "{selected}");
-    replacement.close().await;
 }
 
 #[tokio::test]
@@ -1174,11 +990,7 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
             "account",
             "security",
             "refresh",
-            "help",
-            "balance",
-            "topup",
-            "redeem",
-            "update"
+            "help"
         ]
     );
     let model_command = commands
@@ -1229,7 +1041,7 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
         }
     }
     assert!(transcript.contains("session mode selector"));
-    assert!(transcript.contains("session mode selector to change Tools permissions"));
+    assert!(transcript.contains("Crypto permissions are coming soon"));
     assert!(!transcript.contains("Echo:"));
 
     acp.send(&json!({
@@ -1309,20 +1121,6 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
     }
     assert!(refreshed.contains("Attestation refreshed"));
     assert!(!refreshed.contains("Echo:"));
-    acp.send(&json!({"jsonrpc":"2.0","id":9,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/update"}]}}))
-        .await;
-    let mut update_help = String::new();
-    loop {
-        let value = acp.read().await;
-        update_help.push_str(&value.to_string());
-        if value.get("id").and_then(Value::as_i64) == Some(9) {
-            assert_eq!(value["result"]["stopReason"], "end_turn");
-            break;
-        }
-    }
-    assert!(update_help.contains("axiomcli update"));
-    assert!(!update_help.contains("Echo:"));
     acp.close().await;
 }
 
@@ -1342,13 +1140,9 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     }))
     .await;
     let mut transcript = String::new();
-    let mut updates = Vec::new();
     loop {
         let value = acp.read().await;
         transcript.push_str(&value.to_string());
-        if value["method"] == "session/update" {
-            updates.push(value["params"]["update"].clone());
-        }
         if value.get("id").and_then(Value::as_i64) == Some(3) {
             assert_eq!(value["result"]["stopReason"], "end_turn");
             break;
@@ -1360,37 +1154,19 @@ async fn workspace_edit_reaches_the_expected_acp_semantics_and_final_workspace()
     );
     assert!(transcript.contains("replace_text"));
     assert!(transcript.contains("frontend-edit"));
-    let diff_update = updates
-        .iter()
-        .find(|update| {
-            update["sessionUpdate"] == "tool_call_update"
-                && update["toolCallId"] == "frontend-edit"
-                && update["content"][0]["type"] == "diff"
-        })
-        .expect("workspace edit diff update");
-    let content = diff_update["content"].as_array().expect("diff content");
-    assert_eq!(content.len(), 1, "one edited file");
-    let diff = &content[0];
-    assert_eq!(diff["oldText"], "before\n");
-    assert_eq!(diff["newText"], "after\n");
-    let locations = diff_update["locations"].as_array().expect("diff locations");
-    assert_eq!(locations.len(), 1, "one edited file location");
-    // Decode JSON escapes (including Windows separators) before normalizing
-    // filesystem aliases such as macOS /var and /private/var.
-    let expected_path = workspace
-        .path()
-        .join("frontend.txt")
-        .canonicalize()
-        .expect("canonical edited file");
-    for (kind, path) in [("diff", &diff["path"]), ("location", &locations[0]["path"])] {
-        let path = Path::new(path.as_str().expect("file path"));
-        assert!(path.is_absolute(), "{kind} path must be absolute: {path:?}");
-        assert_eq!(
-            path.canonicalize().expect("canonical ACP file path"),
-            expected_path,
-            "{kind} path must identify the edited file"
-        );
-    }
+    assert!(transcript.contains("\"type\":\"diff\""));
+    assert!(transcript.contains("\"oldText\":\"before\\n\""));
+    assert!(transcript.contains("\"newText\":\"after\\n\""));
+    assert!(transcript.contains("\"locations\""));
+    assert!(
+        transcript.contains(
+            workspace
+                .path()
+                .join("frontend.txt")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
     assert!(transcript.contains("Updated frontend.txt through the shared turn contract."));
     acp.close().await;
 }
@@ -1515,16 +1291,15 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
     acp.initialize_with_capabilities(json!({
         "_meta": {
             "axiom": {
-                "protocolVersion": "0.2",
+                "protocolVersion": "0.1",
                 "features": {
                     "desktopChat": 0,
                     "threadCatalog": 0,
-                    "timeline": 2,
+                    "timeline": 1,
                     "modelCatalog": 0,
                     "profilePreferences": 0,
                     "collections": 0,
                     "account": 0,
-                    "billing": 1,
                     "securityEvidence": 0,
                     "compaction": 0,
                     "activity": 0
@@ -1825,32 +1600,6 @@ async fn malformed_unknown_and_duplicate_ids_are_bounded() {
     let second = acp.response(9).await;
     assert!(first.get("result").is_some());
     assert!(second.get("result").is_some() || second.get("error").is_some());
-    acp.close().await;
-}
-
-#[tokio::test]
-async fn cancelled_permission_response_cancels_the_prompt_without_a_notification() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let mut acp = AcpProcess::spawn("approval");
-    acp.initialize().await;
-    let session = acp.new_session(2, workspace.path()).await;
-    acp.send(&json!({
-        "jsonrpc":"2.0","id":3,"method":"session/prompt",
-        "params":{"sessionId":session,"prompt":[{"type":"text","text":"wait for approval"}]}
-    }))
-    .await;
-    loop {
-        let value = acp.read().await;
-        if value["method"] == "session/request_permission" {
-            acp.send(&json!({
-                "jsonrpc":"2.0","id":value["id"],
-                "result":{"outcome":{"outcome":"cancelled"}}
-            }))
-            .await;
-            break;
-        }
-    }
-    assert_eq!(acp.response(3).await["result"]["stopReason"], "cancelled");
     acp.close().await;
 }
 

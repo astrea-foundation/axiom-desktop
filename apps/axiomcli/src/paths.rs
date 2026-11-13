@@ -1,7 +1,6 @@
 //! Platform paths shared by Axiom's command-line and desktop front ends.
 
 use std::{
-    ffi::OsString,
     fmt, fs,
     path::{Path, PathBuf},
 };
@@ -41,21 +40,8 @@ impl AxiomPaths {
             AxiomError::Storage("platform config and data directories are unavailable".into())
         })?;
         Ok(Self {
-            // Honor explicit XDG roots on every OS. Besides being useful for
-            // portable CLI installations, this keeps subprocess tests away
-            // from the real macOS Keychain-adjacent and Windows profile data.
-            config_root: platform_root_override(
-                std::env::var_os("XDG_CONFIG_HOME"),
-                base.config_dir(),
-                "XDG_CONFIG_HOME",
-            )?
-            .join("axiom"),
-            data_root: platform_root_override(
-                std::env::var_os("XDG_DATA_HOME"),
-                base.data_local_dir(),
-                "XDG_DATA_HOME",
-            )?
-            .join("axiom"),
+            config_root: base.config_dir().join("axiom"),
+            data_root: base.data_local_dir().join("axiom"),
         })
     }
 
@@ -95,30 +81,22 @@ impl AxiomPaths {
         self.frontend_config_dir(frontend).join("config.toml")
     }
 
-    pub fn account_data_dir(&self, account_id: &str) -> Result<PathBuf> {
-        validate_account_id(account_id)?;
-        Ok(self.data_root.join("accounts").join(account_id))
-    }
-
-    pub fn account_frontend_data_dir(
-        &self,
-        account_id: &str,
-        frontend: FrontendKind,
-    ) -> Result<PathBuf> {
-        Ok(self.account_data_dir(account_id)?.join(match frontend {
+    #[must_use]
+    pub fn frontend_data_dir(&self, frontend: FrontendKind) -> PathBuf {
+        self.data_root.join(match frontend {
             FrontendKind::Cli => "cli",
             FrontendKind::DesktopChat => "desktop",
-        }))
+        })
     }
 
-    pub fn account_state_database(
-        &self,
-        account_id: &str,
-        frontend: FrontendKind,
-    ) -> Result<PathBuf> {
-        Ok(self
-            .account_frontend_data_dir(account_id, frontend)?
-            .join("state.sqlite3"))
+    #[must_use]
+    pub fn state_database(&self, frontend: FrontendKind) -> PathBuf {
+        self.frontend_data_dir(frontend).join("state.sqlite3")
+    }
+
+    #[must_use]
+    pub fn credentials_dir(&self) -> PathBuf {
+        self.data_root.join("shared").join("credentials")
     }
 
     #[must_use]
@@ -134,12 +112,12 @@ impl AxiomPaths {
         self.data_root.join("shared").join("trust-policy.json")
     }
 
-    /// Create and resolve the account-isolated workspace used by Desktop.
-    pub fn account_desktop_chat_cwd(&self, account_id: &str) -> Result<PathBuf> {
-        let desktop_root = self.account_frontend_data_dir(account_id, FrontendKind::DesktopChat)?;
-        prepare_owned_directory(&desktop_root)?;
+    /// Create and resolve the only workspace used by the desktop chat profile.
+    pub fn desktop_chat_cwd(&self) -> Result<PathBuf> {
+        let desktop_root = self.frontend_data_dir(FrontendKind::DesktopChat);
         let chat = desktop_root.join("chat");
-        prepare_owned_directory(&chat)?;
+        fs::create_dir_all(&chat)?;
+        ensure_directory(&chat)?;
         let root = desktop_root.canonicalize()?;
         let chat = chat.canonicalize()?;
         if !chat.starts_with(&root) {
@@ -148,37 +126,13 @@ impl AxiomPaths {
         Ok(chat)
     }
 
-    /// Create a separate application-owned workspace for exactly one thread.
-    pub fn account_desktop_thread_cwd(
-        &self,
-        account_id: &str,
-        thread_id: &crate::app::SessionId,
-    ) -> Result<PathBuf> {
-        let root = self.account_desktop_chat_cwd(account_id)?;
-        let directory = root.join(thread_id.to_string());
-        prepare_owned_directory(&directory)?;
-        let directory = directory.canonicalize()?;
-        if directory.parent() != Some(root.as_path()) {
-            return Err(AxiomError::OutsideWorkspace(directory));
-        }
-        Ok(directory)
-    }
-
-    /// Explicitly reset exactly one account/frontend database while the app is stopped.
-    pub fn reset_account_frontend_state(
-        &self,
-        account_id: &str,
-        frontend: FrontendKind,
-    ) -> Result<Vec<PathBuf>> {
-        let directory = self.account_frontend_data_dir(account_id, frontend)?;
-        if !directory.exists() {
-            return Ok(Vec::new());
-        }
-        ensure_directory(&self.data_root)?;
-        ensure_directory(&self.data_root.join("accounts"))?;
-        ensure_directory(&self.account_data_dir(account_id)?)?;
+    /// Explicitly delete only one frontend's development state database and
+    /// `SQLite` sidecars. Shared identity, credentials, trust policy, config,
+    /// and the desktop chat directory are never included.
+    pub fn reset_frontend_state(&self, frontend: FrontendKind) -> Result<Vec<PathBuf>> {
+        let directory = self.frontend_data_dir(frontend);
         ensure_directory(&directory)?;
-        let database = directory.join("state.sqlite3");
+        let database = self.state_database(frontend);
         let mut removed = Vec::new();
         for path in [
             database.clone(),
@@ -205,70 +159,49 @@ impl AxiomPaths {
     }
 
     pub fn prepare(&self) -> Result<()> {
-        prepare_owned_directory(&self.config_root)?;
-        prepare_owned_directory(&self.frontend_config_dir(FrontendKind::Cli))?;
-        prepare_owned_directory(&self.frontend_config_dir(FrontendKind::DesktopChat))?;
-        prepare_owned_directory(&self.data_root)?;
+        fs::create_dir_all(&self.config_root)?;
+        ensure_directory(&self.config_root)?;
+        fs::create_dir_all(self.frontend_config_dir(FrontendKind::Cli))?;
+        fs::create_dir_all(self.frontend_config_dir(FrontendKind::DesktopChat))?;
+        ensure_directory(&self.frontend_config_dir(FrontendKind::Cli))?;
+        ensure_directory(&self.frontend_config_dir(FrontendKind::DesktopChat))?;
+        fs::create_dir_all(&self.data_root)?;
+        ensure_directory(&self.data_root)?;
+        fs::create_dir_all(self.frontend_data_dir(FrontendKind::Cli))?;
+        fs::create_dir_all(self.frontend_data_dir(FrontendKind::DesktopChat))?;
+        ensure_directory(&self.frontend_data_dir(FrontendKind::Cli))?;
+        ensure_directory(&self.frontend_data_dir(FrontendKind::DesktopChat))?;
+        let desktop_chat = self
+            .frontend_data_dir(FrontendKind::DesktopChat)
+            .join("chat");
+        fs::create_dir_all(&desktop_chat)?;
+        ensure_directory(&desktop_chat)?;
         let shared = self.data_root.join("shared");
-        prepare_owned_directory(&shared)?;
-        prepare_owned_directory(&self.data_root.join("accounts"))?;
+        fs::create_dir_all(&shared)?;
+        ensure_directory(&shared)?;
+        fs::create_dir_all(self.credentials_dir())?;
+        ensure_directory(&self.credentials_dir())?;
+        set_owner_directory(&self.data_root)?;
+        set_owner_directory(&self.frontend_data_dir(FrontendKind::Cli))?;
+        set_owner_directory(&self.frontend_data_dir(FrontendKind::DesktopChat))?;
+        set_owner_directory(&desktop_chat)?;
+        set_owner_directory(&self.credentials_dir())?;
         if let Some(parent) = self.identity_path().parent() {
-            prepare_owned_directory(parent)?;
+            fs::create_dir_all(parent)?;
+            ensure_directory(parent)?;
+            set_owner_directory(parent)?;
         }
-        for path in [self.identity_path(), self.trust_policy_cache_path()] {
+        for path in [
+            self.state_database(FrontendKind::Cli),
+            self.state_database(FrontendKind::DesktopChat),
+            self.credentials_dir().join("api-key"),
+            self.identity_path(),
+            self.trust_policy_cache_path(),
+        ] {
             ensure_regular_file_if_present(&path)?;
         }
         Ok(())
     }
-
-    pub fn prepare_account(&self, account_id: &str) -> Result<()> {
-        let account = self.account_data_dir(account_id)?;
-        prepare_owned_directory(&account)?;
-        for frontend in [FrontendKind::Cli, FrontendKind::DesktopChat] {
-            let directory = self.account_frontend_data_dir(account_id, frontend)?;
-            prepare_owned_directory(&directory)?;
-            ensure_regular_file_if_present(&directory.join("state.sqlite3"))?;
-        }
-        Ok(())
-    }
-}
-
-fn platform_root_override(
-    value: Option<OsString>,
-    default: &Path,
-    variable: &str,
-) -> Result<PathBuf> {
-    let Some(value) = value else {
-        return Ok(default.to_path_buf());
-    };
-    let path = PathBuf::from(value);
-    if !path.is_absolute() {
-        return Err(AxiomError::Storage(format!(
-            "{variable} must be an absolute path when set"
-        )));
-    }
-    Ok(path)
-}
-
-fn validate_account_id(account_id: &str) -> Result<()> {
-    if account_id.is_empty()
-        || account_id.len() > 128
-        || !account_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(AxiomError::Storage(
-            "account identifier is not safe for account-scoped local storage".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn prepare_owned_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)?;
-    ensure_directory(path)?;
-    set_owner_directory(path)?;
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -312,34 +245,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn portable_root_overrides_require_absolute_paths() {
-        let default = std::env::current_dir().expect("absolute current directory");
-        let isolated = tempfile::tempdir().expect("isolated absolute root");
-        assert_eq!(
-            platform_root_override(None, &default, "TEST_ROOT").expect("default"),
-            default
-        );
-        assert_eq!(
-            platform_root_override(
-                Some(isolated.path().as_os_str().to_owned()),
-                &default,
-                "TEST_ROOT",
-            )
-            .expect("absolute override"),
-            isolated.path()
-        );
-        assert!(
-            platform_root_override(
-                Some(OsString::from("relative/config")),
-                &default,
-                "TEST_ROOT",
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn account_and_frontend_paths_are_strictly_isolated() {
+    fn frontends_share_a_root_but_not_state_databases() {
         let paths =
             AxiomPaths::from_roots(PathBuf::from("/config/axiom"), PathBuf::from("/data/axiom"));
         assert_eq!(
@@ -354,69 +260,26 @@ mod tests {
             paths.frontend_config_path(FrontendKind::DesktopChat),
             PathBuf::from("/config/axiom/desktop/config.toml")
         );
-        let cli_a = paths
-            .account_state_database("account-a", FrontendKind::Cli)
-            .expect("account A CLI path");
-        let desktop_a = paths
-            .account_state_database("account-a", FrontendKind::DesktopChat)
-            .expect("account A desktop path");
-        let desktop_b = paths
-            .account_state_database("account-b", FrontendKind::DesktopChat)
-            .expect("account B desktop path");
-        assert_ne!(cli_a, desktop_a);
-        assert_ne!(desktop_a, desktop_b);
-        assert_eq!(
-            desktop_a,
-            PathBuf::from("/data/axiom/accounts/account-a/desktop/state.sqlite3")
+        assert_ne!(
+            paths.state_database(FrontendKind::Cli),
+            paths.state_database(FrontendKind::DesktopChat)
         );
         assert!(paths.identity_path().starts_with(paths.data_root()));
-        for invalid in ["", ".", "../escape", "email@example.test", "wallet/0x1"] {
-            assert!(paths.account_data_dir(invalid).is_err());
-        }
     }
 
     #[test]
-    fn desktop_chat_workspace_is_inside_the_exact_account() {
+    fn desktop_chat_workspace_is_inside_desktop_data() {
         let root = tempfile::tempdir().expect("temp dir");
         let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
         paths.prepare().expect("prepare");
-        paths.prepare_account("account-a").expect("prepare account");
-        let chat = paths
-            .account_desktop_chat_cwd("account-a")
-            .expect("chat cwd");
+        let chat = paths.desktop_chat_cwd().expect("chat cwd");
         assert!(
             chat.starts_with(
                 paths
-                    .account_frontend_data_dir("account-a", FrontendKind::DesktopChat)
-                    .expect("desktop root")
+                    .frontend_data_dir(FrontendKind::DesktopChat)
                     .canonicalize()
                     .expect("root")
             )
-        );
-        let first = crate::app::SessionId::new();
-        let second = crate::app::SessionId::new();
-        let first_path = paths
-            .account_desktop_thread_cwd("account-a", &first)
-            .unwrap();
-        assert_eq!(first_path.parent(), Some(chat.as_path()));
-        assert_eq!(
-            paths
-                .account_desktop_thread_cwd("account-a", &first)
-                .unwrap(),
-            first_path
-        );
-        assert_ne!(
-            paths
-                .account_desktop_thread_cwd("account-a", &second)
-                .unwrap(),
-            first_path
-        );
-        paths.prepare_account("account-b").unwrap();
-        assert_ne!(
-            paths
-                .account_desktop_thread_cwd("account-b", &first)
-                .unwrap(),
-            first_path
         );
     }
 
@@ -425,30 +288,20 @@ mod tests {
         let root = tempfile::tempdir().expect("temp dir");
         let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
         paths.prepare().expect("prepare");
-        let cli = paths
-            .account_state_database("account-a", FrontendKind::Cli)
-            .unwrap();
-        let desktop = paths
-            .account_state_database("account-a", FrontendKind::DesktopChat)
-            .unwrap();
-        fs::create_dir_all(cli.parent().expect("CLI parent")).expect("CLI directory");
-        fs::create_dir_all(desktop.parent().expect("desktop parent")).expect("desktop directory");
+        let cli = paths.state_database(FrontendKind::Cli);
+        let desktop = paths.state_database(FrontendKind::DesktopChat);
         fs::write(&cli, "cli").expect("CLI state");
         fs::write(cli.with_file_name("state.sqlite3-wal"), "wal").expect("CLI WAL");
         fs::write(&desktop, "desktop").expect("desktop state");
-        paths.prepare_account("account-b").expect("prepare account");
-        let account_state = paths
-            .account_state_database("account-b", FrontendKind::Cli)
-            .expect("account state");
-        fs::write(&account_state, "account").expect("account state file");
+        let chat = paths.desktop_chat_cwd().expect("chat");
 
         let removed = paths
-            .reset_account_frontend_state("account-a", FrontendKind::Cli)
+            .reset_frontend_state(FrontendKind::Cli)
             .expect("reset CLI state");
         assert_eq!(removed.len(), 2);
         assert!(!cli.exists());
         assert!(desktop.exists());
-        assert!(account_state.exists());
+        assert!(chat.exists());
     }
 
     #[cfg(unix)]
@@ -459,29 +312,13 @@ mod tests {
         let root = tempfile::tempdir().expect("temp dir");
         let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
         paths.prepare().expect("prepare");
-        paths.prepare_account("account-a").expect("prepare account");
         let outside = root.path().join("outside");
         fs::create_dir(&outside).expect("outside");
         let chat = paths
-            .account_frontend_data_dir("account-a", FrontendKind::DesktopChat)
-            .expect("desktop root")
+            .frontend_data_dir(FrontendKind::DesktopChat)
             .join("chat");
-        fs::create_dir(&chat).expect("chat directory");
-        fs::remove_dir(&chat).expect("remove chat directory");
+        fs::remove_dir(&chat).expect("remove prepared chat directory");
         symlink(&outside, &chat).expect("chat symlink");
-        assert!(paths.account_desktop_chat_cwd("account-a").is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn desktop_thread_workspace_rejects_a_symlink() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
-        paths.prepare().unwrap();
-        paths.prepare_account("account-a").unwrap();
-        let chat = paths.account_desktop_chat_cwd("account-a").unwrap();
-        let id = crate::app::SessionId::new();
-        std::os::unix::fs::symlink(root.path(), chat.join(id.to_string())).unwrap();
-        assert!(paths.account_desktop_thread_cwd("account-a", &id).is_err());
+        assert!(paths.desktop_chat_cwd().is_err());
     }
 }

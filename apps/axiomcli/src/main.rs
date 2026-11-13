@@ -11,7 +11,6 @@ use std::{
 use anyhow::Context as _;
 use axiomcli::{
     AxiomError,
-    account_store::SessionStoreRouter,
     agent::{
         APP_EVENT_QUEUE_CAPACITY, AgentEngine, AgentLimits, ApprovalTurnRunner, BlockingTurnRunner,
         EchoTurnRunner, MAX_CUSTOM_SYSTEM_PROMPT_BYTES, PlanReviewTurnRunner, QuestionTurnRunner,
@@ -25,8 +24,7 @@ use axiomcli::{
     policy::{EffectClass, PolicyRule, RuleAction},
     provider::{InferenceProvider, SecureAxiomProvider},
     session::{ExportOptions, SessionStore},
-    tools::registry_with_search,
-    web::HostedSearchClient,
+    tools::default_registry,
 };
 use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
@@ -75,15 +73,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Download, verify, install and restart an installed Axiom release.
-    Update(axiomcli::updates::Arguments),
-    /// Run the account-bound secure loopback proxy under Desktop supervision.
-    DesktopProxy {
-        #[arg(long)]
-        account_id: String,
-        #[command(flatten)]
-        arguments: axiom_proxy::Arguments,
-    },
     /// Run the terminal interface in the current terminal viewport.
     Tui {
         #[arg(long)]
@@ -108,10 +97,8 @@ enum Command {
     Doctor,
     /// List models exposed by the configured secure Axiom service.
     Models,
-    /// Delete one account/frontend state database. Stop Desktop and CLI first.
+    /// Delete one pre-release frontend state database after explicit confirmation.
     ResetLocalState {
-        #[arg(long)]
-        account: String,
         #[arg(long, value_enum)]
         frontend: FrontendKind,
         /// Confirm permanent deletion of this frontend's local threads and collections.
@@ -220,21 +207,8 @@ enum SessionAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    if let Some(Command::Update(arguments)) = cli.command {
-        // Update helpers must survive shutdown of the process being replaced.
-        return axiomcli::updates::command(arguments).await;
-    }
     install_descendant_cleanup();
-    let _installation_lease = axiomcli::updates::lease()?;
-    // The proxy owns no chat store, tools, agent configuration or system prompt.
-    if let Some(Command::DesktopProxy {
-        account_id,
-        arguments,
-    }) = cli.command
-    {
-        return axiomcli::proxy::run(arguments, account_id).await;
-    }
+    let cli = Cli::parse();
     let frontend = match &cli.command {
         Some(Command::Acp { frontend }) => *frontend,
         _ => FrontendKind::Cli,
@@ -252,58 +226,12 @@ async fn main() -> anyhow::Result<()> {
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
-    if let Some(Command::ResetLocalState {
-        account,
-        frontend,
-        confirm,
-    }) = &cli.command
-    {
-        anyhow::ensure!(*confirm, "refusing to delete local state without --confirm");
-        let removed = paths
-            .reset_account_frontend_state(account, *frontend)
-            .context("failed to reset account local state")?;
-        println!(
-            "removed {} local state file(s) for account {account}, frontend {frontend}",
-            removed.len()
-        );
-        return Ok(());
-    }
     let config =
         Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
-    let auth = {
-        #[cfg(debug_assertions)]
-        {
-            if std::env::var_os("AXIOMCLI_TEST_RUNNER").is_some()
-                && std::env::var_os("AXIOM_API_KEY").is_none()
-            {
-                AuthManager::new_ephemeral_test(&config.base_url, config.request_timeout(), &paths)
-            } else {
-                AuthManager::new_with_paths_async(
-                    &config.base_url,
-                    config.request_timeout(),
-                    &paths,
-                )
-                .await
-            }
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            AuthManager::new_with_paths_async(&config.base_url, config.request_timeout(), &paths)
-                .await
-        }
-    }
-    .context("failed to initialize Axiom authentication")?;
-    let account_store_router = SessionStoreRouter::new(paths.clone(), frontend);
-    if cfg!(debug_assertions) && std::env::var_os("AXIOMCLI_TEST_RUNNER").is_some() {
-        account_store_router
-            .activate("local-test-account")
-            .context("failed to initialize isolated test account storage")?;
-    } else if let ValidationStatus::Valid(account) = auth.validate().await {
-        account_store_router
-            .activate(&account.account.id)
-            .context("failed to open account-scoped local state")?;
-    }
-    let account_store = account_store_router.store();
+    let auth =
+        AuthManager::new_with_paths_async(&config.base_url, config.request_timeout(), &paths)
+            .await
+            .context("failed to initialize Axiom authentication")?;
     let tui_mode = matches!(cli.command, None | Some(Command::Tui { .. }));
     init_tracing(tui_mode);
 
@@ -311,10 +239,6 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
-        Command::Update(_) => unreachable!("update is handled before agent initialization"),
-        Command::DesktopProxy { .. } => {
-            unreachable!("desktop proxy is handled before agent initialization")
-        }
         Command::Doctor => {
             doctor(&config, &auth, &paths).await;
             Ok(())
@@ -326,21 +250,29 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::ResetLocalState { .. } => {
-            unreachable!("local reset handled before authentication")
+        Command::ResetLocalState { frontend, confirm } => {
+            anyhow::ensure!(confirm, "refusing to delete local state without --confirm");
+            let removed = paths
+                .reset_frontend_state(frontend)
+                .context("failed to reset frontend local state")?;
+            if removed.is_empty() {
+                println!("{frontend} local state is already empty");
+            } else {
+                println!(
+                    "removed {} {frontend} local state file(s); shared identity, credentials, trust policy, configuration, and chat workspace were preserved",
+                    removed.len()
+                );
+            }
+            Ok(())
         }
-        Command::Sessions { action } => manage_sessions(action, &account_store),
+        Command::Sessions { action } => manage_sessions(action, &paths),
         Command::Plans { cwd, action } => manage_plans(&resolve_cwd(cwd)?, action),
         Command::Permissions { action } => manage_permissions(action),
         Command::Tui { cwd, resume } => {
-            let store = account_store.clone();
+            let store = open_store(&paths, FrontendKind::Cli)?;
             let resume = resume
                 .map(|id| SessionId::from_str(&id).context("invalid session ID"))
                 .transpose()?;
-            anyhow::ensure!(
-                resume.is_none() || store.is_active(),
-                "authentication required; sign in before resuming local threads"
-            );
             let (cwd, saved_profile) = if let Some(id) = &resume {
                 let summary = store.summary(id)?;
                 let saved = summary.cwd.canonicalize().with_context(|| {
@@ -403,16 +335,21 @@ async fn main() -> anyhow::Result<()> {
                 profile,
                 workspace_config.model.clone(),
                 prompt,
-                account_store.clone(),
+                open_store(&paths, FrontendKind::Cli)?,
             )
             .await
         }
         Command::Acp { frontend } => axiomcli::acp::serve_stdio(
             build_runner(&config, &auth, system_prompt.as_deref(), frontend).await?,
             config.clone(),
-            Some(account_store),
+            Some(open_store(&paths, frontend)?),
             auth,
             frontend,
+            if frontend == FrontendKind::DesktopChat {
+                Some(paths.desktop_chat_cwd()?)
+            } else {
+                None
+            },
         )
         .await
         .map_err(anyhow::Error::from),
@@ -500,23 +437,29 @@ async fn doctor(config: &Config, auth: &AuthManager, paths: &AxiomPaths) {
     println!("base URL: {}", config.base_url);
     println!("security: local attestation and E2EE required per inference request");
     println!("permission profile: {}", config.permission_profile);
-    println!("web search provider: {}", config.web_search_provider);
+    println!("SearXNG: {}", config.searxng_url);
     let auth_status = match auth.validate().await {
         ValidationStatus::Missing => "not signed in".to_owned(),
         ValidationStatus::Valid(account) => format!(
             "valid ({}, stored in {})",
-            account
-                .account
-                .display_name
-                .as_deref()
-                .unwrap_or(&account.account.id),
+            account.key_name,
             account.source.label()
         ),
-        ValidationStatus::Expired => "expired or revoked".to_owned(),
+        ValidationStatus::Invalid => "invalid or revoked".to_owned(),
         ValidationStatus::Unavailable(message) => format!("not checked ({message})"),
     };
     println!("Axiom authorization: {auth_status}");
-    println!("web search: authenticated Axiom API (Decodo); no paid search issued by diagnostics");
+    let endpoint = format!("{}/", config.searxng_url.trim_end_matches('/'));
+    let status = reqwest::Client::new()
+        .get(endpoint)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .map_or_else(
+            |error| format!("unavailable ({error})"),
+            |response| response.status().to_string(),
+        );
+    println!("SearXNG health: {status}");
     if let Some(path) = Config::user_path() {
         println!("user config: {}", path.display());
     }
@@ -524,34 +467,17 @@ async fn doctor(config: &Config, auth: &AuthManager, paths: &AxiomPaths) {
     println!("Axiom data root: {}", paths.data_root().display());
     println!(
         "CLI data: {}",
-        paths
-            .data_root()
-            .join("accounts/<account-id>/cli")
-            .display()
+        paths.frontend_data_dir(FrontendKind::Cli).display()
     );
     println!(
         "desktop data: {}",
-        paths
-            .data_root()
-            .join("accounts/<account-id>/desktop")
-            .display()
+        paths.frontend_data_dir(FrontendKind::DesktopChat).display()
     );
     println!(
         "local state database: {}",
-        auth.active_account_id().map_or_else(
-            || "unavailable while signed out".to_owned(),
-            |account_id| paths
-                .account_state_database(&account_id, FrontendKind::Cli)
-                .map_or_else(
-                    |_| "invalid account path".to_owned(),
-                    |path| path.display().to_string()
-                ),
-        )
+        state_path(paths, FrontendKind::Cli).display()
     );
-    match auth.active_account_id().map_or_else(
-        || Err(AxiomError::InvalidTransition("signed out".into())),
-        |account_id| paths.account_desktop_chat_cwd(&account_id),
-    ) {
+    match paths.desktop_chat_cwd() {
         Ok(path) => println!("desktop chat workspace: {}", path.display()),
         Err(error) => println!("desktop chat workspace: unavailable ({error})"),
     }
@@ -589,11 +515,16 @@ fn manage_permissions(action: PermissionAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn manage_sessions(action: SessionAction, store: &SessionStore) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        store.is_active(),
-        "authentication required; sign in before inspecting local threads"
-    );
+fn state_path(paths: &AxiomPaths, frontend: FrontendKind) -> PathBuf {
+    paths.state_database(frontend)
+}
+
+fn open_store(paths: &AxiomPaths, frontend: FrontendKind) -> anyhow::Result<SessionStore> {
+    SessionStore::open(state_path(paths, frontend)).map_err(Into::into)
+}
+
+fn manage_sessions(action: SessionAction, paths: &AxiomPaths) -> anyhow::Result<()> {
+    let store = open_store(paths, FrontendKind::Cli)?;
     match action {
         SessionAction::List { all } => {
             for session in store.list(all)? {
@@ -676,10 +607,7 @@ async fn build_runner(
         }
     }
     let provider = build_provider(config, auth)?;
-    let mut tools = registry_with_search(
-        config.max_tool_output_bytes,
-        Arc::new(HostedSearchClient::new(auth.clone())?),
-    )?;
+    let mut tools = default_registry(config.max_tool_output_bytes, &config.searxng_url)?;
     if frontend == FrontendKind::Cli {
         for tool in
             axiomcli::mcp::connect_tools(&config.mcp_servers, config.max_tool_output_bytes).await?
@@ -768,18 +696,11 @@ async fn run_headless(
     let runtime = Runtime::new(APP_EVENT_QUEUE_CAPACITY);
     let session_id = runtime.session_id();
     let turn_id = runtime.turn_id();
-    let durable_store = store.is_active().then_some(store.clone());
-    let model = durable_store
-        .as_ref()
-        .map(SessionStore::last_used_model)
-        .transpose()?
-        .flatten()
+    let model = store
+        .last_used_model()?
         .unwrap_or_else(|| configured_model.clone());
-    let thinking = durable_store
-        .as_ref()
-        .map(SessionStore::last_used_thinking)
-        .transpose()?
-        .flatten()
+    let thinking = store
+        .last_used_thinking()?
         .unwrap_or(axiomcli::app::ThinkingLevel::Medium);
     let created = runtime
         .dispatch(AppCommand::CreateSession {
@@ -789,10 +710,7 @@ async fn run_headless(
             profile,
         })
         .await?;
-    if let Some(store) = &durable_store {
-        store.append_all(&created)?;
-    }
-    runner.restore_session(&session_id, &created).await?;
+    store.append_all(&created)?;
     if model != configured_model {
         runner.set_model(&session_id, model.clone()).await?;
     }
@@ -805,48 +723,43 @@ async fn run_headless(
             model: model.clone(),
         })
         .await?;
-    if let Some(store) = &durable_store {
-        store.append_all(&selected_model)?;
-    }
+    store.append_all(&selected_model)?;
     let selected_thinking = runtime
         .dispatch(AppCommand::ChangeThinkingLevel {
             session_id: session_id.clone(),
             level: thinking,
         })
         .await?;
-    if let Some(store) = &durable_store {
-        store.append_all(&selected_thinking)?;
-    }
+    store.append_all(&selected_thinking)?;
     let submitted = runtime
         .dispatch(AppCommand::SubmitPrompt {
-            attachments: Vec::new(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             text: prompt.clone(),
         })
         .await?;
-    if let Some(store) = &durable_store {
-        store.append_all(&submitted)?;
-        store.set_last_used_model(&model)?;
-        store.set_last_used_thinking(thinking)?;
-    }
+    store.append_all(&submitted)?;
+    store.set_last_used_model(&model)?;
+    store.set_last_used_thinking(thinking)?;
 
-    if let Some(store) = &durable_store {
-        let title = axiomcli::session_title::session_title(&prompt);
-        if let Err(error) = store.set_title_if_absent(&session_id, &title) {
-            tracing::warn!(%session_id, %error, "could not persist session title");
-        }
-    }
+    let title_runner = runner.clone();
+    let title_store = store.clone();
+    let title_session = session_id.clone();
+    let title_prompt = prompt.clone();
+    let title_task = tokio::spawn(async move {
+        let title = title_runner
+            .generate_title(&title_session, &title_prompt, CancellationToken::new())
+            .await?;
+        title_store.set_title_if_absent(&title_session, &title)?;
+        Ok::<(), AxiomError>(())
+    });
 
     let (events_tx, mut events_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
     let context = TurnContext {
-        attachments: Vec::new(),
         session_id: session_id.clone(),
         turn_id: turn_id.clone(),
         cwd,
         permission_profile: profile,
-        web_enabled: true,
-        steering: None,
         approval: None,
         questions: None,
     };
@@ -863,13 +776,7 @@ async fn run_headless(
             }
             event = events_rx.recv() => {
                 if let Some(event) = event {
-                    record_headless_event(
-                        &runtime,
-                        durable_store.as_ref(),
-                        &session_id,
-                        event,
-                    )
-                    .await?;
+                    record_headless_event(&runtime, &store, &session_id, event).await?;
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -878,7 +785,7 @@ async fn run_headless(
         }
     };
     while let Ok(event) = events_rx.try_recv() {
-        record_headless_event(&runtime, durable_store.as_ref(), &session_id, event).await?;
+        record_headless_event(&runtime, &store, &session_id, event).await?;
     }
 
     let terminal = match &result {
@@ -896,24 +803,25 @@ async fn run_headless(
             message: error.to_string(),
         },
     };
-    let terminal = runtime.dispatch(terminal).await?;
-    if let Some(store) = &durable_store {
-        store.append_all(&terminal)?;
+    store.append_all(&runtime.dispatch(terminal).await?)?;
+    match tokio::time::timeout(std::time::Duration::from_secs(2), title_task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => tracing::warn!(%error, "background session title generation failed"),
+        Ok(Err(error)) => tracing::warn!(%error, "background session title task failed"),
+        Err(_) => tracing::warn!("background session title generation did not finish before exit"),
     }
     result.map_err(anyhow::Error::from)
 }
 
 async fn record_headless_event(
     runtime: &Runtime,
-    store: Option<&SessionStore>,
+    store: &SessionStore,
     session_id: &SessionId,
     event: AppEvent,
 ) -> anyhow::Result<()> {
     print_headless_event(event.clone());
     let envelope = runtime.emit(session_id.clone(), event).await?;
-    if let Some(store) = store {
-        store.append(&envelope)?;
-    }
+    store.append(&envelope)?;
     Ok(())
 }
 

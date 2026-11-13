@@ -1,17 +1,12 @@
 # ADR 0011: Standard ACP with a negotiated Axiom extension
 
-> The ACP/extension boundary remains accepted. The original Web-only and
-> Shieldz-only details below are superseded by negotiated Desktop Agent mode,
-> automation-key management and native deposit billing. Use the
-> [current ACP contract](../acp-compatibility.md) for methods, features and recovery.
-
 Status: accepted (early implementation)
 
 ## Context
 
 AxiomCLI must remain useful to generic ACP clients while giving the first-party
-desktop application the account, billing, attestation, session-catalog,
-deletion, and task-state controls the product needs. Flattening those controls
+desktop application the account, attestation, session-catalog, deletion, and
+task-state controls already available to the TUI. Flattening those controls
 into slash-command text loses state, cancellation, and security meaning.
 
 ## Decision
@@ -23,7 +18,7 @@ party client advertises `_meta.axiom` during `initialize`; only a compatible
 client may call `_axiom/*` methods or receive `_axiom/event` notifications.
 
 The Rust types in `axiom-acp-extension` are authoritative. Their deterministic
-JSON Schema is checked in under `protocol/axiom-acp-extension/v0.2/`, and the
+JSON Schema is checked in under `protocol/axiom-acp-extension/v0.1/`, and the
 TypeScript DTOs are generated from that schema. Additive fields are allowed
 within a feature version. Removing, renaming, or changing the meaning of a
 field requires a new protocol/feature version.
@@ -45,27 +40,21 @@ cwd and effective Web policy. AxiomCLI rejects other cwd or permission values,
 does not connect configured MCP servers, and uses an embedded desktop product
 prompt. Generic `axiomcli acp` behavior remains workspace-oriented.
 
-Both frontends use a platform-native `axiom` root. AxiomCLI owns native session
-storage in the operating-system credential vault and selects account-scoped,
-frontend-specific journals only after authentication. It also owns Desktop
-collection metadata; renderer folder labels do not influence filesystem paths.
-Electron and ACP never receive access or refresh tokens. Extension 0.2 replaces
-the old browser/API-key account requests with native login
-start/complete/cancel, raises the account feature to version 2, and adds
-`billing@2` for bounded credit and mainnet deposit status. The former invoice
-methods are superseded by [ADR 0014](0014-clean-storage-and-deposit-billing.md).
-Wallet custody and transaction authority never cross the extension.
+Both frontends use a platform-native `axiom` root. Credentials and installation
+identity are shared, while CLI and desktop session journals are partitioned.
+Electron main owns desktop-only collection metadata; renderer folder labels do
+not influence filesystem paths.
 
 ## Bounds and failure behavior
 
 - ACP is newline-delimited JSON-RPC on stdout; diagnostics use stderr.
-- The first-party process client rejects frames larger than 64 MiB (raised from 4 MiB for local attachments) and keeps at
+- The first-party process client rejects frames larger than 4 MiB and keeps at
   most 64 KiB of stderr diagnostics.
-- Extension identifiers, queries, native-login handles, evidence, manifests,
+- Extension identifiers, queries, API-key submissions, evidence, manifests,
   selections, and compaction focus have explicit bounds.
 - Event queues use existing bounded Rust channels; Node writes honor stream
   backpressure.
-- Prompt, compaction, security, and native-login completion support
+- Prompt, compaction, security, and browser-login completion support
   cancellation. Disconnect and stale interaction responses fail closed.
 - A production package resolves a fixed resource path for AxiomCLI. A sidecar
   environment override exists only in unpackaged development builds.

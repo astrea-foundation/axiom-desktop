@@ -140,17 +140,6 @@ fn release_archive_is_reproducible_signed_installable_and_cleanly_uninstalled() 
             .is_file(),
         "installed dependency notice manifest is missing"
     );
-    let build_metadata = std::fs::read_to_string(prefix.join("share/doc/axiomcli/BUILD-METADATA"))
-        .expect("installed build metadata");
-    let pinned_cargo_deny = std::fs::read_to_string(workspace_root().join(".cargo-deny-version"))
-        .expect("pinned cargo-deny version");
-    assert!(
-        build_metadata.contains(&format!(
-            "cargo_deny_version={}\n",
-            pinned_cargo_deny.trim()
-        )),
-        "release metadata must record the pinned cargo-deny version"
-    );
     if Path::new("/usr/bin/bwrap").is_file() {
         run(
             Command::new("/usr/bin/bwrap").args([

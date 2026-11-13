@@ -42,12 +42,12 @@ impl From<PermissionProfileArg> for PermissionProfile {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub model: String,
     pub base_url: String,
     pub permission_profile: PermissionProfile,
-    pub web_search_provider: String,
+    pub searxng_url: String,
     pub max_agent_steps: Option<usize>,
     pub max_context_bytes: usize,
     pub max_context_tokens: usize,
@@ -64,6 +64,7 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: String,
@@ -73,23 +74,15 @@ pub struct McpServerConfig {
     /// are display hints and never grant this policy classification.
     #[serde(default)]
     pub read_only_tools: Vec<String>,
-    /// Trusted per-server tool deadline; discovery keeps a separate short timeout.
-    #[serde(default = "default_mcp_tool_timeout_secs")]
-    pub tool_timeout_secs: u64,
-}
-
-#[must_use]
-pub const fn default_mcp_tool_timeout_secs() -> u64 {
-    300
 }
 
 #[derive(Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ConfigLayer {
     model: Option<String>,
     base_url: Option<String>,
     permission_profile: Option<PermissionProfile>,
-    web_search_provider: Option<String>,
+    searxng_url: Option<String>,
     max_agent_steps: Option<usize>,
     max_context_bytes: Option<usize>,
     max_context_tokens: Option<usize>,
@@ -112,8 +105,8 @@ impl ConfigLayer {
         if let Some(value) = self.permission_profile {
             config.permission_profile = value;
         }
-        if let Some(value) = self.web_search_provider {
-            config.web_search_provider = value;
+        if let Some(value) = self.searxng_url {
+            config.searxng_url = value;
         }
         if let Some(value) = self.max_agent_steps {
             config.max_agent_steps = Some(value);
@@ -154,10 +147,7 @@ impl ConfigLayer {
     }
 
     fn apply_project(self, config: &mut Config) -> Result<()> {
-        if self.base_url.is_some()
-            || self.web_search_provider.is_some()
-            || self.mcp_servers.is_some()
-        {
+        if self.base_url.is_some() || self.searxng_url.is_some() || self.mcp_servers.is_some() {
             return Err(AxiomError::Config(
                 "project config cannot set network endpoints or MCP server commands; use the trusted user config or environment"
                     .into(),
@@ -233,16 +223,13 @@ const fn profile_is_narrower_or_equal(
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "auto".into(),
+            model: "glm-5-2".into(),
             base_url: "https://api.axiom.stream".into(),
             permission_profile: PermissionProfile::Confirm,
-            web_search_provider: "axiom".into(),
+            searxng_url: "http://127.0.0.1:8888".into(),
             max_agent_steps: None,
-            // Provider model metadata owns the normal context/compaction
-            // limit. These deliberately larger values are only local memory
-            // safety ceilings and may still be lowered by trusted config.
-            max_context_bytes: 16 * 1024 * 1024,
-            max_context_tokens: 4 * 1024 * 1024,
+            max_context_bytes: 2 * 1024 * 1024,
+            max_context_tokens: 256 * 1024,
             max_tool_output_bytes: 128 * 1024,
             max_turn_secs: None,
             request_timeout_secs: 120,
@@ -379,15 +366,11 @@ impl Config {
         }
         let base_url = reqwest::Url::parse(&self.base_url)
             .map_err(|error| AxiomError::Config(format!("invalid base_url: {error}")))?;
-        if self.web_search_provider != "axiom" {
+        let searxng_url = reqwest::Url::parse(&self.searxng_url)
+            .map_err(|error| AxiomError::Config(format!("invalid searxng_url: {error}")))?;
+        if !valid_endpoint(&base_url) || !valid_endpoint(&searxng_url) {
             return Err(AxiomError::Config(
-                "web_search_provider must be axiom; other search providers are not supported"
-                    .into(),
-            ));
-        }
-        if !valid_endpoint(&base_url) {
-            return Err(AxiomError::Config(
-                "base_url must use http(s), include a host, and contain no embedded credentials"
+                "provider and SearXNG URLs must use http(s), include a host, and contain no embedded credentials"
                     .into(),
             ));
         }
@@ -396,11 +379,6 @@ impl Config {
             rule.validate()?;
         }
         for server in &self.mcp_servers {
-            if !(1..=86_400).contains(&server.tool_timeout_secs) {
-                return Err(AxiomError::Config(
-                    "MCP tool_timeout_secs must be between 1 and 86400".into(),
-                ));
-            }
             if server.name.trim().is_empty()
                 || server.command.trim().is_empty()
                 || server.name.contains('\0')
@@ -519,8 +497,8 @@ fn apply_environment(config: &mut Config) -> Result<()> {
     if let Ok(value) = std::env::var("AXIOM_MODEL") {
         config.model = value;
     }
-    if let Ok(value) = std::env::var("AXIOM_WEB_SEARCH_PROVIDER") {
-        config.web_search_provider = value;
+    if let Ok(value) = std::env::var("AXIOM_SEARXNG_URL") {
+        config.searxng_url = value;
     }
     if let Ok(value) = std::env::var("AXIOM_PERMISSION_PROFILE") {
         config.permission_profile = PermissionProfile::from_str(&value)?;
@@ -537,65 +515,8 @@ fn read_layer(path: &std::path::Path) -> Result<ConfigLayer> {
         )));
     }
     let content = std::fs::read_to_string(path)?;
-    warn_about_unknown_config_fields(path, &content)?;
     toml::from_str(&content)
         .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))
-}
-
-fn warn_about_unknown_config_fields(path: &Path, content: &str) -> Result<()> {
-    const TOP_LEVEL_FIELDS: &[&str] = &[
-        "model",
-        "base_url",
-        "permission_profile",
-        "web_search_provider",
-        "max_agent_steps",
-        "max_context_bytes",
-        "max_context_tokens",
-        "max_tool_output_bytes",
-        "max_turn_secs",
-        "request_timeout_secs",
-        "animation",
-        "policy_rules",
-        "mcp_servers",
-    ];
-    const MCP_FIELDS: &[&str] = &[
-        "name",
-        "command",
-        "args",
-        "read_only_tools",
-        "tool_timeout_secs",
-    ];
-
-    let document: toml::Value = toml::from_str(content)
-        .map_err(|error| AxiomError::Config(format!("{}: {error}", path.display())))?;
-    let Some(table) = document.as_table() else {
-        return Err(AxiomError::Config(format!(
-            "{}: configuration root must be a TOML table",
-            path.display()
-        )));
-    };
-    for field in table.keys() {
-        if !TOP_LEVEL_FIELDS.contains(&field.as_str()) {
-            tracing::warn!(path = %path.display(), field, "unknown config field was ignored");
-        }
-    }
-    if let Some(toml::Value::Array(servers)) = table.get("mcp_servers") {
-        for (index, server) in servers.iter().enumerate() {
-            if let Some(server) = server.as_table() {
-                for field in server.keys() {
-                    if !MCP_FIELDS.contains(&field.as_str()) {
-                        tracing::warn!(
-                            path = %path.display(),
-                            index,
-                            field,
-                            "unknown MCP config field was ignored"
-                        );
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -662,10 +583,8 @@ mod tests {
         )
         .expect("restored desktop config");
         std::fs::write(paths.shared_config_path(), "unknown_shared_field = true\n")
-            .expect("additive shared config");
-        let desktop = Config::load_for(FrontendKind::DesktopChat, &paths)
-            .expect("unknown additive keys do not block desktop");
-        assert_eq!(desktop.permission_profile, PermissionProfile::Web);
+            .expect("invalid shared config");
+        assert!(Config::load_for(FrontendKind::DesktopChat, &paths).is_err());
     }
 
     #[test]
@@ -681,23 +600,6 @@ mod tests {
                 ..Config::default()
             };
             assert!(config.validate().is_err());
-        }
-    }
-
-    #[test]
-    fn unsupported_search_providers_fail_instead_of_changing_the_destination() {
-        assert!(Config::default().validate().is_ok());
-        for provider in ["retired-provider", "", "AXIOM"] {
-            let mut config = Config::default();
-            let layer: ConfigLayer = toml::from_str(&format!("web_search_provider = {provider:?}"))
-                .expect("provider config");
-            layer.apply_trusted(&mut config);
-            let error = config.validate().expect_err("unsupported provider");
-            assert!(
-                error
-                    .to_string()
-                    .contains("web_search_provider must be axiom")
-            );
         }
     }
 
@@ -740,23 +642,7 @@ mod tests {
         layer.apply_trusted(&mut config);
         assert_eq!(config.model, "cherry");
         assert_eq!(config.permission_profile, PermissionProfile::Confirm);
-        assert_eq!(config.web_search_provider, "axiom");
-    }
-
-    #[test]
-    fn additive_config_and_mcp_fields_are_ignored_without_losing_known_values() {
-        let root = tempfile::tempdir().expect("config root");
-        let path = root.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "model='cherry'\nfuture_ui_setting=true\n[[mcp_servers]]\nname='future'\ncommand='helper'\nfuture_transport='v2'\n",
-        )
-        .expect("config fixture");
-        let layer = read_layer(&path).expect("additive config");
-        let mut config = Config::default();
-        layer.apply_trusted(&mut config);
-        assert_eq!(config.model, "cherry");
-        assert_eq!(config.mcp_servers[0].name, "future");
+        assert_eq!(config.searxng_url, "http://127.0.0.1:8888");
     }
 
     #[test]

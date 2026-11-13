@@ -6,12 +6,21 @@ use serde::{Deserialize, Serialize};
 use crate::{Result, SecureClientError};
 
 const POLICY_SIGNING_KEY_HEX: &str =
-    "ba3609d6b3164683e1fa9ff70471b893c165cd6f59a4b6c19e5e6b4b89ccf766";
-const BUNDLED_POLICY: &str = include_str!("../policy/axiom-production-v2.json");
+    "be5dfc098c496a2b59ae0d8ddc711e4c2e502645c229710ea563500b6dad6b25";
+const BUNDLED_POLICY: &str = include_str!("../policy/axiom-production-v1.json");
 
 #[cfg(test)]
 pub(crate) const fn bundled_signed_policy() -> &'static str {
     BUNDLED_POLICY
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadEnforcement {
+    #[default]
+    Observe,
+    Warn,
+    Enforce,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,16 +33,20 @@ pub struct TrustPolicy {
     pub require_model_binding: bool,
     pub require_live_tls_binding: bool,
     pub nvidia_anchor_sha256: Vec<String>,
+    pub approved_workload_measurements: Vec<String>,
+    pub approved_phala_gateway_repositories: Vec<String>,
+    pub approved_phala_gateway_commits: Vec<String>,
+    pub workload_enforcement: WorkloadEnforcement,
 }
 
 impl Default for TrustPolicy {
     fn default() -> Self {
         Self {
             sequence: 0,
-            version: "development".into(),
+            version: "development-observe-only".into(),
             expires_at_unix_seconds: u64::MAX,
             // Keep the browser, backend, CLI, and desktop on one TCB policy.
-            // A runtime user exception for OutOfDate is separate from signed policy.
+            // Advisory-bearing states require an explicit signed policy update.
             accepted_intel_statuses: vec!["UpToDate".into()],
             require_nvidia_verified: true,
             require_model_binding: true,
@@ -41,6 +54,12 @@ impl Default for TrustPolicy {
             nvidia_anchor_sha256: vec![
                 "2df8907cf4d6c277b855d407ec178a649930a8e73f7294e8fce66e6ee27c5175".into(),
             ],
+            approved_workload_measurements: Vec::new(),
+            approved_phala_gateway_repositories: vec![
+                "https://github.com/Dstack-TEE/private-ai-gateway".into(),
+            ],
+            approved_phala_gateway_commits: Vec::new(),
+            workload_enforcement: WorkloadEnforcement::Observe,
         }
     }
 }
@@ -59,6 +78,10 @@ struct SignedPolicyDocument {
     require_model_binding: bool,
     require_live_tls_binding: bool,
     nvidia_anchor_sha256: Vec<String>,
+    approved_near_workload_measurements: Vec<String>,
+    approved_phala_gateway_repositories: Vec<String>,
+    approved_phala_gateway_commits: Vec<String>,
+    workload_enforcement: WorkloadEnforcement,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,7 +138,7 @@ impl TrustPolicy {
             .verify_strict(&canonical, &signature)
             .map_err(|_| SecureClientError::configuration("trust policy signature is invalid"))?;
         let document = envelope.policy;
-        if document.schema_version != 2
+        if document.schema_version != 1
             || document.sequence < minimum_sequence
             || document.issued_at_unix_seconds > now
             || document.not_before_unix_seconds > now
@@ -147,6 +170,10 @@ impl TrustPolicy {
             require_model_binding: document.require_model_binding,
             require_live_tls_binding: document.require_live_tls_binding,
             nvidia_anchor_sha256: document.nvidia_anchor_sha256,
+            approved_workload_measurements: document.approved_near_workload_measurements,
+            approved_phala_gateway_repositories: document.approved_phala_gateway_repositories,
+            approved_phala_gateway_commits: document.approved_phala_gateway_commits,
+            workload_enforcement: document.workload_enforcement,
         })
     }
 
@@ -162,7 +189,6 @@ pub enum SecurityState {
     Unverified,
     Verifying,
     Verified,
-    Degraded,
     Rejected,
     Cancelled,
     Expired,
@@ -200,13 +226,17 @@ pub struct SecurityEvidence {
     pub tls_spki_fingerprint: Option<String>,
     pub checks: Vec<EvidenceCheck>,
     pub provider_claims: Vec<EvidenceClaim>,
-    /// Optional retained workload/provenance document. Its format and verified
-    /// bindings are provider-specific: for example, a quote-bound manifest or
-    /// a verified router report. Absence does not mean verification failed;
-    /// checks and provider claims may contain all retained evidence. This is
-    /// public data, but callers must sanitize it before terminal display.
+    /// Exact provider-supplied workload manifest whose digest was verified
+    /// against the hardware quote. This is public attestation evidence, not a
+    /// secret, but callers should still sanitize it before terminal display.
     #[serde(default)]
     pub workload_manifest: Option<String>,
+    /// Whether this verification policy had an explicit workload allowlist.
+    /// This distinguishes "not evaluated" from "evaluated and rejected" in
+    /// user interfaces.
+    #[serde(default)]
+    pub workload_identity_allowlist_configured: bool,
+    pub approved_workload_identity: bool,
 }
 
 #[cfg(test)]
@@ -215,16 +245,16 @@ mod tests {
 
     #[test]
     fn bundled_policy_is_signed_time_bounded_and_rollback_protected() {
-        let policy = TrustPolicy::from_signed_json(BUNDLED_POLICY, 3, 1_800_000_000).unwrap();
-        assert_eq!(policy.sequence, 3);
+        let policy = TrustPolicy::from_signed_json(BUNDLED_POLICY, 2, 1_800_000_000).unwrap();
+        assert_eq!(policy.sequence, 2);
         assert_eq!(policy.accepted_intel_statuses, ["UpToDate"]);
-        assert!(TrustPolicy::from_signed_json(BUNDLED_POLICY, 4, 1_800_000_000).is_err());
+        assert!(TrustPolicy::from_signed_json(BUNDLED_POLICY, 3, 1_800_000_000).is_err());
         assert!(TrustPolicy::from_signed_json(BUNDLED_POLICY, 0, u64::MAX).is_err());
         let expired =
-            TrustPolicy::from_signed_json_for_rollback(BUNDLED_POLICY, 3, u64::MAX).unwrap();
+            TrustPolicy::from_signed_json_for_rollback(BUNDLED_POLICY, 2, u64::MAX).unwrap();
         assert!(!expired.is_valid_at(u64::MAX));
 
-        let tampered = BUNDLED_POLICY.replace("\"sequence\": 3", "\"sequence\": 9");
+        let tampered = BUNDLED_POLICY.replace("\"sequence\": 2", "\"sequence\": 9");
         assert!(TrustPolicy::from_signed_json(&tampered, 0, 1_800_000_000).is_err());
     }
 }

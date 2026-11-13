@@ -1,7 +1,3 @@
-#[path = "support/search.rs"]
-mod search;
-use search::test_registry;
-
 use std::{
     collections::VecDeque,
     path::Path,
@@ -18,6 +14,7 @@ use axiomcli::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent,
         SecureAxiomProvider, ToolCall,
     },
+    tools::default_registry,
     workspace::Workspace,
 };
 use serde::Serialize;
@@ -61,7 +58,6 @@ impl InferenceProvider for ScriptedProvider {
 
 fn call(id: &str, name: &str, arguments: &Value) -> AssistantTurn {
     AssistantTurn {
-        reasoning: None,
         text: String::new(),
         tool_calls: vec![ToolCall {
             id: id.into(),
@@ -76,7 +72,6 @@ fn call(id: &str, name: &str, arguments: &Value) -> AssistantTurn {
 
 fn done(text: &str) -> AssistantTurn {
     AssistantTurn {
-        reasoning: None,
         text: text.into(),
         tool_calls: Vec::new(),
     }
@@ -143,7 +138,7 @@ async fn run_agent(
     });
     let engine = AgentEngine::with_limits(
         provider.clone(),
-        Arc::new(test_registry(32 * 1024).expect("tools")),
+        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
         "deterministic-evaluation",
         AgentLimits {
             max_steps: Some(12),
@@ -158,13 +153,10 @@ async fn run_agent(
     engine
         .run(
             TurnContext {
-                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: root.to_path_buf(),
                 permission_profile: profile,
-                web_enabled: true,
-                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -470,7 +462,7 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         );
         let engine = AgentEngine::with_limits(
             provider,
-            Arc::new(test_registry(32 * 1024).expect("tools")),
+            Arc::new(default_registry(32 * 1024, "http://127.0.0.1:9").expect("tools")),
             model.clone(),
             AgentLimits {
                 max_steps: Some(6),
@@ -484,13 +476,11 @@ async fn live_model_investigation_baseline_is_budgeted_and_non_mutating() {
         let started = Instant::now();
         engine
             .run(
-                TurnContext {attachments: Vec::new(),
+                TurnContext {
                     session_id: SessionId::new(),
                     turn_id: TurnId::new(),
                     cwd: root.path().to_path_buf(),
                     permission_profile: PermissionProfile::Observe,
-                    web_enabled: true,
-                    steering: None,
                     approval: None,
                     questions: None,
                 },

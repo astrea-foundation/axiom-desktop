@@ -1,0 +1,8 @@
+.vercel/
+node_modules/
+dist/
+.site/
+.DS_Store
+.env
+.env.*
+!.env.example

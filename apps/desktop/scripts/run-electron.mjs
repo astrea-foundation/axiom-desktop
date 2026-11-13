@@ -2,13 +2,11 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { setLinuxDesktopIdentity } from "./desktop-identity.mjs";
 
 const [target, ...args] = process.argv.slice(2);
 const require = createRequire(import.meta.url);
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
-setLinuxDesktopIdentity(env, process.platform);
 
 function packageBinary(packageName) {
   const packagePath = require.resolve(`${packageName}/package.json`);
@@ -29,20 +27,14 @@ function electronBinary() {
 
 let command;
 let commandArgs;
-if (target === "staging") {
-  env.AXIOM_AUTH_URL = "https://auth-staging.axiom.stream";
-  env.AXIOM_BASE_URL = "https://api-staging.axiom.stream";
-  env.AXIOM_DESKTOP_STAGING_PROFILE = "1";
-  command = process.execPath;
-  commandArgs = [packageBinary("electron-vite"), ...args];
-} else if (target === "vite") {
+if (target === "vite") {
   command = process.execPath;
   commandArgs = [packageBinary("electron-vite"), ...args];
 } else if (target === "electron") {
   command = electronBinary();
   commandArgs = args;
 } else {
-  throw new Error("usage: run-electron.mjs <vite|electron|staging> [...arguments]");
+  throw new Error("usage: run-electron.mjs <vite|electron> [...arguments]");
 }
 
 const child = spawn(command, commandArgs, {

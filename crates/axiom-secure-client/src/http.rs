@@ -9,7 +9,7 @@ use crate::{EndpointPolicy, Result, SecureClientError, config::is_public_address
 pub(crate) async fn pinned_client(
     url: &Url,
     endpoint_policy: &EndpointPolicy,
-    timeout: impl Into<Option<Duration>>,
+    timeout: Duration,
     expose_tls_info: bool,
 ) -> Result<Client> {
     let host = url
@@ -23,13 +23,9 @@ pub(crate) async fn pinned_client(
     if let Ok(ip) = host.parse() {
         addresses.insert(SocketAddr::new(ip, port));
     } else {
-        let resolved = tokio::time::timeout(
-            Duration::from_secs(15),
-            tokio::net::lookup_host((host, port)),
-        )
-        .await
-        .map_err(|_| SecureClientError::session("endpoint DNS resolution timed out"))?
-        .map_err(|_| SecureClientError::session("endpoint DNS resolution failed"))?;
+        let resolved = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|_| SecureClientError::session("endpoint DNS resolution failed"))?;
         addresses.extend(resolved);
     }
     if addresses.is_empty()
@@ -49,13 +45,10 @@ pub(crate) async fn pinned_client(
     } else {
         Policy::none()
     };
-    let mut builder = Client::builder()
+    Client::builder()
         .redirect(redirect_policy)
-        .connect_timeout(Duration::from_secs(15));
-    if let Some(timeout) = timeout.into() {
-        builder = builder.timeout(timeout);
-    }
-    builder
+        .connect_timeout(timeout.min(Duration::from_secs(20)))
+        .timeout(timeout)
         .tls_info(expose_tls_info)
         .resolve_to_addrs(host, &addresses)
         .build()

@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { brandDevBundle } from "./brand-dev-bundle.mjs";
 
 const require = createRequire(import.meta.url);
 const electronDir = dirname(require.resolve("electron/package.json"));
@@ -17,7 +16,6 @@ function installedBinary() {
 }
 
 if (installedBinary()) {
-  brandDevBundle();
   process.exit(0);
 }
 
@@ -34,6 +32,5 @@ if (!installedBinary()) {
   console.error("Electron binary is missing. Re-run pnpm install.");
   process.exit(1);
 }
-brandDevBundle();
 
 process.exit(install.status ?? 0);

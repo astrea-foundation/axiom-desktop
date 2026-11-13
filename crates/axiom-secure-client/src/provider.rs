@@ -7,13 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{ApiCredential, Result, SecureClientError, SecurityEvidence, TrustPolicy};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProviderContract {
-    pub(crate) e2ee_protocol: String,
-    pub(crate) e2ee_encryption_version: u16,
-    pub(crate) attestation_protocol: String,
-}
-
 pub(crate) mod sealed {
     pub trait Provider {}
     pub trait Session {}
@@ -42,16 +35,6 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
     fn id(&self) -> &'static str;
 
     fn supports(&self, model: &ModelInfo) -> Result<()>;
-
-    /// Whether this installed provider engine understands the complete
-    /// cryptographic contract. Server advertisements can offer rollout
-    /// choices, but cannot add cryptographic protocols the driver does not implement.
-    fn supports_contract(
-        &self,
-        e2ee_protocol: &str,
-        e2ee_encryption_version: u16,
-        attestation_protocol: &str,
-    ) -> bool;
 
     fn populate_capabilities(&self, model: &mut ModelInfo);
 
@@ -83,10 +66,10 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+            let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
                 config, credential,
             )) as Arc<dyn SecureProvider>;
-            Self::new([near, tinfoil])
+            Self::new([near, phala])
         }
         #[cfg(feature = "test-fixture")]
         {
@@ -94,11 +77,11 @@ impl ProviderRegistry {
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let tinfoil = Arc::new(crate::providers::tinfoil::TinfoilProvider::new(
+            let phala = Arc::new(crate::providers::phala::PhalaProvider::new(
                 config.clone(),
                 Arc::clone(&credential),
             )) as Arc<dyn SecureProvider>;
-            let mut providers = vec![near, tinfoil];
+            let mut providers = vec![near, phala];
             if config.uses_test_fixture() {
                 providers.push(Arc::new(crate::providers::fixture::FixtureProvider::new(
                     config, credential,
@@ -142,24 +125,6 @@ impl ProviderRegistry {
         Ok(())
     }
 
-    pub(crate) fn select_contract(
-        &self,
-        provider_id: &str,
-        contracts: &[ProviderContract],
-    ) -> Option<ProviderContract> {
-        let provider = self.providers.get(provider_id)?;
-        contracts
-            .iter()
-            .find(|contract| {
-                provider.supports_contract(
-                    &contract.e2ee_protocol,
-                    contract.e2ee_encryption_version,
-                    &contract.attestation_protocol,
-                )
-            })
-            .cloned()
-    }
-
     pub async fn establish(
         &self,
         model: &ModelInfo,
@@ -182,7 +147,7 @@ impl ProviderRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderContract, ProviderRegistry, SecureProvider, VerifiedSession};
+    use super::{ProviderRegistry, SecureProvider, VerifiedSession};
     use crate::{Result, SecureClientError, SecurityEvidence, TrustPolicy};
     use async_trait::async_trait;
     use axiom_inference::{InferenceRequest, InferenceResponse, ModelInfo, ProviderEvent};
@@ -208,17 +173,6 @@ mod tests {
                     "provider contract does not match model",
                 ))
             }
-        }
-
-        fn supports_contract(
-            &self,
-            e2ee_protocol: &str,
-            e2ee_encryption_version: u16,
-            attestation_protocol: &str,
-        ) -> bool {
-            e2ee_protocol == "test-v1"
-                && e2ee_encryption_version == 7
-                && attestation_protocol == "test-attestation-v1"
         }
 
         fn populate_capabilities(&self, model: &mut ModelInfo) {
@@ -277,7 +231,6 @@ mod tests {
             provider_id: "mechanical-test".into(),
             e2ee_protocol: protocol.into(),
             e2ee_encryption_version: version,
-            attestation_protocol: "test-attestation-v1".into(),
             ..ModelInfo::default()
         }
     }
@@ -297,25 +250,6 @@ mod tests {
                 .unwrap();
         assert!(registry.resolve(&model("wrong", 7)).is_err());
         assert!(registry.resolve(&model("test-v1", 7)).is_ok());
-
-        let selected = registry
-            .select_contract(
-                "mechanical-test",
-                &[
-                    ProviderContract {
-                        e2ee_protocol: "test-v2".into(),
-                        e2ee_encryption_version: 8,
-                        attestation_protocol: "test-attestation-v2".into(),
-                    },
-                    ProviderContract {
-                        e2ee_protocol: "test-v1".into(),
-                        e2ee_encryption_version: 7,
-                        attestation_protocol: "test-attestation-v1".into(),
-                    },
-                ],
-            )
-            .unwrap();
-        assert_eq!(selected.e2ee_protocol, "test-v1");
 
         let cancellation = CancellationToken::new();
         cancellation.cancel();

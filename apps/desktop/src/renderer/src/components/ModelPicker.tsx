@@ -1,9 +1,7 @@
-import { Check, Search, Image, FileText } from "lucide-react";
+import { Check, Search } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "../types";
 import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
-import { formatModelPricing } from "./modelPricing";
-import { compareModelPreference } from "../modelPreferences";
 
 interface ProviderGroup {
   id: string;
@@ -19,7 +17,7 @@ interface ModelPickerProps {
 
 function groupModels(models: ProviderModel[]): ProviderGroup[] {
   const groups = new Map<string, ProviderGroup>();
-  for (const model of [...models].sort(compareModelPreference)) {
+  for (const model of models) {
     const existing = groups.get(model.providerId);
     if (existing) {
       existing.models.push(model);
@@ -103,10 +101,14 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
       role="dialog"
       aria-label="Choose a model"
       style={{ bottom: `calc(2.5rem - ${downwardOffset}px)` }}
-      className="glass-panel-solid shadow-glass-pop animate-pop-in absolute left-0 z-40 flex max-h-[min(380px,calc(100vh-4rem))] w-[min(24rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-[10px]"
+      className="animate-pop-in absolute left-0 z-40 flex max-h-[min(430px,calc(100vh-4rem))] w-[min(32rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--color-bg-surface)]/98 shadow-2xl shadow-black/50 backdrop-blur-xl"
     >
-      <div className="border-b border-[var(--color-border)] px-3 pb-0 pt-3">
-        <label className="flex h-8 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)]">
+      <div className="border-b border-white/[0.06] px-3.5 pb-0 pt-3.5">
+        <div className="mb-3 text-center text-[13px] font-medium text-[var(--color-text-primary)]">
+          Choose your model
+        </div>
+
+        <label className="flex h-9 items-center gap-2 rounded-lg border border-white/[0.06] bg-[var(--color-bg-input)] px-2.5 transition-colors focus-within:border-[var(--color-border-accent)]">
           <Search size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
           <input
             ref={searchRef}
@@ -121,7 +123,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         <div
           role="tablist"
           aria-label="Model providers"
-          className="mt-2 flex gap-1 overflow-x-auto pb-2"
+          className="mt-2.5 flex gap-1 overflow-x-auto pb-2"
         >
           {filteredGroups.map((group) => {
             const active = group.id === activeGroup?.id;
@@ -136,9 +138,9 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                   searchRef.current?.focus();
                 }}
                 className={[
-                  "flex shrink-0 items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] transition-colors",
+                  "flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors",
                   active
-                    ? "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile"
+                    ? "bg-[var(--color-cherry-glow)] text-[var(--color-text-primary)] ring-1 ring-inset ring-[var(--color-border-accent)]"
                     : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]",
                 ].join(" ")}
               >
@@ -152,8 +154,8 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                   className={[
                     "min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] tabular-nums",
                     active
-                      ? "bg-[var(--color-cherry)] text-on-accent"
-                      : "bg-[var(--color-cherry-glow)] text-[var(--color-text-muted)]",
+                      ? "bg-[var(--color-cherry)]/15 text-[var(--color-cherry-bright)]"
+                      : "bg-white/[0.05] text-[var(--color-text-muted)]",
                   ].join(" ")}
                 >
                   {group.models.length}
@@ -164,55 +166,37 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         </div>
       </div>
 
-      <div role="tabpanel" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto p-2">
+      <div role="tabpanel" className="min-h-0 overflow-y-auto p-2">
         {activeGroup?.models.length ? (
           activeGroup.models.map((model) => {
             const selected = model.id === selectedModelId;
-            const pricing = formatModelPricing(model);
             return (
               <button
                 key={model.id}
                 type="button"
                 onClick={() => onSelect(model.id)}
                 className={[
-                  "group/model flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-bg-surface-hover)]/70",
+                  "group/model flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-colors",
+                  selected
+                    ? "bg-[var(--color-bg-surface-hover)]"
+                    : "hover:bg-[var(--color-bg-surface-hover)]/70",
                 ].join(" ")}
               >
-                <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors group-hover/model:border-[var(--color-border-strong)]">
-                  <ModelBrandIcon model={model} className="h-[14px] w-[14px]" />
+                <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.025] text-[var(--color-text-secondary)] transition-colors group-hover/model:border-white/[0.1]">
+                  <ModelBrandIcon model={model} className="h-[18px] w-[18px]" />
                   {selected ? (
-                    <span className="absolute -bottom-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-brand text-white ring-2 ring-[var(--surface-tile)]">
-                      <Check size={7} strokeWidth={3.5} />
+                    <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-cherry)] text-[#140709] ring-2 ring-[var(--color-bg-surface-hover)]">
+                      <Check size={8} strokeWidth={3.5} />
                     </span>
                   ) : null}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
+                  <span className="block truncate text-[13px] font-medium text-[var(--color-text-primary)]">
                     {model.label}
-                    <span className="ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
-                      {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
-                      {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
-                    </span>
                   </span>
-                  <span className="mt-0.5 block truncate font-mono text-[10px] text-[var(--color-text-muted)]">
+                  <span className="mt-0.5 block truncate font-mono text-[10.5px] text-[var(--color-text-tertiary)]">
                     {model.model}
                   </span>
-                </span>
-                <span className="w-[8.25rem] shrink-0 text-right">
-                  {pricing ? (
-                    <>
-                      <span className="block whitespace-nowrap text-[10px] font-medium tabular-nums text-[var(--color-text-secondary)]">
-                        {pricing}
-                      </span>
-                      <span className="mt-0.5 block text-[9.5px] text-[var(--color-text-muted)]">
-                        per 1M tokens
-                      </span>
-                    </>
-                  ) : (
-                    <span className="block text-[10px] text-[var(--color-text-muted)]">
-                      Price unavailable
-                    </span>
-                  )}
                 </span>
               </button>
             );

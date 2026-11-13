@@ -1,7 +1,3 @@
-#[path = "support/search.rs"]
-mod search;
-use search::test_registry;
-
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
@@ -12,6 +8,7 @@ use axiomcli::{
     provider::{
         AssistantTurn, FunctionCall, InferenceProvider, InferenceRequest, ProviderEvent, ToolCall,
     },
+    tools::default_registry,
     workspace::Workspace,
 };
 use serde_json::json;
@@ -43,7 +40,6 @@ impl InferenceProvider for ScriptedProvider {
 
 fn call(id: &str, name: &str, arguments: &serde_json::Value) -> AssistantTurn {
     AssistantTurn {
-        reasoning: None,
         text: String::new(),
         tool_calls: vec![ToolCall {
             id: id.into(),
@@ -94,7 +90,6 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
                 &json!({"program":"cargo", "args":["test"], "timeout_secs":60}),
             ),
             AssistantTurn {
-                reasoning: None,
                 text: "Implemented the fix and the real test command passes.".into(),
                 tool_calls: Vec::new(),
             },
@@ -102,7 +97,7 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
     });
     let engine = AgentEngine::new(
         provider,
-        Arc::new(test_registry(32 * 1024).expect("tools")),
+        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:8888").expect("tools")),
         "scripted",
         8,
     );
@@ -111,13 +106,10 @@ async fn deterministic_agent_edits_runs_tests_and_reports_completion() {
     engine
         .run(
             TurnContext {
-                attachments: Vec::new(),
                 session_id: session_id.clone(),
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::FullAccess,
-                web_enabled: true,
-                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -199,7 +191,6 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
                 &json!({"program":"cargo", "args":["test"], "env":{"NO_COLOR":"1"}, "timeout_secs":60}),
             ),
             AssistantTurn {
-                reasoning: None,
                 text:
                     "The first test exposed the defect; the repair is applied and the rerun passes."
                         .into(),
@@ -209,7 +200,7 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
     });
     let engine = AgentEngine::new(
         provider,
-        Arc::new(test_registry(32 * 1024).expect("tools")),
+        Arc::new(default_registry(32 * 1024, "http://127.0.0.1:8888").expect("tools")),
         "scripted",
         8,
     );
@@ -217,13 +208,10 @@ async fn deterministic_agent_observes_failure_repairs_and_reruns() {
     engine
         .run(
             TurnContext {
-                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::FullAccess,
-                web_enabled: true,
-                steering: None,
                 approval: None,
                 questions: None,
             },
@@ -270,7 +258,6 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
                 &json!({"path":target, "old":"protected", "new":"owned"}),
             ),
             AssistantTurn {
-                reasoning: None,
                 text: "The operation was blocked.".into(),
                 tool_calls: Vec::new(),
             },
@@ -278,7 +265,7 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
     });
     let engine = AgentEngine::new(
         provider,
-        Arc::new(test_registry(4096).expect("tools")),
+        Arc::new(default_registry(4096, "http://127.0.0.1:8888").expect("tools")),
         "scripted",
         4,
     );
@@ -286,13 +273,10 @@ async fn adversarial_out_of_root_edit_is_rejected_without_side_effect() {
     engine
         .run(
             TurnContext {
-                attachments: Vec::new(),
                 session_id: SessionId::new(),
                 turn_id: TurnId::new(),
                 cwd: root.path().to_path_buf(),
                 permission_profile: PermissionProfile::FullAccess,
-                web_enabled: true,
-                steering: None,
                 approval: None,
                 questions: None,
             },

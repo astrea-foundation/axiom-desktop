@@ -11,8 +11,6 @@ use crate::app::ThinkingLevel;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
-    Update,
-    Usage,
     Permissions,
     Compact { focus: Option<String> },
     Model,
@@ -22,14 +20,8 @@ pub enum SlashCommand {
     Login,
     Logout,
     Account,
-    Balance,
-    Topup,
-    Redeem,
     Security,
-    AcceptOutdatedTee,
     Refresh,
-    Theme(crate::tui::Appearance),
-    Web(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +45,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "permissions",
         usage: "/permissions",
-        description: "Open tool permission settings",
+        description: "Open tool and crypto permission settings",
         aliases: &[],
     },
     SlashCommandSpec {
@@ -82,20 +74,20 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "thinking",
-        usage: "/thinking <enabled|disabled|minimal|low|medium|high|xhigh>",
-        description: "Set a reasoning mode or effort supported by the selected model",
+        usage: "/thinking <minimal|low|medium|high|xhigh>",
+        description: "Set the reasoning effort for subsequent requests",
         aliases: &["reasoning"],
     },
     SlashCommandSpec {
         name: "login",
         usage: "/login",
-        description: "Sign in to an Axiom account in your browser",
+        description: "Connect an Axiom account or use an Axiom API key",
         aliases: &["signin"],
     },
     SlashCommandSpec {
         name: "logout",
         usage: "/logout",
-        description: "Sign out and remove the saved Axiom session from this computer",
+        description: "Remove the saved Axiom API key from this computer",
         aliases: &["signout"],
     },
     SlashCommandSpec {
@@ -106,7 +98,7 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "security",
-        usage: "/security [accept-outdated]",
+        usage: "/security",
         description: "Inspect attestation, encryption, and workload evidence",
         aliases: &["attestation"],
     },
@@ -121,48 +113,6 @@ pub const COMMANDS: &[SlashCommandSpec] = &[
         usage: "/help",
         description: "Show available slash commands",
         aliases: &["commands"],
-    },
-    SlashCommandSpec {
-        name: "theme",
-        usage: "/theme <dark|light|terminal>",
-        description: "Choose desktop colors or inherit your terminal appearance",
-        aliases: &[],
-    },
-    SlashCommandSpec {
-        name: "web",
-        usage: "/web <on|off>",
-        description: "Enable external search and URL fetching; queries are not E2EE",
-        aliases: &[],
-    },
-    SlashCommandSpec {
-        name: "balance",
-        usage: "/balance",
-        description: "View credit and Zcash deposits",
-        aliases: &["credits"],
-    },
-    SlashCommandSpec {
-        name: "topup",
-        usage: "/topup",
-        description: "Show your mainnet Zcash deposit address",
-        aliases: &["top-up"],
-    },
-    SlashCommandSpec {
-        name: "redeem",
-        usage: "/redeem",
-        description: "Redeem a gift code in a private entry screen",
-        aliases: &[],
-    },
-    SlashCommandSpec {
-        name: "usage",
-        usage: "/usage",
-        description: "Inspect reported context usage, capacity, and compaction threshold",
-        aliases: &[],
-    },
-    SlashCommandSpec {
-        name: "update",
-        usage: "/update",
-        description: "Install the latest Axiom release and restart this session",
-        aliases: &[],
     },
 ];
 
@@ -202,16 +152,7 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         .map(|spec| spec.name);
 
     Some(match canonical {
-        Some("balance") => no_arguments(arguments, SlashCommand::Balance, "/balance"),
-        Some("topup") => no_arguments(arguments, SlashCommand::Topup, "/topup"),
-        Some("redeem") => no_arguments(
-            arguments,
-            SlashCommand::Redeem,
-            "/redeem (enter the code in the private screen)",
-        ),
-        Some("update") => no_arguments(arguments, SlashCommand::Update, "/update"),
         Some("help") => no_arguments(arguments, SlashCommand::Help, "/help"),
-        Some("usage") => no_arguments(arguments, SlashCommand::Usage, "/usage"),
         Some("permissions") => {
             no_arguments(arguments, SlashCommand::Permissions, COMMANDS[0].usage)
         }
@@ -229,17 +170,8 @@ pub fn parse(input: &str) -> Option<Result<SlashCommand, SlashCommandError>> {
         Some("login") => no_arguments(arguments, SlashCommand::Login, COMMANDS[6].usage),
         Some("logout") => no_arguments(arguments, SlashCommand::Logout, COMMANDS[7].usage),
         Some("account") => no_arguments(arguments, SlashCommand::Account, COMMANDS[8].usage),
-        Some("security") if arguments == "accept-outdated" => Ok(SlashCommand::AcceptOutdatedTee),
         Some("security") => no_arguments(arguments, SlashCommand::Security, COMMANDS[9].usage),
         Some("refresh") => no_arguments(arguments, SlashCommand::Refresh, COMMANDS[10].usage),
-        Some("theme") => crate::tui::Appearance::parse(arguments)
-            .map(SlashCommand::Theme)
-            .ok_or_else(|| SlashCommandError::new("/theme <dark|light|terminal>")),
-        Some("web") => match arguments {
-            "on" => Ok(SlashCommand::Web(true)),
-            "off" => Ok(SlashCommand::Web(false)),
-            _ => Err(SlashCommandError::new("/web <on|off>")),
-        },
         Some(_) => unreachable!("all command specs are handled"),
         None => Err(SlashCommandError::new(format!(
             "unknown command `/{name}`; use /help to list commands"
@@ -322,10 +254,6 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
                             | "account"
                             | "security"
                             | "refresh"
-                            | "balance"
-                            | "topup"
-                            | "redeem"
-                            | "usage"
                     ) {
                         ""
                     } else {
@@ -349,30 +277,15 @@ pub fn completions(input: &str) -> Vec<SlashCompletion> {
         return Vec::new();
     }
     let options: Vec<(&str, &'static str)> = match command {
-        "theme" => vec![
-            ("dark", "Charcoal surfaces and orange activity"),
-            ("light", "Light surfaces and ink controls"),
-            ("terminal", "Inherit terminal foreground and background"),
-        ],
-        "web" => vec![
-            (
-                "on",
-                "Share search queries and URLs with external services; not E2EE",
-            ),
-            ("off", "Disable external search and URL fetching"),
-        ],
         "thinking" => vec![
-            ("enabled", "Enable reasoning"),
-            ("disabled", "Disable reasoning"),
             ("minimal", "Use minimal reasoning effort"),
             ("low", "Use low reasoning effort"),
             ("medium", "Use medium reasoning effort"),
             ("high", "Use high reasoning effort"),
             ("xhigh", "Use extra-high reasoning effort"),
         ],
-        "permissions" | "compact" | "help" | "update" | "model" | "resume" | "delete" | "login"
-        | "logout" | "account" | "security" | "refresh" | "balance" | "topup" | "redeem"
-        | "usage" => Vec::new(),
+        "permissions" | "compact" | "help" | "model" | "resume" | "delete" | "login" | "logout"
+        | "account" | "security" | "refresh" => Vec::new(),
         _ => unreachable!("all command specs are handled"),
     };
     options
