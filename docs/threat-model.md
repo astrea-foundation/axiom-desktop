@@ -1,9 +1,8 @@
 # Security and provider trust operations
 
 This guide describes the native implementation's trust boundaries. The
-[privacy guide](privacy.md) explains user-visible data handling. Dated audit
-results are retained as [historical evidence](archive/README.md), not a blanket
-claim that all current code or deployed artifacts are free of vulnerabilities.
+[privacy guide](privacy.md) explains user-visible data handling.
+[Release acceptance](validation.md) defines checks for actual deployed artifacts.
 
 ## Assets and authority
 
@@ -40,8 +39,7 @@ cannot authorize an unsupported protocol or unverified public key.
 | NEAR | `near-v3`, encryption `2`, `near-tdx-nvidia-v2` | Fresh challenged direct-worker evidence, locally verified Intel/NVIDIA and key/manifest bindings; Ed25519 receipt for exact request/response/model |
 | Tinfoil | `tinfoil-ehbp-v1`, encryption `1`, `tinfoil-snp-sigstore-v1` | Pinned verifier checks SNP router/build/TLS/HPKE binding; request-bound encrypted response and authenticated completion |
 
-NEAR's retired v2 contract is
-not a supported fallback. Provider-specific wire details live in
+Provider-specific wire details live in
 [NEAR v3](protocols/near-v3.md) and [Tinfoil EHBP](protocols/tinfoil-ehbp-v1.md).
 
 NEAR v3's client verifies an **attested worker TLS key**. The backend pins its
@@ -117,8 +115,8 @@ Never store the private signer in source, runtime configuration or logs. A signe
 compromise requires a client trust-root replacement; backend distribution alone
 cannot replace the compiled trust root. During provider outages, restore the
 service within accepted expiry bounds rather than extending trust lifetimes or
-marking security failures retryable. Backend lease and deployment details belong
-to [platform provider operations](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/providers.md).
+marking security failures retryable. Backend lease and deployment operations are
+maintained separately by the platform team.
 
 Canary each selected provider/model with discovery, fresh local attestation,
 an encrypted completion and authenticated stream termination. Check the specific

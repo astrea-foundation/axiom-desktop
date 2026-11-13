@@ -1,16 +1,5 @@
 # Agent Instructions
 
-## Retired repository
-
-This is the legacy `astrea-foundation/axiomai` repository. Do not start new
-development here. Native work belongs in
-[axiom-desktop](https://github.com/astrea-foundation/axiom-desktop), normally the
-sibling `../axiom-desktop` checkout. Hosted API and web work belongs in
-[axiom-platform](https://github.com/astrea-foundation/axiom-platform), normally
-`../axiom-platform`. Read the destination repository's `AGENTS.md` before editing.
-Keep this checkout and its branches/tags as historical evidence; unreleased
-legacy commits require separate review before porting to an active repository.
-
 ## Explicit outdated-TEE consent
 
 A local user may accept Intel's exact `OutOfDate` TCB status for NEAR until the
@@ -56,8 +45,9 @@ guides belong in `docs/`; link to one authoritative document instead of copying 
 When changing documented behavior, APIs, configuration, security, commands,
 deployment or tests, update the affected documents in the same change. Repair
 inbound links when moving or deleting files, including companion-repository
-links. Preserve unfinished work before retiring a plan and archive only useful,
-clearly dated historical evidence.
+links. Preserve unfinished release requirements in `docs/validation.md`. Keep
+public guides focused on current behavior; internal plans, incident records and
+raw QA captures belong in private maintainer records.
 
 ## Inference authentication policy
 

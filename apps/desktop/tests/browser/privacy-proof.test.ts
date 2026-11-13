@@ -237,6 +237,8 @@ for (const theme of ["light", "dark"]) test(`a streaming reply outlives its repo
     assert.match(await dialog(page).innerText(), /Cached attestation report\s+Report needs refresh/);
     await capture(page, `verified-expired-report-${theme}`);
     await page.evaluate(() => (window as any).__privacyTest.setDisabledReason(undefined));
+    assert.equal(await count(page), 0, "completing a reply does not automatically renew proof");
+    await dialog(page).getByRole("button", { name: "Refresh", exact: true }).click();
     await dialog(page).getByRole("status").filter({ hasText: "Verifying TEE" }).waitFor();
     await page.getByRole("button", { name: "Reply verified. View privacy proof", exact: true }).waitFor();
     assert.equal(await count(page), 1);
@@ -271,225 +273,74 @@ test("interrupted and failed output cannot inherit a previous reply's verificati
   } finally { await page.close(); }
 });
 
-test("background proof renews before expiry without opening the dialog or duplicating an in-flight check", async () => {
+test("expiry and unrelated activity never start background verification", async () => {
   const { page, errors } = await open("dark", true);
   try {
-    await page.clock.fastForward(239_000);
+    await page.clock.fastForward(299_000);
     assert.equal(await count(page), 0);
     await page.clock.fastForward(2_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    assert.equal(await dialog(page).count(), 0);
-    await page.clock.fastForward(120_000);
-    assert.equal(await count(page), 1, "only one verification may be pending");
-    await page.evaluate(() => (window as any).__privacyTest.finish());
-    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(239_000);
-    assert.equal(await count(page), 1, "the next renewal uses the new report's expiry");
-    await page.clock.fastForward(2_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 2);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("background renewal waits for replies, connection, sign-in, and thread resync", async () => {
-  const { page, errors } = await open("light", true);
-  try {
-    await page.evaluate(() => (window as any).__privacyTest.update({ running: true }));
-    await page.clock.fastForward(301_000);
-    assert.equal(await count(page), 0);
-    await page.getByRole("button", { name: "Verifying reply. View privacy proof", exact: true }).waitFor();
-    await page.evaluate(() => {
-      (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification");
-      (window as any).__privacyTest.update({ running: false });
-    });
-    await page.clock.fastForward(120_000);
-    assert.equal(await count(page), 0);
-    await page.evaluate(() => (window as any).__privacyTest.setDisabledReason("Sign in to refresh verification"));
-    await page.clock.fastForward(120_000);
-    assert.equal(await count(page), 0);
-    await page.evaluate(() => {
-      (window as any).__privacyTest.update({ needsResync: true });
-      (window as any).__privacyTest.setDisabledReason(undefined);
-    });
-    await page.clock.fastForward(120_000);
-    assert.equal(await count(page), 0);
-    await page.evaluate(() => (window as any).__privacyTest.update({ needsResync: false }));
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("failed background renewal stays failed and backs off, while manual refresh remains available", async () => {
-  const { page, errors } = await open("light", true);
-  try {
-    await page.clock.fastForward(241_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    await page.evaluate(() => (window as any).__privacyTest.finish(true));
-    await page.getByRole("button", { name: "TEE check failed. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(29_000);
-    assert.equal(await count(page), 1);
-    await page.clock.fastForward(2_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 2);
-    await page.evaluate(() => (window as any).__privacyTest.finish(true));
-    await page.getByRole("button", { name: "TEE check failed. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(59_000);
-    assert.equal(await count(page), 2, "a second failure doubles the retry interval");
-    await page.clock.fastForward(2_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 3);
-    await page.evaluate(() => (window as any).__privacyTest.finish(true));
-    await page.getByRole("button", { name: "TEE check failed. View privacy proof", exact: true }).waitFor();
-    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
-    assert.equal(await count(page), 4, "the user can retry before the automatic backoff ends");
-    await page.evaluate(() => (window as any).__privacyTest.finish());
-    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("returning the same short lease cannot trigger a refresh loop or extend its validity", async () => {
-  const { page, errors } = await open("light", true);
-  try {
-    await page.evaluate((evidence) => (window as any).__privacyTest.update({ securityEvidence: {
-      ...evidence, verifiedAtUnixSeconds: Math.floor(Date.now() / 1000), hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 10,
-    } }), securityEvidence());
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    await page.evaluate(() => (window as any).__privacyTest.finish(false, true));
-    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(29_000);
-    assert.equal(await count(page), 1);
     await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(2_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 2);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("wake checks overdue evidence immediately and unmount cancels scheduled renewals", async () => {
-  const { page, errors } = await open("light", true);
-  try {
-    await page.clock.setSystemTime(new Date("2026-09-10T05:10:00Z"));
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    await page.evaluate(() => (window as any).__privacyTest.setShowChat(false));
-    await proofButton(page).waitFor({ state: "detached" });
-    await page.evaluate(() => (window as any).__privacyTest.finish());
-    await page.clock.fastForward(600_000);
     await page.evaluate(() => {
       window.dispatchEvent(new Event("focus"));
       window.dispatchEvent(new Event("online"));
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    assert.equal(await count(page), 1, "an unmounted badge does not schedule or react to wake events");
-    await page.evaluate(() => (window as any).__privacyTest.setShowChat(true));
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 2, "returning to an expired thread renews it");
+    await page.keyboard.press("Shift");
+    await page.clock.fastForward(600_000);
+    assert.equal(await count(page), 0);
+    await page.evaluate(() => (window as any).__privacyTest.update({ securityEvidence: null, security: { state: "unverified" } }));
+    await page.getByRole("button", { name: "Verify TEE. View privacy proof", exact: true }).waitFor();
+    await page.clock.fastForward(60_000);
+    assert.equal(await count(page), 0, "mounting an unverified thread is not composition");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
 
-test("initial evidence is automatic while development and an existing preflight are left alone", async () => {
+test("manual refresh remains available after expiry and failure, without automatic retries", async () => {
   const { page, errors } = await open("light", true);
   try {
-    await page.evaluate(() => (window as any).__privacyTest.update({ securityEvidence: null, security: { state: "unattested_development" } }));
-    await page.clock.fastForward(600_000);
-    assert.equal(await count(page), 0);
-    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "verifying" }, securityVerificationPending: true }));
-    await page.clock.fastForward(600_000);
-    assert.equal(await count(page), 0);
-    await page.evaluate(() => (window as any).__privacyTest.update({ security: { state: "unverified" }, securityVerificationPending: false }));
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    await page.clock.fastForward(301_000);
+    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
     assert.equal(await count(page), 1);
+    await page.evaluate(() => (window as any).__privacyTest.finish(true));
+    await page.getByRole("button", { name: "TEE check failed. View privacy proof", exact: true }).waitFor();
+    await page.clock.fastForward(600_000);
+    assert.equal(await count(page), 1);
+    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
     await page.evaluate(() => (window as any).__privacyTest.finish());
     await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("automatic checks stop at 30 inactive minutes and keyboard activity wakes verification", async () => {
-  const { page, errors } = await open("dark", true);
-  try {
-    // Seven successful background renewals must not count as user activity.
-    for (let index = 0; index < 7; index++) {
-      await page.clock.fastForward(241_000);
-      await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-      await page.evaluate(() => (window as any).__privacyTest.finish());
-      await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    }
-    await page.clock.fastForward(112_000);
-    assert.equal(await count(page), 7);
-    assert.equal(await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).count(), 0);
-    await page.clock.fastForward(1_000);
-    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
-    await capture(page, "idle-dark");
-    await page.clock.fastForward(600_000);
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    assert.equal(await count(page), 7, "timers and network recovery do not wake an inactive user");
-    await page.keyboard.press("Shift");
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 8);
-    await page.evaluate(() => (window as any).__privacyTest.finish());
-    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("user activity resets the 30-minute window even while renewal is unavailable", async () => {
-  const { page, errors } = await open("light", true);
-  try {
-    await page.evaluate(() => (window as any).__privacyTest.setDisabledReason("Reconnect to refresh verification"));
-    await page.clock.fastForward(1_740_000);
-    await page.keyboard.press("Shift");
-    await page.clock.fastForward(61_000);
-    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(1_739_000);
-    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
-    await capture(page, "idle-light");
-    await page.evaluate(() => (window as any).__privacyTest.setDisabledReason(undefined));
-    assert.equal(await count(page), 0);
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    assert.deepEqual(errors, []);
-  } finally { await page.close(); }
-});
-
-test("a late preflight completion cannot wake an idle badge or restart polling", async () => {
-  const { page, errors } = await open("light", true);
-  try {
-    await page.clock.fastForward(241_000);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    await page.clock.fastForward(1_559_000);
-    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
-    await page.evaluate(() => (window as any).__privacyTest.finish());
-    await page.clock.fastForward(600_000);
-    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    await page.mouse.move(200, 200);
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
     assert.equal(await count(page), 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
 
-test("long running replies stay active and renew as soon as work finishes", async () => {
+test("idle and wake update the displayed proof without making requests", async () => {
+  const { page, errors } = await open("light", true);
+  try {
+    await page.clock.fastForward(1_800_000);
+    await page.getByRole("button", { name: "Idle. View privacy proof", exact: true }).waitFor();
+    await capture(page, "idle-light");
+    await page.keyboard.press("Shift");
+    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 0);
+    await page.evaluate(() => (window as any).__privacyTest.setShowChat(false));
+    await page.clock.fastForward(600_000);
+    await page.evaluate(() => (window as any).__privacyTest.setShowChat(true));
+    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("long replies stay active and completing them does not start a verification", async () => {
   const { page, errors } = await open("light", true);
   try {
     await page.evaluate(() => (window as any).__privacyTest.update({ running: true }));
     await page.clock.fastForward(1_860_000);
     await page.getByRole("button", { name: "Verifying reply. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 0, "renewal does not overlap native session work");
     await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
-    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
-    assert.equal(await count(page), 1);
-    await page.evaluate(() => (window as any).__privacyTest.finish());
-    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
+    assert.equal(await count(page), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

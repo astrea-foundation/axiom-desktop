@@ -283,6 +283,9 @@ function installAgentIpc(): void {
   );
   agentHandle("agent:account-open", () => sidecar.openAccountPortal());
   agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
+  agentHandle("agent:security-prewarm", (_event, modelId: unknown) =>
+    sidecar.prewarmSecurity(boundedString(modelId, "model ID", 512)),
+  );
   agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
     sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
       acceptOutdatedTee === true ? boundedString(modelId, "model ID", 512) : undefined),

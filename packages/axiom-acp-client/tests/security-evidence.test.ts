@@ -157,3 +157,118 @@ test("workload manifests accept up to 1 MiB of UTF-8 including the truncation ma
   valid.evidence!.workloadManifest = "é".repeat(limit / 2) + "x";
   assert.throws(() => publicSecurityEvidence(valid, "test-model"), /incomplete or mismatched/);
 });
+
+test("composition warms once while pending and reuses the result until expiry", async (t) => {
+  const client = fixture(t);
+  const pending = hold(t, client);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const first = client.prewarmSecurity("test-model");
+  for (let key = 0; key < 20; key++) assert.equal(client.prewarmSecurity("test-model"), first);
+  await Promise.resolve();
+  assert.equal(pending.request.mock.callCount(), 1);
+  assert.deepEqual(pending.request.mock.calls[0]!.arguments.slice(0, 2), ["_axiom/security/prewarm", { modelId: "test-model" }]);
+  const report = result();
+  pending.resolve(report);
+  await first;
+  now = report.evidence!.hardExpiresAtUnixSeconds * 1000 - 1;
+  assert.equal(client.prewarmSecurity("test-model"), first, "even the final valid second is reusable");
+  now++;
+  const next = result();
+  t.mock.method(client.process, "request", async () => next);
+  assert.notEqual(client.prewarmSecurity("test-model"), first);
+  await client.prewarmSecurity("test-model");
+  assert.equal(client.getState().sessions.thread?.security?.state, "verified");
+});
+
+test("typing failures back off without timers, and manual refresh remains available", async (t) => {
+  const client = fixture(t);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const request = t.mock.method(client.process, "request", async () => { throw new Error("offline"); });
+  for (const delay of [30_000, 60_000, 120_000, 240_000, 300_000]) {
+    const failed = client.prewarmSecurity("test-model");
+    await assert.rejects(failed, /offline/);
+    const calls = request.mock.callCount();
+    now += delay - 1;
+    for (let key = 0; key < 10; key++) assert.equal(client.prewarmSecurity("test-model"), failed);
+    assert.equal(request.mock.callCount(), calls);
+    now++;
+  }
+  const reply = result();
+  t.mock.method(client.process, "request", async () => reply);
+  await client.verifySecurity("thread");
+});
+
+for (const change of ["account", "runtime", "disconnect"] as const) {
+  test(`warmup cannot reuse or apply a result across a ${change} change`, async (t) => {
+    const client = fixture(t);
+    const pending = hold(t, client);
+    const warmup = client.prewarmSecurity("test-model");
+    await Promise.resolve();
+    if (change === "account") client.state.setAccount({ revision: 2, state: "valid", account: { id: "account-two", linkedMethods: [] } });
+    if (change === "disconnect") client.state.setConnected(false);
+    if (change === "runtime") {
+      for (const runtimeInstanceId of ["one", "two"]) client.state.extensionEvent({
+        runtimeInstanceId, sequence: 1, occurredAt: new Date().toISOString(), sessionId: "thread",
+        event: { kind: "security_changed", status: { state: "unverified" } },
+      });
+    }
+    pending.resolve(result());
+    await assert.rejects(warmup, /changed/);
+    assert.equal(client.getState().sessions.thread?.securityEvidence ?? null, null);
+    if (change === "account") {
+      t.mock.method(client.process, "request", async () => result());
+      assert.notEqual(client.prewarmSecurity("test-model"), warmup);
+      await client.prewarmSecurity("test-model");
+    }
+  });
+}
+
+test("model warmup before thread creation sends no draft and stale model reports never overwrite a thread", async (t) => {
+  const client = fixture(t);
+  client.state.removeSession("thread");
+  const pending = hold(t, client);
+  const warmup = client.prewarmSecurity("test-model");
+  await Promise.resolve();
+  client.state.addSession("thread", "");
+  model(client, "other-model");
+  pending.resolve(result());
+  await warmup;
+  assert.deepEqual(pending.request.mock.calls[0]!.arguments[1], { modelId: "test-model" });
+  assert.equal(client.getState().sessions.thread?.securityEvidence, null);
+});
+
+test("composing during explicit verification joins it without starting a warmup", async (t) => {
+  const client = fixture(t);
+  const pending = hold(t, client);
+  const manual = client.verifySecurity("thread");
+  assert.equal(client.prewarmSecurity("test-model"), manual);
+  await Promise.resolve();
+  assert.equal(pending.request.mock.callCount(), 1);
+  pending.resolve(result());
+  await manual;
+});
+
+for (const cancelled of [false, true]) {
+  test(`Enter during warmup ${cancelled ? "can be cancelled without sending" : "waits and sends exactly once"}`, async (t) => {
+    const client = fixture(t);
+    let resolve!: (value: VerifySecurityResponse) => void;
+    const gate = new Promise<VerifySecurityResponse>((yes) => { resolve = yes; });
+    let sent = 0;
+    t.mock.method(client.process, "request", async (method: string) => {
+      if (method === "_axiom/security/prewarm") return gate;
+      if (method === "session/prompt") { sent++; return { stopReason: "end_turn" }; }
+      throw new Error("No durable fixture timeline");
+    });
+    const warmup = client.prewarmSecurity("test-model");
+    const prompt = client.prompt("thread", "local draft", "client-message");
+    await Promise.resolve();
+    assert.equal(sent, 0);
+    if (cancelled) await client.cancel("thread");
+    resolve(result());
+    await warmup;
+    assert.equal((await prompt).stopReason, cancelled ? "cancelled" : "end_turn");
+    assert.equal(sent, cancelled ? 0 : 1);
+  });
+}

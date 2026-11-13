@@ -55,10 +55,12 @@
     "electron": "^37.2.6",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "micromark-util-types": "2.0.2",
     "playwright": "1.61.1",
     "tailwindcss": "^4.3.0",
     "tsx": "^4.20.6",
     "typescript": "~5.9.2",
+    "unified": "11.0.5",
     "vite": "^7.1.3"
   }
 }

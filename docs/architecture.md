@@ -80,13 +80,25 @@ or transaction; moving a method does not create an extra commit boundary.
 Runtime events become materialized records rather than stored event envelopes.
 Startup marks unfinished work interrupted and never replays side effects.
 The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
-[versioning policy](versioning.md) define compatibility. See
-[ADR 0015](adr/0015-persistence-modules.md) for this split.
+[versioning policy](versioning.md) define compatibility.
 
 Conversation content and drafts stay local. Desktop drafts, pending submissions,
 Web preferences and queues use account-scoped local state. Deleting a thread
 removes its conversation records but does not delete files in its working directory.
 Local conversation databases are not encrypted at rest by AxiomCLI.
+
+## Runtime boundaries
+
+TUI and ACP submit typed commands to the shared runtime and translate semantic
+events for their own presentation. Tokio tasks use explicit cancellation tokens;
+bounded channels and task ownership prevent abandoned work from outliving its
+account or parent operation. Domain errors remain typed; diagnostics are redacted.
+
+Each secure provider owns evidence retrieval, local verification, key/endpoint
+binding, encryption and response authentication as one operation. It returns an
+opaque verified session rather than allowing callers to assemble trust from
+arbitrary public-key bytes. Shared crates receive typed configuration; application
+composition roots own environment settings and tool permission profiles.
 
 ## Inference and operational metadata
 
@@ -106,10 +118,11 @@ and encrypts tool results in subsequent model requests.
 
 Request accounting is separate from response verification. A completed billing
 record cannot turn cancelled or unauthenticated output into a verified reply.
-Automatic conversation titles are derived synchronously from the first accepted
-prompt by the shared [title helper](../apps/axiomcli/src/session_title.rs). They
-are bounded to eight words and 80 UTF-8 bytes, persisted only if absent in the
-account-bound store, and require no inference request or background task.
+The shared [title helper](../apps/axiomcli/src/session_title.rs) stores a bounded
+local fallback when a thread begins. A background attested E2EE request can
+replace only its own reserved fallback; manual renaming prevents replacement.
+Title work has separate usage accounting and cannot update another account or
+thread. Failure preserves the local fallback.
 
 ## Account credit and integrations
 
@@ -121,7 +134,8 @@ or hold payment-provider credentials. Testnet data is rejected in this path.
 Gift redemption uses the same interactive account authority. TUI and Desktop
 send codes through the native account client, receive a validated credit receipt,
 and never store the code as chat/history. Platform issues the card and owns its
-atomic ledger credit; [ADR 0017](adr/0017-gift-credit-controls.md) defines the boundary.
+atomic ledger credit. The [ACP contract](acp-compatibility.md#accounts-billing-and-public-evidence)
+defines the client boundary.
 The native and backend billing contracts must be released together. See [billing.rs](../apps/axiomcli/src/billing.rs)
 and the [Desktop guide](desktop.md#account-credit-and-usage).
 

@@ -52,15 +52,19 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
     const outside = (event: Event) => {
       if (!element.contains(event.target as Node) && !anchor.contains(event.target as Node)) dismiss();
     };
+    const anchorScrolled = (event: Event) => {
+      // Incoming deltas scroll the transcript, not the menu's anchor.
+      if (event.target instanceof Node && event.target.contains(anchor)) dismiss();
+    };
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("contextmenu", outside, true);
-    document.addEventListener("scroll", outside, true);
+    document.addEventListener("scroll", anchorScrolled, true);
     window.addEventListener("resize", dismiss);
     window.addEventListener("blur", dismiss);
     return () => {
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("contextmenu", outside, true);
-      document.removeEventListener("scroll", outside, true);
+      document.removeEventListener("scroll", anchorScrolled, true);
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("blur", dismiss);
     };

@@ -5,10 +5,9 @@ workflow in [CONTRIBUTING](../CONTRIBUTING.md), a stable `vMAJOR.MINOR.PATCH` ta
 on promoted `main`, and matching Desktop/AxiomCLI versions. A version bump or
 push to `dev` does not publish installers or activate the update feed.
 
-There are no existing users to migrate. Fresh installers include installation
-identity and the native updater. The [implementation plan](automatic-updates-plan.md)
-and [qualification report](testing/automatic-updates-2026-09-22.md) distinguish
-implemented code from outstanding signed OS acceptance.
+The [update architecture](updates.md) describes installation ownership and
+recovery. [Release acceptance](validation.md) covers signed OS qualification;
+[repository setup](repository-setup.md) lists Actions credentials and settings.
 
 ## Supported platforms
 
@@ -37,7 +36,7 @@ retain the boundaries documented in [the threat model](threat-model.md).
 ## Update trust and release setup
 
 Use a dedicated Ed25519 update-signing key, separate from account, inference,
-Apple, Windows and old archive/GPG keys. Store its PKCS#8 PEM as
+Apple and Windows signing keys. Store its PKCS#8 PEM as
 `AXIOM_UPDATE_SIGNING_KEY` in the native protected `release` environment.
 Set repository variable `AXIOM_UPDATE_PUBLIC_KEYS` in both repositories to the
 comma-separated, lowercase 32-byte public keys in hex. Native release builds
@@ -50,11 +49,11 @@ For rotation, first publish clients that trust both keys, then change the signer
 Retain old public keys while installed clients or remembered signed inventories
 still require them. Removing a trusted key without that overlap fails closed.
 
-Both source repositories are private. Create **public**
-`astrea-foundation/axiom-releases` with an initial README commit before the first
-publication. Only installers, checksums and signed manifests are uploaded there.
-Its release tag is a distribution label; the signed `revision` identifies the
-native source tag checked in the private source repository.
+The source repository publishes signed installers in its Releases tab. The
+platform publisher also uses the public `astrea-foundation/axiom-releases`
+distribution repository for installer assets and signed metadata. Its tag is a
+distribution label; the signed `revision` identifies the promoted native source
+commit. Repository names and access must agree across both publishers.
 
 Configure protected release credentials:
 
@@ -122,14 +121,14 @@ Mac and Windows records use `arch: "universal"`; Linux uses `arch: "x64"`.
 The current updater selects a universal installer on either supported native
 architecture. There is one feed, with no bridge release or compatibility aliases.
 Schema-2 parsing remains solely for already-published signed release records.
-See [the installer decision](adr/0019-combined-installers.md).
+See [update architecture](updates.md).
 Each record contains product, platform, architecture, format, name, length,
 SHA-256, and exact CDN and public GitHub asset URLs. Canonical signing recursively
 sorts object keys and uses compact UTF-8 JSON without the `signature` field.
 The native and platform repositories each check in their own contract and vectors.
 
-Follow the [platform publication guide](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/releases.md)
-for retries. It verifies all bytes before changing the public feed and records
+Coordinate publication retries with the platform maintainer. The publisher
+verifies all bytes before changing the public feed and records
 `release-publication.json` as a workflow artifact. An Actions build-input ZIP is
 never linked as an installer. Blockmaps and Electron support files are not part
 of this updater's public contract; the native helper uses the complete installer.
@@ -220,8 +219,8 @@ is a headless startup check, not proof that every GUI or account feature works.
 An installer failure is recorded for the next app check. Re-run the matching
 verified installer to repair files. Linux standalone retains old version slots;
 never manually reactivate an older version against incompatible account data.
-The old developer archive scripts remain available for reproducibility work but
-are not release downloads or automatic-update installation owners.
+Developer archive scripts support reproducibility work; production downloads
+and updates use the installers listed in the signed inventory.
 
 The source repository's Releases tab is populated after successful signing and
 inventory verification, even when cross-repository publication needs an operator.
@@ -229,39 +228,3 @@ inventory verification, even when cross-repository publication needs an operator
 checks every existing asset and publishes only a complete draft. Failed or
 superseded build tags are not advertised as releases. Public website/feed
 activation remains the platform publisher's responsibility.
-
-### v0.1.7 packaging repair
-
-The first combined release run `35803134333` completed all native builds and
-Mac/Linux packaging, but Windows afterPack called an unavailable internal
-`WinPackager.sign` method. The hook now uses Axiom's configured SHA-256 signer
-directly. The first retry then correctly rejected an unsigned copied CLI. The
-hook now explicitly signs executables, runtime DLLs and PowerShell scripts in
-all three owned resource directories. Regression checks exercise that complete
-resource inventory and signing failure propagation.
-
-The one-time `recover-017.yml` dispatch runs from `v0.1.7-packaging.2` (signing), followed by `v0.1.7-packaging.3` (verification only), pointing
-to the promoted repair on `main`, as required by the existing tag-only signing
-environments. Packaging tags do not trigger a full native rebuild. It verifies
-the immutable v0.1.7 revision and original artifact run, rejects changes outside
-the signing hook, its test, this documentation and the two release workflows, then
-overlays only the fixed hook on the tagged source. Receipt hashes, version and
-update-key checks still authenticate both retained Windows native inputs. The
-run records the product and packaging-repair revisions separately. No native
-binary or successful Mac/Linux installer is rebuilt or relabeled. Signed Windows
-x64/ARM64 install checks still gate the complete manifest and source Release.
-Future tags use the corrected normal release workflow.
-
-Run `35807400501` completed Windows signing and x64 installation checks. Both
-ARM64 packages also passed architecture, signature, version, trust-key and
-uninstall checks, but final temporary-directory removal raced an uninstaller
-image lock. The cleanup now retries for at most ten seconds, then warns without failing a
-verified release; functional and signature failures still fail immediately. A Windows VM test held a real file
-lock and verified successful cleanup after it released. The final verification
-workflow authenticates the retained signed run and its successful x64 job,
-retests ARM64 with the fixed cleanup, and publishes the same signed bytes.
-
-The release operator may sign and publish the complete inventory from retained
-artifacts once the functional/signature checks above have passed; temporary-file
-cleanup is not a publication gate. Keep the original product revision in the
-signed inventory and record the separate packaging revision and input run IDs.

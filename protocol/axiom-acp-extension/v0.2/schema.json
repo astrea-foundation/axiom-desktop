@@ -160,6 +160,9 @@
     "apiKeyRevokeResponse": {
       "$ref": "#/$defs/ApiKeyRevokeResponse"
     },
+    "prewarmSecurityRequest": {
+      "$ref": "#/$defs/PrewarmSecurityRequest"
+    },
     "verifySecurityRequest": {
       "$ref": "#/$defs/VerifySecurityRequest"
     },
@@ -242,6 +245,7 @@
     "apiKeyCreatedResponse",
     "apiKeyRevokeRequest",
     "apiKeyRevokeResponse",
+    "prewarmSecurityRequest",
     "verifySecurityRequest",
     "verifySecurityResponse",
     "compactRequest",
@@ -2424,6 +2428,18 @@
     },
     "ApiKeyRevokeResponse": {
       "type": "object"
+    },
+    "PrewarmSecurityRequest": {
+      "description": "Model-only warmup: no thread, prompt, inference, or implicit consent.",
+      "type": "object",
+      "properties": {
+        "modelId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "modelId"
+      ]
     },
     "VerifySecurityRequest": {
       "type": "object",

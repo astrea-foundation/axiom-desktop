@@ -15,5 +15,3 @@ pnpm desktop
 - [Install and update](../../docs/installing-desktop.md)
 - [Packaging and releases](../../docs/releasing.md)
 - [ACP contract](../../docs/acp-compatibility.md)
-
-The historical redesign handoff is [archived](../../docs/archive/desktop-redesign.md).

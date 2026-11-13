@@ -1,7 +1,7 @@
 # Evaluations and performance
 
 [The development guide](development.md#checks) owns general checks. This guide
-covers behavioral evaluation and historical performance observations.
+covers deterministic behavior, live-provider checks and performance budgets.
 [scripts/axiomcli-eval](../scripts/axiomcli-eval) defines the lanes.
 
 ## Routine checks and opt-in extended lane
@@ -80,53 +80,16 @@ is not evidence of a live-provider test.
 provider test; it requires the live variables described above. Hosted-search
 client tests use a local authenticated fixture, without paid search requests.
 
-## Historical measurements
+## Harness behavior
 
-These observations predate the current provider and storage changes. They are
-retained for comparison, not as current benchmarks or release guarantees.
-Re-measure on an identified commit/build/host before drawing performance claims.
+The persistence benchmark commits each checkpoint separately and reports elapsed
+time against platform-specific budgets. Database and export size bounds are
+independent of host speed. Performance observations must identify the build and
+host before they are compared or presented as release guarantees.
 
-| Date | Linux x86-64 development-host observation |
-|---|---|
-| 2026-08-21 | Release `--version`: <0.01 s, 5,424 KiB maximum RSS |
-| 2026-08-22 | Ten debug `--version` starts: 52 ms total |
-| 2026-08-22 | One second of idle TUI: 25,852 KiB RSS, zero scheduler ticks |
-| 2026-08-22 | 10,000 chunks and 5,000 SQLite entries: 2,502 ms journal time, 2,781,184-byte database |
-| 2026-08-22 | 24 background tasks in six batches: 102 ms, bounded output, all reaped |
-
-An older live baseline using the then-current local development service and
-`glm-5-2` recorded 8,252/8,036/5,970 ms, 1/1/2 tool calls and no mutations.
-This is historical test evidence, not proof of today's registered provider
-contracts. Dated Desktop/provider reports and their fix retests are indexed
-under [testing](testing/README.md).
-
-The 5,000-checkpoint persistence soak reports timing before checking its
-30-second Unix or 180-second Windows budget. Shared Linux runners also have variable
-durable-write latency: [the September 22 CI run](https://github.com/astrea-foundation/axiomai/actions/runs/35774248238)
-took 14.17 seconds, exceeding the former Linux-only 10-second limit. Each
-checkpoint still commits separately. The [Windows x64 qualification run](https://github.com/astrea-foundation/axiomai/actions/runs/35780630279)
-measured 103.13 seconds for those individually durable writes, so Windows has a
-separate disk-latency allowance. The 16 MiB database and 512 KiB export
-bounds remain the same on every platform. Path-display fixtures use native
-absolute paths.
-
-PTY interactions wait for persisted turn completion before sending idle-only
-commands, including after permission decisions, question answers, and plan
-review. Answer submission alone does not establish completion on a loaded
-runner. The harness retains bounded waits and terminal behavior checks, and
-includes captured PTY output when completion times out.
-
-The harness answers the terminal's cursor-position request and waits for its
-initial frame before resizing. Unix CLI input uses Crossterm's `use-dev-tty`
-polling backend so concurrent resize and keyboard readiness cannot lose an
-edge and leave the prompt waiting for another keypress. The PTY suite exercises
-startup, resize, prompt submission, and terminal restoration through that path.
-Credential tests use the production three-second operation deadline; deliberately
-stalled stores derive their delay from that deadline. A shorter test-only limit
-can reject ordinary Windows identity-file and ACL setup on a loaded machine.
-Windows test environments include Git's `usr/bin` directory on `PATH` for the
-`sh`, `printf`, and `env` process fixtures. MCP fixtures resolve `env` through the
-same sanitized path as other processes, without a Unix-only absolute path.
-
-Browser proof-renewal tests pause their mock clock before loading the fixture,
-then advance it explicitly; page startup time must not shift expiry boundaries.
+PTY fixtures wait for persisted turn completion before idle-only commands, answer
+terminal cursor-position requests and wait for the first frame before resizing.
+Bounded waits include captured terminal output on failure. Windows fixtures use
+Git's Unix tools through the sanitized process path. Credential-store tests retain
+the production operation deadline so OS setup remains part of the exercised path.
+Browser fixtures control their clock explicitly when testing proof expiry.

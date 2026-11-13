@@ -42,8 +42,7 @@ Do not disable verification to work around a failure. The
 failures from ambiguous or security failures.
 
 For insufficient credit, inspect the native account's billing status. Current
-Axiom payment mode uses a mainnet ZEC deposit address and indicative valuation;
-invoice checkout is no longer supported.
+Axiom payment mode uses a mainnet ZEC deposit address and indicative valuation.
 See [Desktop credit and usage](desktop.md). Payment state never substitutes for
 local response verification.
 

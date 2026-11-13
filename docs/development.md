@@ -98,9 +98,9 @@ pnpm --filter axiom-desktop capture
 ```
 
 Capture mode uses deterministic fixtures for visual review. It does not establish
-successful sign-in, payment, live inference or native installer behavior. Dated
-interactive reports belong in [testing](testing/README.md) with their environment,
-artifact/commit, results and limitations.
+successful sign-in, payment, live inference or native installer behavior. Record
+interactive qualification with its environment, artifact revision, results and
+limitations using [release acceptance](validation.md). Keep raw captures private.
 
 Desktop theme selection is light/dark/system, stored as `axiom.theme`. Shared
 semantic colors and bundled fonts support the UI; keep screenshots and controls
@@ -135,16 +135,15 @@ checked-in outputs and do not need those external masters.
 [The build-directory README](../apps/desktop/build/README.md) lists the packaged
 assets and handwritten installer files. Layered macOS icon artwork and tray
 images are preparatory assets; their presence does not mean the app uses them.
-The original visual proposal is [archived](archive/desktop-redesign.md).
 
 ## Documentation changes
 
 Use [the docs index](README.md) as the entry point. Keep one current guide per
 topic and link to it from concise component READMEs. Source comments, license
 provenance, generated protocol files and runtime prompts retain their required
-locations. When moving a document, fix inbound links and distinguish historical
-plans/test evidence from current instructions. Carry unresolved work into
-[validation](validation.md) before retiring a plan.
+locations. Fix inbound links when moving a document. Keep public guides focused
+on current behavior and keep internal plans, incident reports and raw QA records
+private. Carry unresolved release requirements into [validation](validation.md).
 
 ## Updater development
 
@@ -155,5 +154,5 @@ transport, locks and the Linux helper. Desktop's normal tests cover update state
 and the standalone installer; `pnpm --filter axiom-desktop exec tsx --test
 tests/browser/updates.test.ts` exercises the light/dark controls. See
 [release previews](releasing.md#development-previews) and
-[qualification](testing/automatic-updates-2026-09-22.md). Production keys are not
+[qualification](validation.md). Production keys are not
 needed for local tests; committed fixture keys must never sign a release.

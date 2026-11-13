@@ -101,4 +101,5 @@ one application-level consumer. Shared crates must not read environment
 variables or choose application policy on behalf of their callers.
 
 Public APIs can change before `1.0`, but changes should still be intentional and
-documented in an ADR when they affect architecture or persisted data.
+documented in the architecture and versioning guides when they affect shared
+contracts or persisted data.

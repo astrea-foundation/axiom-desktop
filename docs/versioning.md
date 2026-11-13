@@ -16,11 +16,7 @@ and frontend has a separate database. It contains threads, turns, timeline items
 collections, preferences, both activity clocks, Agent settings, request usage,
 and full local prompt attachments in a separate table.
 Runtime event envelopes are translated into materialized records.
-The explicit timeline sequence index was removed because the unique constraint
-already supplies the same index. Existing schema 1 records remain compatible.
-
-Pre-baseline application IDs and unsupported versions fail closed. Historical
-receipt repairs and activity backfills have been removed; local response
+Unknown application IDs and unsupported versions fail closed. Local response
 verification remains required before content can be marked verified. Schema 1 upgrades to schema 2 in a transaction without resetting history, adding
 a payload table with cascading deletion from its user timeline row. Schema 2
 upgrades transactionally to schema 3 by adding a nullable title-generation
@@ -29,11 +25,9 @@ reserved fallback; a manual rename clears the reservation. Existing titles and
 conversation data are preserved. Future schema
 changes must continue adding transactional forward migrations.
 
-For the authorized development reset, stop all processes using the account and run
-`axiomcli reset-local-state --account ACCOUNT_ID --frontend desktop-chat --confirm`
-(or `--frontend cli`). It deletes only the selected database and SQLite sidecars.
-See [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md) for the coordinated
-native/backend reset and required release gates.
+The [local-state reset command](configuration.md#paths-and-local-state) deletes
+only the selected account/frontend database. Stop processes using that store
+before resetting it. Hosted account and payment data are managed separately.
 
 On restart, incomplete turns become interrupted and tools are never replayed.
 Downgrading to a binary that does not recognize a newer schema is unsupported;
@@ -55,7 +49,8 @@ contracts are listed in [the threat model](threat-model.md#provider-contracts).
 
 ## Packages and acceptance
 
-Desktop and AxiomCLI use product version **0.1.2** for the next release. Desktop
+Desktop and AxiomCLI use the same product version, declared in their package
+manifests. Desktop
 ships a matching-version AxiomCLI binary for its OS and architecture and enforces
 that exact match during ACP initialization, before account/chat bootstrap. ACP's
 extension version remains independent of the product version.
@@ -69,5 +64,4 @@ build alone establishes that an artifact has been published or accepted.
 Automatic updates accept stable product versions and remember the highest signed
 release sequence/version per installation. A release version and its signed
 inventory are immutable. Desktop, bundled CLI and the standalone CLI/proxy pair
-are installed together. This initial updater has no legacy install migration;
-future storage changes must still preserve data compatibility before any rollback.
+are installed together. Storage compatibility must be checked before any rollback.

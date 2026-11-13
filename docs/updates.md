@@ -1,14 +1,6 @@
-# Automatic updates and installer publication
+# Native update architecture
 
-Updated 2026-09-22. Implementation targets `dev` in `axiomai` and
-`axiom-platform`. No promotion, production deployment, release tag, signing-key
-provisioning, or live-feed activation is part of this development change.
-
-There are **zero users to migrate**. The first release uses one signed schema-3
-inventory and installation markers. There is no legacy-client adapter, bootstrap
-release, format guessing, or account/storage migration in this feature.
-
-## Implemented design
+## Installation ownership
 
 Desktop **Settings → Updates → Update and restart**, TUI `/update`, and
 `axiomcli update` use the same native Rust updater. `axiomcli update --check`
@@ -55,11 +47,10 @@ client remembers the highest verified sequence/version; this prevents rollback
 after observing a newer release, but cannot detect a stale first response or
 an unavailable feed. No clock-based freshness guarantee is claimed.
 
-Both source repositories are private. The publisher targets a separate public
-`astrea-foundation/axiom-releases` distribution repository; it contains installer
-assets and release metadata, not a copy of either source checkout. Provisioning
-that repository and release credentials belongs to release setup, not this dev
-change. The signed inventory identifies the private native source revision.
+The native repository produces signed installers and a manifest for the platform
+publisher. Repository access and signing setup are described in
+[repository setup](repository-setup.md). The signed inventory identifies the
+exact promoted native source revision.
 
 Native release jobs build all 8 installers, sign their final-byte inventory,
 and upload a draft release. The platform publisher validates the native tag's
@@ -73,22 +64,11 @@ keeps the old feed. A failure after website activation may leave the CDN alias
 behind, but the native feed only references installers already available on both
 mirrors. Production publication is restricted to promoted `main` revisions.
 
-## Implementation and remaining qualification
+## Qualification
 
-- [x] Common signed contract and independent native/platform fixtures.
-- [x] Native ownership, installation locks, staging, helper and version check.
-- [x] Desktop/TUI update controls, restart handoff and draft preservation.
-- [x] Desktop and standalone installer builders across the supported matrix.
-- [x] GitHub/CDN publication, signature verification and readiness checks.
-- [x] Local contract, helper, Linux installer, UI and publication regressions.
-- [ ] Record signed A-to-B installer/restart acceptance on real Windows x64/ARM64,
-  macOS x64/ARM64 and Linux DEB/Pacman/AppImage installations.
-- [ ] Provision the public distribution repository and protected release secrets.
-- [ ] Promote only after an explicit release request and qualification review.
-
-Unit and local integration tests are implementation evidence, not signed native
-OS acceptance. Current evidence and limitations belong in
-[the update test report](testing/automatic-updates-2026-09-22.md).
+Record signed installer and restart acceptance for every supported package and
+architecture using [release acceptance](validation.md). Local unit and integration
+checks do not establish OS authorization, vault, GUI or same-terminal behavior.
 
 ## Recovery boundaries
 
@@ -96,10 +76,9 @@ Failed checks/downloads/authentication leave installed files untouched. The Linu
 standalone installer keeps previous version directories and activates CLI/proxy
 together. NSIS, PKG, DEB and Pacman use their installer recovery semantics;
 AppImage replacement is atomic at the file level. There is no universal automatic
-rollback or cross-version database migration in this initial implementation.
+rollback or cross-version database migration across incompatible storage versions.
 If application fails, retry the same verified installer; account data is stored
 outside the installation. Never start an older binary against incompatible data.
 
-See [release setup and publication](releasing.md), [installation](installing-desktop.md),
-[CLI/TUI](cli.md#updates), and the
-[platform publisher guide](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/operations/releases.md).
+See [release publication](releasing.md), [installation](installing-desktop.md)
+and [CLI/TUI updates](cli.md#updates).

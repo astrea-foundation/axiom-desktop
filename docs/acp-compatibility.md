@@ -34,8 +34,8 @@ non-Desktop consumers.
 | Session info/commands | Local title updates and slash-command discovery |
 
 Prompt images are supported and advertised. Image inputs require a model/protocol
-with encrypted image support. Embedded text resources are no longer advertised;
-use direct file metadata instead of extracting content. Audio, binary
+with encrypted image support. File inputs use direct file metadata and original
+bytes rather than extracted content. Audio, binary
 embedded documents, client-owned terminals/filesystems and per-session MCP
 injection are not advertised. Tools execute behind AxiomCLI policy. Unknown
 standard methods receive normal JSON-RPC method errors.
@@ -50,20 +50,30 @@ mean unsupported. Desktop checks its required feature set and negotiates optiona
 features separately.
 
 `account`, `timeline`, and `attachments` are version **2**;
-`billing` and `securityEvidence` are version **3**.
+`billing` is version **3** and `securityEvidence` is version **4**.
 Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
 `webConsent`, `steering`, `messageRevision`, `compaction`, and `activity`.
 The source `FeatureVersions` and generated schema are authoritative.
 
-`securityEvidence@3` carries verified hardware, key, freshness and provenance
+`securityEvidence@4` carries verified hardware, key, freshness and provenance
 evidence plus `outdated` (awaiting consent) and `degraded` (explicitly accepted)
 states. Desktop requires this version before accepting verification reports.
 `security/verify` accepts `acceptOutdatedTee: true` only with the current `modelId`;
 the native runtime resolves the provider and remembers consent until restart.
 Normal verification requests never grant consent. Degraded reports retain the
 failed Intel `OutOfDate` posture check; other checks must still pass.
+
+`security/prewarm` accepts only `modelId` and returns the same public report as
+`security/verify`, without creating a thread or invalidating valid native keys.
+It never grants outdated-TEE consent. Composition calls are coalesced by account
+and model, with expiry-aware reuse and bounded failure cooldowns. Native provider
+caches additionally enforce model identity, trust policy and expiry and share
+work with inference. Account transitions cancel native warmups; stale reports
+cannot replace evidence after account, runtime or model changes. Manual
+`security/verify` still requests fresh attestation.
+
 
 ## Methods and ownership
 
@@ -80,7 +90,7 @@ are never an instruction to send conversation plaintext through a hosted endpoin
 | Automation-key management | `account/api_keys`, `account/api_key_create`, `account/api_key_revoke` |
 | Billing | `billing/status`, `billing/redeem_gift_code` |
 | Usage | `usage/summary` (optional `period`: `week`/`month`/`all_time`, IANA `timezone`; defaults: all time/UTC) |
-| Evidence/compaction/steering | `security/verify`, `compaction/start`, `turn/steer` |
+| Evidence/compaction/steering | `security/verify`, `security/prewarm`, `compaction/start`, `turn/steer` |
 
 Permission and question responses remain standard ACP. Standard notifications
 are the sole live representation of user/assistant/reasoning content, tools,
@@ -159,15 +169,16 @@ snapshots and Debug output omit it. It is not a native-login credential.
 `billing@2` carries account-ledger status with required trial/paid buckets,
 nullable mainnet deposit metadata and a current ZEC/USD quote. Credit uses integer
 microUSD; deposit/quote amounts use exact decimal strings. Calls require a current
-native account and reject stale account/revision results. Invoice methods and
-checkout capabilities are removed. `usage@1` carries posted spend by model.
+native account and reject stale account/revision results. `usage@1` carries posted
+spend by model.
 
 `billing@3` adds private gift redemption. Its bounded `code` request returns
 `creditedMicrousd`, `alreadyRedeemed` and `status`; only the updated billing status
 is published as activity. Never log or persist the code. Desktop requires version
 3 and carries its captured account ID through the IPC boundary. New sidecars still
 serve `billing/status` to negotiated version 2 clients, but reject redemption until
-version 3 is negotiated. See [ADR 0017](adr/0017-gift-credit-controls.md).
+version 3 is negotiated. Retrying the same gift code after an uncertain response
+uses backend exact-once redemption; cancellation does not prove that credit failed.
 
 Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;

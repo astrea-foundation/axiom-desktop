@@ -90,7 +90,7 @@ test("extension negotiation accepts additive families and optional features only
     collections: 1,
     account: 2,
     billing: 3,
-    securityEvidence: 3,
+    securityEvidence: 4,
     webConsent: 1,
     futureFeature: 7,
   };

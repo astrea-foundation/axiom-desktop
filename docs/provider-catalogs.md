@@ -11,7 +11,8 @@ using a failed source after 30 minutes. Successful refreshes replace all entries
 including withdrawals. NEAR requires an exact ready, verifiable model/direct-worker
 intersection; aliases cannot redirect saved conversations. Tinfoil uses its public
 API chat catalog and fixed attested router. Prices, limits, reasoning controls and
-capabilities refresh together. See the [platform contract](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/architecture/provider-catalogs.md).
+capabilities refresh together. The [native catalog parser](../crates/axiom-secure-client/src/catalog.rs)
+validates the offered contract before use.
 
 Desktop refreshes on startup, every five minutes and on window focus. TUI refreshes
 when opening its model picker, and native inference obtains the current catalog.
@@ -42,23 +43,6 @@ NEAR documents, remote URLs, audio/video and realtime WebSockets are unsupported
 See [Desktop limits](desktop.md#images-and-files), [proxy input](proxy.md) and
 [ACP attachments version 2](acp-compatibility.md).
 
-The additive stored file variant preserves original bytes. Historical extracted
-text remains readable but cannot be submitted as a new attachment. Old renderers
-and sidecars cannot negotiate direct file uploads until upgraded together. No
-local conversation database reset is needed. Compaction preserves attachments as
+Stored file attachments preserve the original bytes. Desktop and its sidecar
+negotiate direct file support together. Compaction preserves attachments as
 provider inputs instead of interpolating base64 into text.
-
-## Phala retirement
-
-The Phala provider, verifier crate, fixed worker maps, branding, packaging notices
-and provider-only fixtures are removed. Existing saved conversations remain local;
-a Phala model is unavailable and its old evidence cannot establish a new session.
-Signed v1 policy envelopes retain inert legacy field names solely to validate the
-existing signature. They cannot register or authorize Phala. Historical decision
-and release records may still name the removed provider.
-
-Promote compatible platform/native revisions together using the repository's
-[release workflow](../CONTRIBUTING.md). This source change does not deploy either
-service or publish installers. Newly discovered models have not automatically
-passed a live Axiom canary; fresh attestation and authenticated completion still
-must succeed for every request.

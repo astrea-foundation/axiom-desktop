@@ -58,7 +58,8 @@ No account database opens while signed out. Schema migrations are described in
 SQLite sidecars. Stop Desktop and CLI first. The command runs before authentication
 and schema loading, so it can remove obsolete state. Other accounts/frontends,
 configuration, identity, vault credentials, trust policy and workspace files are
-separate. See [ADR 0014](adr/0014-clean-storage-and-deposit-billing.md).
+separate. Reset is destructive for the selected local history; it does not
+reset a hosted account or payment ledger.
 
 ## Trusted user configuration
 

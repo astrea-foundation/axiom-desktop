@@ -89,7 +89,6 @@ For an isolated local relay, build with `--features test-fixture`, set `AXIOM_TI
 
 Regression tests cover reordered/tampered/replayed/truncated frames, wrong response contexts, missing authenticated terminal markers, incomplete tools, malformed usage, hostile catalog entries and byte-fragmented UTF-8/SSE. Desktop proof tests distinguish router verification from independent GPU verification.
 
-The [Desktop and TUI test report](../testing/tinfoil-ui-2026-09-18/README.md) records the initial findings; the [fix retest](../testing/tinfoil-ui-2026-09-18/FIXES.md) records their resolutions, screenshots, usage and remaining verification limits.
 
 `RUST_LOG=axiom_secure_client=info` enables native attestation/exchange timing records in CLI/ACP modes. They include first authenticated delta and total exchange times, with no message or key material. TUI suppresses tracing output to protect its screen. The backend separately measures headers/first ciphertext/body idle time; ciphertext arrival must not be described as time to an authenticated token.
 

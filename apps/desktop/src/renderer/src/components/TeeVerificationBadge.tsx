@@ -5,10 +5,6 @@ import type { ProviderModel } from "../types";
 import { PROOF_IDLE_AFTER_MS, proofBadge, proofState } from "../privacyProof";
 import { PrivacyProofDialog } from "./PrivacyProofDialog";
 
-const REFRESH_BEFORE_EXPIRY_MS = 60_000;
-const MIN_REFRESH_INTERVAL_MS = 30_000;
-const MAX_RETRY_INTERVAL_MS = 300_000;
-
 type TeeVerificationBadgeProps = {
   session: ClientSessionState;
   model?: ProviderModel;
@@ -25,8 +21,6 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const mounted = useRef(false);
-  const nextAutomaticAttemptAt = useRef(0);
-  const failures = useRef(0);
   const lastActivityAt = useRef(Date.now());
   const [, wakeActivity] = useReducer((version: number) => version + 1, 0);
   const running = useRef(session.running);
@@ -76,29 +70,15 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, disa
   const refresh = useCallback(async () => {
     if (!mounted.current || busy.current || reason) return;
     busy.current = true; setRefreshing(true); setError(null);
-    try { await onVerify(); failures.current = 0; }
+    try { await onVerify(); }
     catch {
-      failures.current = Math.min(failures.current + 1, 5);
-      if (mounted.current) setError("Couldn’t refresh the verification report. Retrying automatically while active.");
+      if (mounted.current) setError("Couldn’t refresh the verification report. Try again.");
     }
     finally {
-      // Also pace successful checks: a provider may return the same short lease.
-      const delay = Math.min(MAX_RETRY_INTERVAL_MS, MIN_REFRESH_INTERVAL_MS * 2 ** Math.max(0, failures.current - 1));
-      nextAutomaticAttemptAt.current = Date.now() + delay;
       busy.current = false;
       if (mounted.current) { setRefreshing(false); setNow(Date.now()); }
     }
   }, [onVerify, reason]);
-  useEffect(() => {
-    if (idle || !modelId || reason || state === "development" || state === "outdated" || now < nextAutomaticAttemptAt.current) return;
-    const evidence = session.securityEvidence;
-    const expiresAt = evidence?.hardExpiresAtUnixSeconds;
-    if ((state === "verified" || state === "degraded") && evidence?.modelId === modelId && typeof expiresAt === "number" && Number.isFinite(expiresAt)
-      && expiresAt * 1000 - now > REFRESH_BEFORE_EXPIRY_MS) return;
-    // Uses the same native verifier as the button. Only a returned report can
-    // renew the report; the timer never extends evidence or marks it verified.
-    void refresh();
-  }, [idle, modelId, now, reason, refresh, session.securityEvidence, state]);
 
   return <>
     <div className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">

@@ -1,23 +1,55 @@
-# AxiomAI — archived
+# AxiomAI
 
-This is the **archived legacy Axiom repository**. Active development, issues,
-builds and releases have moved to the repositories below. This repository is
-read-only and retained for historical source, branches and tags.
+Axiom's native clients: an Electron desktop app, AxiomCLI with a terminal UI and
+headless/ACP modes, and a local OpenAI-compatible proxy. AxiomCLI owns Desktop's
+agent runtime and account-local conversations. Every remote inference request
+uses a registered provider-E2EE protocol with locally verified TEE evidence.
 
-| Repository | Current responsibility |
-| --- | --- |
-| [axiom-desktop](https://github.com/astrea-foundation/axiom-desktop) | Axiom Desktop, AxiomCLI, the local OpenAI-compatible proxy, shared native inference/attestation code and native installer builds |
-| [axiom-platform](https://github.com/astrea-foundation/axiom-platform) | Hosted API, accounts and authentication, billing, hosted websites and browser chat, public release catalog, CDN and website publishing |
-| [axiom-releases](https://github.com/astrea-foundation/axiom-releases) | Public signed Desktop and standalone CLI/proxy installers; source development belongs in the repositories above |
+**Start with the [documentation index](docs/README.md).** It covers product behavior,
+development, security and release acceptance.
+For packaged applications, use the [installation guide](docs/installing-desktop.md).
 
-For current setup, architecture, security and release instructions, start with
-[Desktop documentation](https://github.com/astrea-foundation/axiom-desktop/blob/dev/docs/README.md)
-or [Platform documentation](https://github.com/astrea-foundation/axiom-platform/blob/dev/docs/README.md).
-Open new issues and pull requests in the repository that owns the component.
+## Develop from source
 
-Historical files and commits here describe their recorded revisions. They are
-not the current build or release instructions. Unreleased legacy changes require
-separate review before porting; a commit on this repository's `dev` branch is
-not automatically included in the current Desktop or Platform source.
+Use the Rust toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), Node
+22 and pnpm 10 as used by CI. On Linux, local process tools require Bubblewrap.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm desktop
+```
+
+`pnpm desktop` builds AxiomCLI and starts Electron. Terminal-only development:
+
+```sh
+cargo run --locked -p axiomcli -- tui
+cargo run --locked -p axiomcli -- exec "inspect this repository"
+cargo run --locked -p axiomcli -- acp
+```
+
+See [development and checks](docs/development.md),
+[configuration](docs/configuration.md), and [troubleshooting](docs/troubleshooting.md).
+Native sign-in uses the system browser and OS credential store. Automation keys
+are a separate CLI/proxy option; Desktop uses the native account session.
+
+## Repository ownership
+
+| Path | Responsibility |
+|---|---|
+| `apps/desktop/` | Electron presentation, native integration and sidecar supervision |
+| `apps/axiomcli/` | TUI, headless CLI, ACP, tools, account sessions and local storage |
+| `apps/axiom-proxy/` | Authenticated loopback OpenAI-compatible server |
+| `crates/` | Shared inference, attestation/E2EE, wire translation and ACP contracts |
+| `packages/` | Typed ACP client, native branding and release-manifest validation |
+| `docs/` | Product, architecture, security, development and release guides |
+
+The companion [axiom-platform repository](https://github.com/astrea-foundation/axiom-platform)
+owns the hosted API, account website, marketing/download website, public release
+API and CDN publishing. Both repositories build independently. See
+[architecture](docs/architecture.md) for the boundaries.
+
+Ongoing work goes to `dev`. Releases are promoted to `main` through the
+[contribution workflow](CONTRIBUTING.md); installer production and publication
+follow the [release procedure](docs/releasing.md).
 
 Licensed under [Apache-2.0](LICENSE); see [third-party notices](THIRD_PARTY.md).

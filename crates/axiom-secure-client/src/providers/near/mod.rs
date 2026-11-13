@@ -106,7 +106,10 @@ impl SecureProvider for NearProvider {
                 model,
             ));
         }
-        let _singleflight = self.cache.model_lock(&model.id).await;
+        let _singleflight = tokio::select! {
+            () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
+            lock = self.cache.model_lock(&model.id) => lock,
+        };
         if let Some(material) = self.cache.get(model, policy).await {
             return Ok(session_from_material(
                 material,
@@ -126,7 +129,18 @@ impl SecureProvider for NearProvider {
         verify_response_signing_binding(&wire, &verified.response_signing_address)?;
         let binding = AttestationBinding::verify(wire, model, &verified.model_key.to_hex())?;
         verified.evidence.attestation_generation = Some(binding.generation);
-        verified.evidence.hard_expires_at_unix_seconds = Some(binding.hard_expires_at_unix_seconds);
+        // The UI must stop reusing a report when this process stops reusing its
+        // attested keys, even if the relay's lease lasts longer.
+        let expires = binding
+            .hard_expires_at_unix_seconds
+            .min(policy.expires_at_unix_seconds)
+            .min(
+                verified
+                    .evidence
+                    .verified_at_unix_seconds
+                    .saturating_add(self.config.verified_session_ttl.as_secs()),
+            );
+        verified.evidence.hard_expires_at_unix_seconds = Some(expires);
         let material = NearVerifiedMaterial {
             verified,
             binding,
@@ -137,10 +151,7 @@ impl SecureProvider for NearProvider {
                 model.clone(),
                 policy.clone(),
                 material.clone(),
-                material
-                    .binding
-                    .hard_expires_at_unix_seconds
-                    .min(policy.expires_at_unix_seconds),
+                expires,
                 self.config.verified_session_ttl,
             )
             .await;
@@ -285,6 +296,31 @@ mod tests {
 
     fn config() -> SecureClientConfig {
         SecureClientConfig::new("https://api.axiom.stream").unwrap()
+    }
+
+    #[tokio::test]
+    async fn cancelled_inference_does_not_wait_for_an_inflight_warmup() {
+        let provider = NearProvider::new(config(), Arc::new(ApiCredential::new("test")));
+        let model = ModelInfo {
+            id: "model-id".into(),
+            provider_id: PROVIDER_ID.into(),
+            upstream_model: "model/upstream".into(),
+            provider_base_url: "https://model.example/v1".into(),
+            e2ee_protocol: E2EE_PROTOCOL.into(),
+            e2ee_encryption_version: ENCRYPTION_VERSION,
+            attestation_protocol: ATTESTATION_PROTOCOL.into(),
+            ..ModelInfo::default()
+        };
+        let _warmup = provider.cache.model_lock(&model.id).await;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            provider.establish(&model, &TrustPolicy::default(), cancellation),
+        )
+        .await
+        .expect("cancellation must interrupt the singleflight wait");
+        assert!(result.is_err());
     }
 
     #[test]

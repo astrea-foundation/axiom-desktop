@@ -356,6 +356,14 @@ pub async fn serve_stdio(
         async,
         builder,
         context,
+        security::prewarm_security,
+        extension::PrewarmSecurityRequest,
+        VerifySecurityResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
         prompts::steer_turn,
         extension::SteerTurnRequest,
         extension::SteerTurnResponse

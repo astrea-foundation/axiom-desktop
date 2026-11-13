@@ -28,7 +28,7 @@ use super::{
     composer::ComposerBuffer,
     markdown::StreamingMarkdownRenderer,
     pick_splash_message,
-    proof_refresh::{ProofRefresh, REFRESH_BEFORE_EXPIRY_SECONDS},
+    proof_refresh::ProofRefresh,
     task::{TaskActivity, TaskPhase, TaskRunView, ToolPhase},
     text::{is_attestation_failure, sanitize_terminal_text, user_facing_provider_error},
     theme::{Appearance, ColorMode, Theme},
@@ -357,7 +357,7 @@ impl TuiState {
     pub(super) fn security_refresh_due(&self, now: Instant, unix_seconds: u64) -> bool {
         if self.running
             || self.compacting
-            || self.security == "VERIFYING"
+            || matches!(self.security, "VERIFYING" | "TEE OUTDATED")
             || !self.proof_refresh.due(now)
         {
             return false;
@@ -369,13 +369,6 @@ impl TuiState {
             unix_seconds,
         );
         !matches!(report, ReportStatus::Verified | ReportStatus::Degraded)
-            || self.security_evidence.as_ref().is_some_and(|evidence| {
-                evidence
-                    .hard_expires_at_unix_seconds
-                    .is_some_and(|expires| {
-                        expires.saturating_sub(unix_seconds) <= REFRESH_BEFORE_EXPIRY_SECONDS
-                    })
-            })
     }
 
     pub(super) fn open_security(&mut self) {
@@ -1157,7 +1150,7 @@ impl TuiState {
     pub(super) fn should_animate(&self) -> bool {
         self.options.animation
             && (self.running
-                || self.security == "VERIFYING"
+                || matches!(self.security, "VERIFYING" | "TEE OUTDATED")
                 || self.transition_ticks > 0
                 || self.has_background_activity()
                 || matches!(
