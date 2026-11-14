@@ -473,6 +473,11 @@ and explicitly set `AXIOM_CANARY_LOCAL_RELAY=1` with an HTTP `127.0.0.1` relay U
 and its separate test account key. Only the account relay uses the loopback
 exception; real provider attestation, E2EE and response verification still apply.
 
+Keep the AstreaAI release gate open until the installed production trust bundle
+completes account-authorized preparation and an authenticated synthetic reply.
+Worker attestation alone does not close this gate while account metadata or
+reservation requests are rejected.
+
 ## Dependency maintenance
 
 The 0.1.15 candidate updates Rustls to 0.23.46, resolving
