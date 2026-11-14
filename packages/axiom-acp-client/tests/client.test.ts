@@ -210,7 +210,9 @@ test("thread rename persists for loaded and unloaded threads without changing me
     const newer = await client.newSession(workspace);
     await client.prompt(newer.sessionId, "newer message", "rename-newer-message");
     const before = (await client.listThreads()).threads;
-    const original = before.find((thread) => thread.threadId === older.sessionId)!;
+    // Title notifications can update catalog objects while rename is pending.
+    // Keep the pre-rename values independent of that live SDK projection.
+    const original = { ...before.find((thread) => thread.threadId === older.sessionId)! };
     const result = await client.renameThread(older.sessionId, "  My renamed thread  ");
     assert.equal(result.thread.title, "My renamed thread");
     assert.equal(result.thread.lastMessageAt, original.lastMessageAt);
