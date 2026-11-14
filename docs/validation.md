@@ -478,6 +478,13 @@ completes account-authorized preparation and an authenticated synthetic reply.
 Worker attestation alone does not close this gate while account metadata or
 reservation requests are rejected.
 
+Qualify ordinary chat reservations against the existing 36 MiB account API limit
+as well as the expanded protocol ceiling. Chat, vision and image requests must
+reserve a bounded budget for their actual escaped input and signed envelope;
+a larger protocol maximum must not inflate every small reservation. Include
+escaped text and real signed/encrypted envelope checks, and reject inputs whose
+envelope budget exceeds the protocol ceiling before account preparation.
+
 ## Dependency maintenance
 
 The 0.1.15 candidate updates Rustls to 0.23.46, resolving

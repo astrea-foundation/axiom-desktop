@@ -46,6 +46,14 @@ an account-owned reservation and one-use grant, then sends encrypted inference
 directly to the same independently verified worker. There is no operator-signing
 fallback when account authorization, credit or price acceptance fails.
 
+Chat, vision and image requests reserve an input-byte budget sized for their
+serialized input, nested JSON escaping and signed-envelope headroom, rounded to
+whole MiB. Small requests reserve 1 MiB rather than the protocol's 144 MiB
+ceiling, keeping them compatible with older account APIs capped at 36 MiB.
+Larger inputs still require a matching account API limit. The worker enforces
+the signed byte budget after decryption; key, workload, grant and completion
+verification remain required.
+
 The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
 the signed model inventory. Its exact native model ID adds the Qwen3.8
 Uncensored identity line to Axiom's uncensored system prompt, including after a
