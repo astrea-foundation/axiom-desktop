@@ -46,12 +46,18 @@ export function verifiedImageUsage(requests) {
 }
 
 export function verifyImageTools(calls) {
-  const generation = calls.filter(call => call.title.endsWith(' · generate'));
-  const viewing = calls.filter(call => call.title.endsWith(' · view_image'));
+  const generation = calls.filter(call => call.title.endsWith(': generate'));
+  const viewing = calls.filter(call => call.title.endsWith(': view_image'));
   if (generation.length !== 1 || generation[0].status !== 'completed'
       || !viewing.some(call => call.status === 'completed')) {
     throw new Error('Installed session must successfully complete one generation and image viewing');
   }
+}
+
+export function needsImageView(calls) {
+  const generation = calls.filter(call => call.title.endsWith(': generate'));
+  const viewing = calls.filter(call => call.title.endsWith(': view_image'));
+  return generation.length === 1 && generation[0].status === 'completed' && viewing.length === 0;
 }
 
 export async function verifyInstalledImage(binary, installer, output, version, source = process.env) {
@@ -160,11 +166,26 @@ export async function verifyInstalledImage(binary, installer, output, version, s
     const selected = await request('session/set_config_option', { sessionId, configId: 'model', value: imageTestModel });
     const model = selected.configOptions?.find(option => option.category === 'model' || option.id === 'model')?.currentValue;
     if (model !== imageTestModel) throw new Error('Installed session did not select the explicit AstreaAI image-test model');
-    const result = await request('session/prompt', { sessionId, prompt: [{ type: 'text',
+    let result = await request('session/prompt', { sessionId, prompt: [{ type: 'text',
       text: 'Generate exactly one image: a single flat blue circle centered on a plain white square background. Call generate once with a 1:1 aspect ratio. Then call view_image to inspect that generated image. Keep your final reply brief.' }] }, 300000);
-    const page = await request('_axiom/thread/timeline', { threadId: sessionId, limit: 500 });
+    let page = await request('_axiom/thread/timeline', { threadId: sessionId, limit: 500 });
     findImages(page.items);
+    const diagnostic = () => writeFileSync(path.join(output, 'diagnostic.json'), JSON.stringify({
+      version, frontend, model, sessionId, stopReason: result.stopReason,
+      lifecycle: page.thread.lifecycle, activeTurn: Boolean(page.activeTurnId), images: [...images.values()],
+      tools: [...tools.values()].map(call => ({ name: /: (generate|view_image)$/.exec(call.title)?.[1] ?? 'other', status: call.status })),
+    }, null, 2) + '\n', { mode: 0o600 });
+    diagnostic();
     if (result.stopReason !== 'end_turn' || page.thread.lifecycle !== 'ready' || page.activeTurnId) throw new Error('Installed image turn did not finish ready');
+    // Viewing is a separate requested action when the model omits it. Never
+    // repeat generation or retry an attempted, failed or interrupted view.
+    if (images.size === 1 && needsImageView([...tools.values()])) {
+      result = await request('session/prompt', { sessionId, prompt: [{ type: 'text',
+        text: 'Use view_image to inspect the image you just generated and describe it briefly. Do not generate another image.' }] }, 300000);
+      page = await request('_axiom/thread/timeline', { threadId: sessionId, limit: 500 });
+      findImages(page.items); diagnostic();
+    }
+    if (result.stopReason !== 'end_turn' || page.thread.lifecycle !== 'ready' || page.activeTurnId) throw new Error('Installed image inspection did not finish ready');
     if (images.size !== 1) {
       throw new Error('Installed session did not generate and view exactly one image');
     }

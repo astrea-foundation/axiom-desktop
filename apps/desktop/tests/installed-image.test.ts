@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // @ts-expect-error Release scripts run directly in Node without generated declarations.
-import { installedEnvironment, verifiedImageUsage, verifyImageTools, requiredReleaseDefault, verifyDefaultSelection } from '../../../scripts/verify-installed-image.mjs';
+import { installedEnvironment, verifiedImageUsage, verifyImageTools, needsImageView, requiredReleaseDefault, verifyDefaultSelection } from '../../../scripts/verify-installed-image.mjs';
 
 test('signed installation acceptance uses isolated profiles and drops provider overrides', () => {
   const source = { HOME: '/home/operator', PATH: '/usr/bin', AXIOM_API_KEY: 'automation-test',
@@ -54,8 +54,8 @@ test('image acceptance requires authenticated completion and settlement independ
 });
 
 test('a proposed or failed image view cannot satisfy signed-installation acceptance', () => {
-  const generation = { title: 'Creating image · generate', status: 'completed' };
-  const view = { title: 'Viewing image · view_image', status: 'completed' };
+  const generation = { title: 'Creating image: generate', status: 'completed' };
+  const view = { title: 'Viewing image: view_image', status: 'completed' };
   verifyImageTools([generation, view]);
   for (const status of ['pending', 'in_progress', 'failed', undefined]) {
     assert.throws(() => verifyImageTools([generation, { ...view, status }]), /successfully complete/);
@@ -63,4 +63,12 @@ test('a proposed or failed image view cannot satisfy signed-installation accepta
   }
   assert.throws(() => verifyImageTools([generation]), /successfully complete/);
   assert.throws(() => verifyImageTools([generation, generation, view]), /successfully complete/);
+  assert.equal(needsImageView([generation]), true);
+  assert.equal(needsImageView([generation, generation]), false);
+  assert.equal(needsImageView([generation, view]), false);
+  for (const status of ['pending', 'in_progress', 'failed']) {
+    assert.equal(needsImageView([{ ...generation, status }]), false);
+    assert.equal(needsImageView([generation, { ...view, status }]), false);
+  }
+  assert.throws(() => verifyImageTools([{ ...generation, title: 'Creating image: regenerate' }, view]), /successfully complete/);
 });
