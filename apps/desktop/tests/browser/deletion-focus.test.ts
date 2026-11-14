@@ -1271,6 +1271,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
           { id: `partial-${status}`, turnId: "stopped-turn", kind: "assistant", text: `Keep the ${status} partial answer.`, status, terminalVerified: false },
         ], false), status);
         const transcript = page.getByRole("region", { name: "Chat messages" });
+        if (status === "interrupted") {
+          await transcript.getByText("Interrupted attempt · Show partial answer", { exact: true }).click();
+        }
         await transcript.getByText(`Keep the ${status} partial answer.`, { exact: true }).waitFor();
         assert.doesNotMatch(await transcript.innerText(), /before verified completion|unverified|cannot be copied|Generating|E2EE/);
         const copy = transcript.getByRole("button", { name: "Copy", exact: true });

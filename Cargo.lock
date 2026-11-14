@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "axiomcli"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
