@@ -456,7 +456,7 @@ It can renew during an already running image/tool turn without reserving or
 cancelling that work. Account/runtime/model changes, a request starting after
 an idle preflight, and newer request reports or active security states fence
 the result. Superseded warmups are discarded from the SDK cache.
-`verifySecurity(threadId)` waits for active work to finish and uses
+`verifySecurity(threadId)` requires an idle thread and uses
 `_axiom/security/verify` for an explicit fresh appraisal. Both retain the
 provider's original hard expiry and required public-evidence validation.
 
