@@ -47,23 +47,30 @@ fn transport_timeout() -> SecureClientError {
 
 fn exchange_failure(error: &(dyn std::error::Error + 'static)) -> SecureClientError {
     let mut source = Some(error);
+    let mut transport = false;
     while let Some(current) = source {
         if let Some(error) = current.downcast_ref::<tinfoil_ehbp::Error>() {
             // EHBP wraps transport errors separately from cryptographic errors.
             // Never classify a failed AEAD tag/key/terminal as a network fault.
-            if matches!(error, tinfoil_ehbp::Error::Http(_)) {
-                return SecureClientError::with_code(
-                    axiom_inference::ProviderFailureKind::Transient,
-                    crate::SecureErrorCode::ProviderDisconnected,
-                    "The provider connection was interrupted.",
-                    true,
-                );
+            if !matches!(error, tinfoil_ehbp::Error::Http(_)) {
+                return invalid("Tinfoil response authentication or transport failed");
             }
-            break;
+            // A body adapter may wrap Crypto/Protocol in another Http error.
+            // Inspect the entire chain before permitting a transport recovery.
+            transport = true;
         }
         source = current.source();
     }
-    invalid("Tinfoil response authentication or transport failed")
+    if transport {
+        SecureClientError::with_code(
+            axiom_inference::ProviderFailureKind::Transient,
+            crate::SecureErrorCode::ProviderDisconnected,
+            "The provider connection was interrupted.",
+            true,
+        )
+    } else {
+        invalid("Tinfoil response authentication or transport failed")
+    }
 }
 
 pub(crate) struct TinfoilProvider {

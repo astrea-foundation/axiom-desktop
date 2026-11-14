@@ -6,6 +6,25 @@ use aes_gcm::{
 use axiom_inference::{ChatMessage, ChatRole, FinishReason, ReasoningEffort};
 use tinfoil_ehbp::{SessionRecoveryToken, compute_nonce, derive_response_keys};
 
+#[tokio::test]
+async fn nested_http_body_errors_do_not_turn_integrity_failures_into_retries() {
+    for error in [
+        tinfoil_ehbp::Error::Crypto("invalid tag fixture".into()),
+        tinfoil_ehbp::Error::Protocol("missing terminal fixture".into()),
+    ] {
+        let body =
+            reqwest::Body::wrap_stream(futures_util::stream::iter([Err::<Vec<u8>, _>(error)]));
+        let response = reqwest::Response::from(http::Response::new(body));
+        let wrapped = tinfoil_ehbp::Error::Http(response.bytes().await.unwrap_err());
+        let result = exchange_failure(&wrapped);
+        assert_eq!(
+            result.kind(),
+            axiom_inference::ProviderFailureKind::InvalidResponse
+        );
+        assert!(!result.retryable());
+    }
+}
+
 fn model() -> ModelInfo {
     serde_json::from_value(json!({"id":"tinfoil-gpt-oss-120b","provider_id":"tinfoil",
         "upstream_model":"gpt-oss-120b","provider_base_url":BASE_URL,
