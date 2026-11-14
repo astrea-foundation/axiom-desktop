@@ -723,6 +723,45 @@ impl TuiState {
                 self.context_usage = Some(usage.clone());
             }
             AppEvent::RequestUsageUpdated { usage } => {
+                if usage.purpose == axiom_inference::InvocationPurpose::Conversation
+                    && let Some(task) = self
+                        .entries
+                        .iter_mut()
+                        .filter_map(|entry| entry.task.as_mut())
+                        .find(|task| Some(task.turn_id.to_string()) == usage.turn_id)
+                {
+                    if usage.state == axiom_inference::InvocationState::Running
+                        && task.request_id.as_ref() != Some(&usage.request_id)
+                    {
+                        task.request_id = Some(usage.request_id.clone());
+                        task.request_response_start = task.response.len();
+                        task.request_reasoning_start = task.reasoning.len();
+                        task.timeline.push(super::task::TaskTimelineItem::Response {
+                            text: String::new(),
+                            markdown: Box::default(),
+                        });
+                    } else if matches!(
+                        usage.state,
+                        axiom_inference::InvocationState::Failed
+                            | axiom_inference::InvocationState::Cancelled
+                    ) && task.request_id.as_ref() == Some(&usage.request_id)
+                    {
+                        task.response.truncate(task.request_response_start);
+                        task.reasoning.truncate(task.request_reasoning_start);
+                        if let Some(item @ super::task::TaskTimelineItem::Response { .. }) =
+                            task.timeline.last_mut()
+                        {
+                            let super::task::TaskTimelineItem::Response { text, markdown } = item
+                            else {
+                                unreachable!()
+                            };
+                            *item = super::task::TaskTimelineItem::InterruptedResponse {
+                                text: std::mem::take(text),
+                                markdown: std::mem::take(markdown),
+                            };
+                        }
+                    }
+                }
                 self.request_usage
                     .insert(usage.request_id.clone(), usage.clone());
             }
@@ -876,6 +915,13 @@ impl TuiState {
                 self.resume_active_task();
             }
             AppEvent::ProviderStatusChanged { connected, detail } => {
+                if *connected
+                    && (detail.starts_with("Connection interrupted. Retrying")
+                        || detail == "Continuing…")
+                {
+                    self.status = sanitize_terminal_text(detail);
+                    self.status_tone = StatusTone::Active;
+                }
                 if !connected {
                     self.status =
                         format!("Provider unavailable: {}", sanitize_terminal_text(detail));

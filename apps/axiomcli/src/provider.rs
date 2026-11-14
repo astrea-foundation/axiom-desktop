@@ -148,6 +148,17 @@ pub trait InferenceProvider: Send + Sync {
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn>;
 
+    /// The server must confirm failure, reconcile its charge and reserve a
+    /// bounded successor before a possibly dispatched generation is restarted.
+    async fn authorize_recovery(
+        &self,
+        _previous: &str,
+        _successor: &str,
+        _cancellation: CancellationToken,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn request_accounting(
         &self,
         _ids: &[String],
@@ -273,8 +284,9 @@ impl SecureAxiomProvider {
         Box<dyn axiom_secure_client::VerifiedSession>,
     )> {
         // Authentication is resolved before discovery or attestation begins.
-        // No authorization retry exists after provider ciphertext might have
-        // been dispatched, so a lost response can never replay an inference.
+        // Authentication never retries a possibly dispatched exchange. A
+        // generation successor requires separate backend failure/charge
+        // reconciliation and a fresh request identity; it is not an auth retry.
         let client = self.client(&cancellation).await?;
         let models = client
             .models(cancellation.clone())
@@ -582,6 +594,14 @@ impl InferenceProvider for SecureAxiomProvider {
                     return secure_stream_failure(&retry_events, &cancellation, error).await;
                 }
             };
+            if let Some(reason) = response.finish_reason.clone() {
+                send_provider_event(
+                    &retry_events,
+                    ProviderEvent::Finished(reason),
+                    &cancellation,
+                )
+                .await?;
+            }
             send_provider_event(
                 &retry_events,
                 ProviderEvent::ResponseVerified,
@@ -636,6 +656,19 @@ impl InferenceProvider for SecureAxiomProvider {
             .await
             .map_err(|_| AxiomError::Cancelled)?;
         result
+    }
+
+    async fn authorize_recovery(
+        &self,
+        previous: &str,
+        successor: &str,
+        cancellation: CancellationToken,
+    ) -> Result<bool> {
+        self.client(&cancellation)
+            .await?
+            .authorize_recovery(previous, successor, cancellation)
+            .await
+            .map_err(map_secure_error)
     }
 
     async fn request_accounting(

@@ -94,6 +94,18 @@ impl SecureClient {
             .await
     }
 
+    /// Authorize one fresh generation after a confirmed, reconciled failure.
+    pub async fn authorize_recovery(
+        &self,
+        previous: &str,
+        successor: &str,
+        cancellation: CancellationToken,
+    ) -> Result<bool> {
+        crate::relay::client::RelayClient::new(&self.config, &self.credential)
+            .authorize_recovery(previous, successor, &cancellation)
+            .await
+    }
+
     /// Whether the chat model's catalog tags select the uncensored image
     /// adapter. Uses the accepted catalog, refreshing it when absent or stale;
     /// an unknown chat model uses the standard adapter.

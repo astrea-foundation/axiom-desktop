@@ -25,6 +25,7 @@ interface ChatViewProps {
   onSubmit: () => void;
   onStop: () => void;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
+  onContinue?: () => Promise<void>;
   isStreaming: boolean;
   models: ProviderModel[];
   selectedModelId: string;
@@ -57,6 +58,7 @@ export function ChatView({
   onSubmit,
   onStop,
   onRevise,
+  onContinue,
   isStreaming,
   models,
   selectedModelId,
@@ -93,7 +95,7 @@ export function ChatView({
         {...autoScroll.handlers}
       >
         <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} attachmentPreviews={attachmentPreviews} />
+          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} onContinue={onContinue} attachmentPreviews={attachmentPreviews} />
         </div>
       </div>
 

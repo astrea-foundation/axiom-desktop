@@ -538,6 +538,19 @@ pub(super) fn persist_event(
                        AND kind IN ('assistant_message','reasoning')",
                     params![thread_id, usage.request_id, now, usage.finish_reason],
                 ).map_err(storage_error)?;
+            } else if matches!(
+                usage.state,
+                axiom_inference::InvocationState::Failed
+                    | axiom_inference::InvocationState::Cancelled
+            ) {
+                transaction.execute(
+                    "UPDATE timeline_items SET status='interrupted',
+                      metadata=json_set(metadata, '$.terminal_verified', json('false')), updated_at=?3
+                     WHERE thread_id=?1 AND json_extract(metadata, '$.request_id')=?2
+                       AND kind IN ('assistant_message','reasoning')
+                       AND status IN ('pending','in_progress')",
+                    params![thread_id, usage.request_id, now],
+                ).map_err(storage_error)?;
             }
         }
         AppEvent::ContextUsageUpdated { usage } => {
@@ -1072,7 +1085,7 @@ pub(super) fn persist_event(
                     client_item_id: None,
                     external_id: Some("provider-status"),
                     content: detail,
-                    metadata: json!({"code":"provider_status","connected":connected}),
+                    metadata: json!({"code":if detail.starts_with("Connection interrupted. Retrying") || detail == "Continuing…" { "generation_recovery" } else { "provider_status" },"connected":connected}),
                     now: &now,
                 },
             )?;

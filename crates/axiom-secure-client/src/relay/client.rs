@@ -19,6 +19,46 @@ impl<'a> RelayClient<'a> {
         Self { config, credential }
     }
 
+    pub(crate) async fn authorize_recovery(
+        &self,
+        previous: &str,
+        successor: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Grant {
+            allowed: bool,
+            request_id: String,
+        }
+        for id in [previous, successor] {
+            if id.len() != 32
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(SecureClientError::configuration(
+                    "invalid recovery identity",
+                ));
+            }
+        }
+        let endpoint = relay_endpoint(&self.config.relay_base_url, "/api/v1/relay/recovery")?;
+        let client =
+            relay_client(self.config, &endpoint, std::time::Duration::from_secs(10)).await?;
+        let response = tokio::select! {
+            () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
+            result = client.post(endpoint).bearer_auth(self.credential.expose())
+                .json(&serde_json::json!({"previous_request_id":previous,"request_id":successor})).send() =>
+                result.map_err(|_| SecureClientError::new(axiom_inference::ProviderFailureKind::Transient, "Response recovery is unavailable."))?,
+        };
+        if response.status() != StatusCode::OK {
+            return Ok(false);
+        }
+        let body = bounded_body(response, 4096).await?;
+        let grant: Grant = serde_json::from_slice(&body)
+            .map_err(|_| SecureClientError::catalog("invalid recovery response"))?;
+        Ok(grant.allowed && grant.request_id == successor)
+    }
+
     pub(crate) async fn accounting(
         &self,
         request_ids: &[String],
@@ -295,6 +335,10 @@ pub(crate) fn stream_failure(code: Option<&str>) -> SecureClientError {
         Some("provider_disconnected") => (
             SecureErrorCode::ProviderDisconnected,
             "The provider connection was interrupted.",
+        ),
+        Some("stream_interrupted") => (
+            SecureErrorCode::StreamInterrupted,
+            "The response was interrupted before verification finished.",
         ),
         _ => (
             SecureErrorCode::Transient,

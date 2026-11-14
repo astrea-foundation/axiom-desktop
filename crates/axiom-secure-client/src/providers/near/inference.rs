@@ -1769,7 +1769,12 @@ impl StreamState {
 
     fn finish(self) -> Result<(InferenceResponse, Vec<ProviderEvent>)> {
         if !self.message_completed || !self.run_completed {
-            return Err(invalid("relay stream ended without terminal completion"));
+            return Err(SecureClientError::with_code(
+                axiom_inference::ProviderFailureKind::Transient,
+                crate::SecureErrorCode::StreamInterrupted,
+                "The response was interrupted before verification finished.",
+                true,
+            ));
         }
         let tool_calls = self
             .tool_calls

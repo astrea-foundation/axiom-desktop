@@ -12,8 +12,9 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, copyContent }: {
+export function MessageBubble({ message, onRevise, onContinue, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, copyContent }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
+  onContinue?: () => Promise<void>;
   showFailureNotice?: boolean;
   responseActive?: boolean;
   /** Whole reply body for the turn when it was split by tool calls. */
@@ -108,7 +109,10 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
       {message.content || isStreaming || terminalFailure ? (
       <div className="w-full min-w-0 max-w-full self-start px-1.5 py-1 text-[15px] leading-7 text-[var(--color-text-primary)]">
         <div className="min-w-0 max-w-full">
-          {message.content ? <ChatMarkdown text={message.content} /> : null}
+          {message.content ? message.status === "interrupted" ? <details data-preserve-follow>
+            <summary className="cursor-pointer text-[12px] text-[var(--color-text-tertiary)]">Interrupted attempt · Show partial answer</summary>
+            <ChatMarkdown text={message.content} />
+          </details> : <ChatMarkdown text={message.content} /> : null}
           {isStreaming && !message.content && !message.continues ? (
             <div className="flex items-center gap-2 py-1 text-[13px] text-[var(--color-text-tertiary)]">
               <span className="flex items-center gap-1">
@@ -125,7 +129,12 @@ export function MessageBubble({ message, onRevise, revisionText, revisionHasAtta
               <span>Generating</span>
             </div>
           ) : null}
-          {message.finishReason === "length" && message.status === "complete" ? <div className="mt-2 text-[12px] text-[var(--color-text-tertiary)]">The model reached its output limit. You can ask it to continue.</div> : null}
+          {message.finishReason === "length" && message.status === "complete" && !message.continues && !responseActive ? <div className="mt-2 flex items-center gap-3 text-[12px] text-[var(--color-text-tertiary)]">
+            <span>The model reached its output limit.</span>
+            {onContinue ? <button type="button" disabled={revising} className="rounded px-2 py-1 text-[var(--color-cherry)] hover:bg-[var(--wash-row)]" onClick={() => {
+              setRevising(true); void onContinue().catch(() => {}).finally(() => setRevising(false));
+            }}>Continue</button> : <span>You can ask it to continue.</span>}
+          </div> : null}
           {terminalFailure && showFailureNotice ? (
             <DismissibleNotice key={message.id} className="mt-3 flex items-center gap-2 rounded-[8px] border border-[var(--color-danger-border)] bg-[var(--color-danger-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--color-danger-strong)]">
               <AlertTriangle size={13} className="shrink-0 text-[var(--color-danger)]" />

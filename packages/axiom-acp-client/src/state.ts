@@ -841,7 +841,7 @@ export class AxiomStateStore extends EventEmitter {
       const index = (session.requestUsage ??= []).findIndex((item) => item.requestId === event.usage.requestId);
       if (index < 0) session.requestUsage.push(event.usage);
       else session.requestUsage[index] = event.usage;
-      if (event.usage.responseVerified) session.needsResync = true;
+      if (event.usage.responseVerified || ["failed", "cancelled"].includes(event.usage.state ?? "")) session.needsResync = true;
     }
     else if (event.kind === "context_usage_changed" && sessionId) {
       (this.value.sessions[sessionId] ??= emptySession(sessionId)).contextUsage = validContextUsage(event.usage);

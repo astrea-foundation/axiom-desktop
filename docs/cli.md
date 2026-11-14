@@ -220,6 +220,32 @@ still appended. The file is not persisted in session journals. Resuming uses
 the prompt supplied to that launch; Desktop's product prompt cannot be replaced
 through this option.
 
+## Generation recovery
+
+A temporary transport failure can restart only the current model request, up to
+twice per user turn, after roughly one and three seconds plus jitter. Completed
+tool actions and verified history stay outside the retry loop. Each successor
+has a fresh request identity and performs normal attestation and E2EE again.
+The backend must confirm a terminal failure and reconcile or waive its charge
+before authorizing a successor. An unresolved execution, invalid response proof,
+insufficient balance, invalid request or user cancellation cannot trigger a new
+automatic generation. Providers without this recovery contract retain their
+explicit Retry path; an ambiguous AstreaAI/pool exchange is never replayed.
+
+Interrupted output remains available in the local timeline, unverified and
+separate from the replacement. It is excluded from later model input and the
+successful answer's combined Copy action. Desktop offers Retry after a failed
+reply; the TUI displays the partial attempt separately. Stop cancels pending
+backoff as well as the active request. Resuming the app never dispatches a saved
+retry timer.
+
+A verified text answer that ends at its output limit continues automatically
+once, within the usual context, time and billing limits. It preserves earlier
+tool outcomes. Desktop offers Continue after a further output limit. Compaction
+and title generation do not use this continuation or restart policy. Progressing
+reasoning remains model activity; response authentication still requires the
+terminal proof.
+
 ## Saved sessions and plans
 
 ```sh

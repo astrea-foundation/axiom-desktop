@@ -1012,6 +1012,12 @@ fn print_headless_event(event: AppEvent) {
         AppEvent::ToolStarted { name, .. } => eprintln!("\n[tool] {name}"),
         AppEvent::ToolOutput { content, .. } => eprintln!("{content}"),
         AppEvent::ErrorRaised { message, .. } => eprintln!("error: {message}"),
+        AppEvent::ProviderStatusChanged { detail, .. }
+            if detail.starts_with("Connection interrupted. Retrying")
+                || detail == "Continuing…" =>
+        {
+            eprintln!("\n{detail}");
+        }
         _ => {}
     }
 }

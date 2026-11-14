@@ -312,6 +312,10 @@ export function App() {
                 preparation={preparation}
                 attachmentPreviews={conversations.attachmentPreviews}
                 onRevise={!isStreaming && agentState.account?.state === "valid" ? reviseMessage : undefined}
+                onContinue={!isStreaming && activeThreadId && agentState.account?.state === "valid" ? async () => {
+                  const queued = messageQueue.enqueue(activeThreadId, "Continue from where you stopped. Preserve completed work and do not repeat completed tool actions.", webAccess.enabled);
+                  messageQueue.sendNow(queued);
+                } : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}

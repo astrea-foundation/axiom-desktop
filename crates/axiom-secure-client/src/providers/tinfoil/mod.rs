@@ -36,6 +36,36 @@ const PROTOCOL: &str = "tinfoil-ehbp-v1";
 const ATTESTATION: &str = "tinfoil-snp-sigstore-v1";
 const BASE_URL: &str = "https://inference.tinfoil.sh/v1";
 
+fn transport_timeout() -> SecureClientError {
+    SecureClientError::with_code(
+        axiom_inference::ProviderFailureKind::Transient,
+        crate::SecureErrorCode::StreamTimeout,
+        "The provider stopped responding.",
+        true,
+    )
+}
+
+fn exchange_failure(error: &(dyn std::error::Error + 'static)) -> SecureClientError {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<tinfoil_ehbp::Error>() {
+            // EHBP wraps transport errors separately from cryptographic errors.
+            // Never classify a failed AEAD tag/key/terminal as a network fault.
+            if matches!(error, tinfoil_ehbp::Error::Http(_)) {
+                return SecureClientError::with_code(
+                    axiom_inference::ProviderFailureKind::Transient,
+                    crate::SecureErrorCode::ProviderDisconnected,
+                    "The provider connection was interrupted.",
+                    true,
+                );
+            }
+            break;
+        }
+        source = current.source();
+    }
+    invalid("Tinfoil response authentication or transport failed")
+}
+
 pub(crate) struct TinfoilProvider {
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
@@ -389,8 +419,8 @@ impl Session {
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             result = tokio::time::timeout(Duration::from_secs(300), encrypted.execute(wire)) => {
-                result.map_err(|_| invalid("Tinfoil request timed out"))?
-                    .map_err(|_| invalid("Tinfoil encrypted exchange failed"))?
+                result.map_err(|_| transport_timeout())?
+                    .map_err(|error| exchange_failure(&error))?
             },
         };
         timing.headers_ms = Some(timing.started.elapsed().as_millis());
@@ -420,14 +450,13 @@ impl Session {
         loop {
             let chunk = tokio::select! {
                 () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
-                () = tokio::time::sleep_until(hard_deadline) => return Err(invalid("Tinfoil response timed out")),
-                next = tokio::time::timeout(Duration::from_secs(120), source.next()) => next.map_err(|_| invalid("Tinfoil response stalled"))?,
+                () = tokio::time::sleep_until(hard_deadline) => return Err(transport_timeout()),
+                next = tokio::time::timeout(Duration::from_secs(120), source.next()) => next.map_err(|_| transport_timeout())?,
             };
             let Some(chunk) = chunk else {
                 break;
             };
-            let chunk = chunk
-                .map_err(|_| invalid("Tinfoil response authentication or transport failed"))?;
+            let chunk = chunk.map_err(|error| exchange_failure(&error))?;
             if let Some(last) = timing.last_chunk.replace(Instant::now()) {
                 timing.max_idle_ms = timing.max_idle_ms.max(last.elapsed().as_millis());
             }

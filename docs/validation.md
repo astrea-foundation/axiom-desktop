@@ -663,3 +663,23 @@ peak memory and latency with the chat model resident, base/LoRA switching, and
 Desktop/browser save and restoration of PNGs above 10 MiB. Offline checks do not
 establish the larger profile fits the production GPU. Coordinate the worker,
 account grant/storage migration, gateway and client updates.
+
+## Generation recovery qualification
+
+The development recovery batch adds server-authorized successors for typed relay
+transport failures, a two-recovery per-turn client budget, preserved partial
+output, one verified output-limit continuation, and shared Desktop/web Retry and
+Continue controls. Gateway reattachment uses the original execution and a
+bounded enclave-memory replay buffer, with prefix/order/transcript/EOF checks.
+Unit checks cover cancellation during backoff, replay-prefix substitution,
+completed-tool preservation, concurrent credits, original credit denomination,
+CSRF, expiry and retry limits. Backend migration and matching shared artifacts
+must ship together; source validation does not qualify a measured deployment.
+
+Still required before a release: live staging interruption/reconnect checks with
+the measured gateway and each supported provider, billing reconciliation through
+a real provider failure, and Windows VM qualification. The local UTM CLI returned
+macOS automation permission error -1743 during this batch, so no Windows run was
+performed. Ambiguous direct/pool exchanges and invalid response authentication
+remain ineligible for automatic fresh inference; do not enable replay to work
+around a provider's missing recovery evidence.

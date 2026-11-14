@@ -117,6 +117,7 @@ function routineNotice(item: ClientTimelineItem): boolean {
   // Standard ACP presents connection notices as thought chunks. They are
   // operational status, not model reasoning. Failed connections remain visible.
   if (item.kind === "reasoning" && /^provider:\d+$/.test(item.id)) {
+    if (item.text.includes("Connection interrupted. Retrying") || item.text.includes("Continuing…")) return false;
     return item.text.startsWith("[provider] ");
   }
   if (item.kind !== "activity" || !item.raw || typeof item.raw !== "object") return false;

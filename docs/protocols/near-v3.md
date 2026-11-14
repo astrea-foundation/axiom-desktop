@@ -77,6 +77,10 @@ The durable dispatch record is written after the TLS pin check, immediately befo
 the POST headers. A rejected connection releases its unused billing hold and request
 ID, so the existing one-time retry can reuse that ID. Once dispatch is recorded,
 an ambiguous send or response failure retains the ID and cannot replay inference.
+A separate generation-recovery authorization can issue a new ID only after a
+confirmed terminal transport failure and charge reconciliation. It never reuses
+the dispatch ID, bypasses verification or treats a partial response as complete.
+See [generation recovery](../cli.md#generation-recovery).
 
 ## Inference and completion
 

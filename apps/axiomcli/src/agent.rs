@@ -87,6 +87,13 @@ pub struct TurnContext {
     pub questions: Option<Arc<dyn QuestionHandler>>,
 }
 
+struct ProviderTurnResult {
+    assistant: AssistantTurn,
+    verified: bool,
+    usage: Option<(u64, u64)>,
+    finish_reason: Option<axiom_inference::FinishReason>,
+}
+
 /// Provider-neutral security result consumed by interactive front ends.
 /// Evidence is intentionally process state rather than conversation state.
 #[derive(Clone, Debug)]
@@ -1828,14 +1835,98 @@ impl AgentEngine {
             .unwrap_or_default()
     }
 
+    /// Restart only this model invocation. Earlier tools and verified history
+    /// remain outside this loop; unverified fragments never become model input.
+    async fn recovering_provider_turn(
+        &self,
+        mut request: InferenceRequest,
+        context: &TurnContext,
+        output: &mpsc::Sender<AppEvent>,
+        cancellation: CancellationToken,
+        recoveries: &mut u8,
+    ) -> Result<ProviderTurnResult> {
+        request.request_id = Some(uuid::Uuid::new_v4().simple().to_string());
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(AxiomError::Cancelled);
+            }
+            match self
+                .provider_turn(request.clone(), context, output, cancellation.child_token())
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    if *recoveries >= 2 || !recoverable_generation_failure(&error) {
+                        return Err(error);
+                    }
+                    let successor = uuid::Uuid::new_v4().simple().to_string();
+                    // A missing response is not evidence of a failed execution.
+                    // No fresh inference without server-confirmed failure and
+                    // an idempotent charge reconciliation / bounded grant.
+                    let allowed = self
+                        .provider
+                        .authorize_recovery(
+                            request.request_id.as_deref().expect("request identity"),
+                            &successor,
+                            cancellation.child_token(),
+                        )
+                        .await;
+                    if !matches!(allowed, Ok(true)) {
+                        return if cancellation.is_cancelled() {
+                            Err(AxiomError::Cancelled)
+                        } else {
+                            Err(error)
+                        };
+                    }
+                    if let Ok(records) = self
+                        .provider
+                        .request_accounting(
+                            &[request.request_id.clone().expect("request identity")],
+                            cancellation.child_token(),
+                        )
+                        .await
+                    {
+                        for record in records {
+                            forward_provider_event(
+                                output,
+                                &context.turn_id,
+                                ProviderEvent::Accounting(Box::new(record)),
+                            )
+                            .await?;
+                        }
+                    }
+                    *recoveries += 1;
+                    output
+                        .send(AppEvent::ProviderStatusChanged {
+                            connected: true,
+                            detail: format!(
+                                "Connection interrupted. Retrying… ({} of 2)",
+                                *recoveries
+                            ),
+                        })
+                        .await
+                        .map_err(|_| AxiomError::Cancelled)?;
+                    let base = if *recoveries == 1 { 1000 } else { 3000 };
+                    let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]);
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Err(AxiomError::Cancelled),
+                        () = tokio::time::sleep(Duration::from_millis(base + jitter)) => {}
+                    }
+                    // Failed text stays in the display/archive, never in the
+                    // next request or the successful history checkpoint.
+                    request.request_id = Some(successor);
+                }
+            }
+        }
+    }
+
     async fn provider_turn(
         &self,
         request: InferenceRequest,
         context: &TurnContext,
         output: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
-        streamed_text: &mut String,
-    ) -> Result<(AssistantTurn, bool, Option<(u64, u64)>)> {
+    ) -> Result<ProviderTurnResult> {
         let (provider_tx, mut provider_rx) = mpsc::channel(64);
         let future = self
             .provider
@@ -1844,28 +1935,36 @@ impl AgentEngine {
         let mut response_verified = false;
         let mut usage = None;
         let mut drafting_reported = false;
+        let mut finish_reason = None;
         let result = loop {
             tokio::select! {
                 result = &mut future => break result,
                 event = provider_rx.recv() => {
                     let Some(event) = event else { continue };
-                    capture_streamed_text(&event, streamed_text);
                     response_verified |= matches!(event, ProviderEvent::ResponseVerified);
                     capture_provider_usage(&event, &mut usage);
+                    if let ProviderEvent::Finished(reason) = &event { finish_reason = Some(reason.clone()); }
                     report_tool_call_drafting(output, &context.turn_id, &event, &mut drafting_reported).await?;
                     forward_provider_event(output, &context.turn_id, event).await?;
                 }
             }
         };
         while let Ok(event) = provider_rx.try_recv() {
-            capture_streamed_text(&event, streamed_text);
             response_verified |= matches!(event, ProviderEvent::ResponseVerified);
             capture_provider_usage(&event, &mut usage);
+            if let ProviderEvent::Finished(reason) = &event {
+                finish_reason = Some(reason.clone());
+            }
             report_tool_call_drafting(output, &context.turn_id, &event, &mut drafting_reported)
                 .await?;
             forward_provider_event(output, &context.turn_id, event).await?;
         }
-        result.map(|assistant| (assistant, response_verified, usage))
+        result.map(|assistant| ProviderTurnResult {
+            assistant,
+            verified: response_verified,
+            usage,
+            finish_reason,
+        })
     }
 
     async fn provider_turn_for_compaction(
@@ -2976,6 +3075,8 @@ impl TurnRunner for AgentEngine {
         let mut known_context_tokens = prospective_context_tokens;
         let mut last_call = None;
         let mut all_responses_verified = true;
+        let mut recoveries = 0;
+        let mut continued_output = false;
 
         let mut step = 0_usize;
         loop {
@@ -3096,24 +3197,27 @@ impl TurnRunner for AgentEngine {
             if !provider_request_fits(&model, &request)? {
                 return Err(AxiomError::Provider("Conversation still exceeds the provider request limit after compaction; original context was retained. Reduce the prompt or choose another model.".into()));
             }
-            let mut streamed_text = String::new();
             let provider_result = before_optional_deadline(
                 deadline,
-                self.provider_turn(
+                self.recovering_provider_turn(
                     request,
                     &context,
                     &events,
                     cancellation.clone(),
-                    &mut streamed_text,
+                    &mut recoveries,
                 ),
             )
             .await;
-            let (assistant, response_verified, usage) = match provider_result {
+            let ProviderTurnResult {
+                assistant,
+                verified: response_verified,
+                usage,
+                finish_reason,
+            } = match provider_result {
                 Ok(Ok(result)) => result,
                 Ok(Err(error)) | Err(error) => {
-                    if !streamed_text.is_empty() {
-                        messages.push(ChatMessage::text(ChatRole::Assistant, streamed_text));
-                    }
+                    // Provisional text is retained in the local timeline only.
+                    // A later Retry/Continue must not treat it as model history.
                     messages.push(interrupted_turn_context());
                     let retained_tokens = model_context_tokens(&model, &messages);
                     self.histories
@@ -3161,6 +3265,31 @@ impl TurnRunner for AgentEngine {
                     .await?;
             }
             if assistant.tool_calls.is_empty() {
+                if response_verified
+                    && !continued_output
+                    && !assistant.text.is_empty()
+                    && matches!(finish_reason, Some(axiom_inference::FinishReason::Length))
+                    && !cancellation.is_cancelled()
+                {
+                    continued_output = true;
+                    messages.push(ChatMessage::text(ChatRole::User,
+                        "[APPLICATION-GENERATED CONTINUATION]\nContinue the previous answer exactly where it stopped at the output limit. Do not repeat it or repeat completed tool actions.\n[END CONTINUATION]"));
+                    events
+                        .send(AppEvent::ProviderStatusChanged {
+                            connected: true,
+                            detail: "Continuing…".into(),
+                        })
+                        .await
+                        .map_err(|_| AxiomError::Cancelled)?;
+                    self.histories
+                        .lock()
+                        .await
+                        .insert(context.session_id.clone(), messages.clone());
+                    // Continuation is bounded separately from the tool-step
+                    // limit and still passes normal context/admission checks.
+                    step = step.saturating_sub(1);
+                    continue;
+                }
                 if context
                     .steering
                     .as_ref()
@@ -3805,6 +3934,17 @@ fn validate_answers(
         }
     }
     Ok(answers)
+}
+
+fn recoverable_generation_failure(error: &AxiomError) -> bool {
+    matches!(
+        error,
+        AxiomError::SecureProvider {
+            kind: axiom_inference::ProviderFailureKind::Transient,
+            code: "PROVIDER_DISCONNECTED" | "STREAM_TIMEOUT" | "STREAM_INTERRUPTED",
+            ..
+        }
+    )
 }
 
 /// Exact provider classification, never inferred from arbitrary error text.
@@ -4657,12 +4797,6 @@ fn repair_tool_history(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     result
 }
 
-fn capture_streamed_text(event: &ProviderEvent, streamed_text: &mut String) {
-    if let ProviderEvent::TextDelta(text) = event {
-        streamed_text.push_str(text);
-    }
-}
-
 fn capture_provider_usage(event: &ProviderEvent, usage: &mut Option<(u64, u64)>) {
     if let ProviderEvent::Usage {
         input_tokens,
@@ -4882,6 +5016,10 @@ mod title_tests;
 #[cfg(test)]
 #[path = "agent_context_tests.rs"]
 mod context_tests;
+
+#[cfg(test)]
+#[path = "agent_recovery_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 mod engine_tests {
@@ -9652,7 +9790,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
-    async fn provider_failure_retains_partial_response_for_the_next_prompt() {
+    async fn provider_failure_preserves_partial_display_without_promoting_it_to_history() {
         let provider = Arc::new(PartialFailureProvider {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
@@ -9696,9 +9834,10 @@ mod engine_tests {
 
         let requests = provider.requests.lock().await;
         let continued = &requests[1].messages;
-        assert!(continued.iter().any(|message| {
-            message.role == ChatRole::Assistant
-                && message.content == "The unfinished answer retains this detail"
+        assert!(!continued.iter().any(|message| {
+            message
+                .content
+                .contains("The unfinished answer retains this detail")
         }));
         assert!(continued.iter().any(|message| {
             message.role == ChatRole::User
@@ -9711,6 +9850,86 @@ mod engine_tests {
                 .last()
                 .map(|message| (&message.role, message.content.as_str())),
             Some((&ChatRole::User, "continue"))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn generation_retry_does_not_execute_a_completed_tool_twice() {
+        struct RetryAfterTool {
+            script: ScriptedProvider,
+            calls: AtomicUsize,
+            requests: Mutex<Vec<InferenceRequest>>,
+        }
+        #[async_trait]
+        impl InferenceProvider for RetryAfterTool {
+            async fn authorize_recovery(
+                &self,
+                _: &str,
+                _: &str,
+                _: CancellationToken,
+            ) -> Result<bool> {
+                Ok(true)
+            }
+            async fn stream(
+                &self,
+                request: InferenceRequest,
+                events: mpsc::Sender<ProviderEvent>,
+                cancel: CancellationToken,
+            ) -> Result<AssistantTurn> {
+                self.requests.lock().await.push(request.clone());
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    events
+                        .send(ProviderEvent::TextDelta("Interrupted fragment".into()))
+                        .await
+                        .unwrap();
+                    return Err(AxiomError::SecureProvider {
+                        kind: axiom_inference::ProviderFailureKind::Transient,
+                        code: "PROVIDER_DISCONNECTED",
+                        message: "Connection interrupted",
+                    });
+                }
+                self.script.stream(request, events, cancel).await
+            }
+        }
+        let provider = Arc::new(RetryAfterTool {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            script: ScriptedProvider::new(vec![
+                AssistantTurn {
+                    text: "Checking".into(),
+                    reasoning: None,
+                    tool_calls: vec![tool_call("completed", "fake", r#"{"value":1}"#)],
+                },
+                AssistantTurn {
+                    text: "Final answer".into(),
+                    ..Default::default()
+                },
+            ]),
+        });
+        let (tools, executions) = fake_registry("Completed tool result", false);
+        let engine = AgentEngine::new(provider.clone(), tools, "test", 3);
+        let mut ctx = context();
+        ctx.permission_profile = PermissionProfile::FullAccess;
+        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+        engine
+            .run(ctx, "Finish the task".into(), tx, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let requests = provider.requests.lock().await;
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].messages, requests[2].messages);
+        assert!(
+            requests[2]
+                .messages
+                .iter()
+                .any(|m| m.role == ChatRole::Tool && m.content.contains("Completed tool result"))
+        );
+        assert!(
+            !requests[2]
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Interrupted fragment"))
         );
     }
 
