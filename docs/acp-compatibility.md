@@ -302,7 +302,10 @@ defines `<image1>`, `<image2>`, etc. for that call. Prompt metadata has no Image
 per-message image permission. Native code checks model capability on every
 turn and rejects unavailable image calls and nonvision image uploads. Failed
 service preflights withhold both tools and provide their diagnostic to the chat
-model. The earlier version-1 toggle and version-2 singular-reference contracts are not negotiated
+model, with instructions to report that image generation is currently unavailable
+and suggest trying again later. Image-service failures must not be described as
+a chat-model capability limitation or a reason to switch models.
+The earlier version-1 toggle and version-2 singular-reference contracts are not negotiated
 for new calls; their saved tool records remain renderable. Instructions
 require an explicit user request for image creation or editing; image analysis
 alone is not such a request. Web consent and Agent/MCP authority remain separate.

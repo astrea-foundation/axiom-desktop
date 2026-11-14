@@ -251,7 +251,10 @@ and previous generated/edited images can be edited; each edit keeps its source
 and creates a new result. Saved legacy `edit_image` results remain readable.
 The installed AstreaAI image adapter is required even when the chat model uses
 another provider; without it image tools are not registered and native image
-requests fail with an unavailable-service error. See the
+requests fail with an unavailable-service error. When the service is unavailable,
+the model is instructed to say image generation is currently unavailable and
+suggest trying again later, without claiming a model capability limitation or
+recommending a model switch. See the
 [AstreaAI connection guide](direct-verda.md) and the
 [image-generation contract](../../axiom-inference/docs/image-generation.md).
 
