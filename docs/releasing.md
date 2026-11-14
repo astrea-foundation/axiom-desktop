@@ -178,6 +178,25 @@ and report authenticated, final, settled image usage. The private
 binary hashes to the generated image and usage receipt. Publication depends on
 this check; downloading the signed inventory does not replace it.
 
+Installed-image acceptance identifies tools by ACP's stable `: generate` and
+`: view_image` title suffixes. When a completed generation has no view attempt,
+the harness may request inspection in a separate turn. It never repeats
+generation or retries an attempted view. Exactly one image, completed generation
+and viewing tools, authenticated settled usage, and a ready session remain
+required. Private diagnostics contain only tool identities/statuses and image
+metadata, without prompts, model output, or credentials.
+
+The unpublished 0.1.22 assembly can be completed using
+`release-0.1.22-recovery.yml` on promoted tag `v0.1.22-packaging.1`. It keeps the
+stable tag and application source at `1bc6e913e6cc178d98842d98205be59142735077`,
+reuses qualified native inputs and Windows/Linux packages, and loads the corrected
+harness separately. Its guard requires original attempt 2's successful
+notarization, failed image assertion, and skipped publisher. Provision a fresh QA
+native session because the failed assertion consumed its refresh seed. Recovery
+retains notarized Mac packages before acceptance; publication still depends on
+the complete signed-installation checks. Final inventory signing and publication
+run from the immutable application checkout.
+
 Before selecting the AstreaAI image-test model, qualification must use the normal
 installed catalog and a fresh profile without `AXIOM_MODEL`. Require NEAR's exact
 `deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated` offering, its `uncensored` tag,
