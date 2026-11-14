@@ -43,6 +43,31 @@ test("fallback appears once before the assistant placeholder arrives", () => {
   assert.equal(render([user, provider]).match(/Generating/g)?.length, 1);
 });
 
+test("compaction replaces the empty generation placeholder with live work counters and a spinner", () => {
+  const current = session([user, pending]);
+  current.compaction = { completed: 1, total: 3, generatedTokens: 1246, estimated: true };
+  let html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /data-timeline-kind="compaction"/);
+  assert.match(html, /animate-spin/);
+  assert.match(html, /Pass 2\/3/);
+  assert.match(html, /~1,246 tokens generated/);
+  assert.doesNotMatch(html, /Generating/);
+  current.compaction = { ...current.compaction, completed: 3, generatedTokens: 2398, estimated: false };
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /Pass 3\/3/);
+  assert.match(html, /2,398 tokens generated/);
+  assert.doesNotMatch(html, /~/);
+  current.compaction = { ...current.compaction, completed: 0, total: 1 };
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /Compacting context/);
+  assert.match(html, /2,398 tokens generated/);
+  assert.doesNotMatch(html, /Pass |Preparing|Generating/);
+  current.compaction = null;
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.doesNotMatch(html, /Compacting context/);
+  assert.match(html, /Generating/);
+});
+
 test("a visible warning after a pending response does not add another indicator", () => {
   const html = render([user, pending, { id: "warning", kind: "activity", text: "Retrying request" }]);
   assert.equal(html.match(/Generating/g)?.length, 1);
@@ -247,4 +272,13 @@ test("completed tools followed by no new text show one trailing generation indic
   const html = render([user, { ...pending, text: "Checking" }, searchTool("news")]);
   assert.equal(html.match(/Generating/g)?.length, 1);
   assert.ok(html.indexOf("Searched the web") < html.indexOf("Generating"));
+});
+
+test("completed reply actions stay visible instead of appearing only on hover", () => {
+  const current = session([user, { ...pending, text: "Done", status: "completed" }]);
+  current.running = false;
+  const html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  const bar = html.match(/<div class="([^"]*)"><div class="flex items-center gap-0.5"><button[^>]*aria-label="Copy"/)?.[1];
+  assert.ok(bar);
+  assert.doesNotMatch(bar, /opacity-0/);
 });

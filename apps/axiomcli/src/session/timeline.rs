@@ -114,7 +114,8 @@ pub(super) fn upsert_timeline_item(
     item: TimelineItemWrite<'_>,
 ) -> Result<String> {
     if let Some(external_id) = item.external_id
-        && let Some(id) = find_external_item(transaction, thread_id, item.kind, external_id)?
+        && let Some(id) =
+            find_external_item(transaction, thread_id, item.kind, external_id, item.turn_id)?
     {
         transaction
             .execute(
@@ -200,32 +201,18 @@ pub(super) fn append_turn_content(
     Ok(())
 }
 
-pub(super) fn active_turn_id(
-    transaction: &Transaction<'_>,
-    thread_id: &str,
-) -> Result<Option<String>> {
-    transaction
-        .query_row(
-            "SELECT id FROM turns WHERE thread_id=?1 AND status='running'
-             ORDER BY started_at DESC, id DESC LIMIT 1",
-            [thread_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(storage_error)
-}
-
 pub(super) fn find_external_item(
     transaction: &Transaction<'_>,
     thread_id: &str,
     kind: TimelineItemKind,
     external_id: &str,
+    turn_id: Option<&str>,
 ) -> Result<Option<String>> {
     transaction
         .query_row(
             "SELECT id FROM timeline_items
-             WHERE thread_id=?1 AND kind=?2 AND external_id=?3 ORDER BY sequence DESC LIMIT 1",
-            params![thread_id, kind.to_string(), external_id],
+             WHERE thread_id=?1 AND kind=?2 AND external_id=?3 AND (?4 IS NULL OR turn_id=?4) ORDER BY sequence DESC LIMIT 1",
+            params![thread_id, kind.to_string(), external_id, turn_id],
             |row| row.get(0),
         )
         .optional()
@@ -257,7 +244,7 @@ pub(super) fn ensure_external_item(
     metadata: Value,
     now: &str,
 ) -> Result<String> {
-    if let Some(id) = find_external_item(transaction, thread_id, kind, external_id)? {
+    if let Some(id) = find_external_item(transaction, thread_id, kind, external_id, turn_id)? {
         return Ok(id);
     }
     insert_timeline_item(
@@ -377,17 +364,17 @@ pub(super) fn update_notice_resolution(
 pub(super) fn persist_question(
     transaction: &Transaction<'_>,
     thread_id: &str,
+    turn_id: Option<&str>,
     request_id: &str,
     content: &str,
     metadata: Value,
     now: &str,
 ) -> Result<()> {
-    let turn_id = active_turn_id(transaction, thread_id)?;
     upsert_timeline_item(
         transaction,
         thread_id,
         TimelineItemWrite {
-            turn_id: turn_id.as_deref(),
+            turn_id,
             kind: TimelineItemKind::Notice,
             status: TimelineItemStatus::Pending,
             client_item_id: None,
@@ -463,6 +450,8 @@ pub(super) fn truncate_for_revision(
     let sequence = sequence.ok_or_else(|| {
         AxiomError::InvalidTransition("Choose the message that started this turn.".into())
     })?;
+    transaction.execute("DELETE FROM model_history WHERE thread_id=?1 AND sequence >= (SELECT MIN(h.sequence) FROM model_history h JOIN turns t ON t.thread_id=h.thread_id AND t.id=h.turn_id JOIN timeline_items i ON i.id=t.user_item_id WHERE h.thread_id=?1 AND i.sequence>=?2)", params![id.to_string(), sequence]).map_err(storage_error)?;
+    transaction.execute("DELETE FROM model_messages WHERE thread_id=?1 AND id NOT IN (SELECT refs.value FROM model_history h, json_each(h.payload,'$.messages') refs WHERE h.thread_id=?1 AND json_extract(h.payload,'$._axiom_message_refs')=1)", [id.to_string()]).map_err(storage_error)?;
     transaction
         .execute(
             "DELETE FROM turns WHERE thread_id=?1 AND user_item_id IN

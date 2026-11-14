@@ -20,7 +20,7 @@ import {
   Search,
   Shield,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { contextMenuTrigger, SidebarContextMenu, type SidebarMenuTarget } from "./SidebarContextMenu";
 import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
 import { OverflowTitle } from "./OverflowTitle";
@@ -55,6 +55,7 @@ interface SidebarProps {
   billing: AccountMenuProps["billing"];
   accountId: string | null;
   connected: boolean;
+  aboveAccount?: ReactNode;
 }
 
 function ThreadRow({
@@ -201,6 +202,7 @@ export function Sidebar({
   billing,
   accountId,
   connected,
+  aboveAccount,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -276,6 +278,7 @@ export function Sidebar({
         billing={billing}
         accountId={accountId}
         connected={connected}
+        aboveAccount={aboveAccount}
       />
     </DndContext>
   );
@@ -311,6 +314,7 @@ function SidebarFrame({
   billing,
   accountId,
   connected,
+  aboveAccount,
 }: {
   folders: FolderType[];
   filtered: Thread[];
@@ -341,6 +345,7 @@ function SidebarFrame({
   billing: AccountMenuProps["billing"];
   accountId: string | null;
   connected: boolean;
+  aboveAccount?: ReactNode;
 }) {
   const { setNodeRef: setLooseRef, isOver: looseOver } = useDroppable({
     id: "folder:loose",
@@ -444,6 +449,7 @@ function SidebarFrame({
 
         <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-2 pt-3">
           <div className="ax-label px-2 pb-2">Threads</div>
+          {account.kind === "starting" && filtered.length === 0 && !query ? <p className="px-2 py-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">Your chats will appear here once they’re open.</p> : null}
           {folders.map((folder) => (
             <FolderBlock
               key={folder.id}
@@ -480,7 +486,8 @@ function SidebarFrame({
           </div>
         </div>
 
-        <div className="no-drag px-2 py-2">
+        {aboveAccount}
+        <div className="no-drag shrink-0 px-2 py-2">
           <AccountMenu account={account} accountId={accountId} connected={connected} billing={billing}
             onSignIn={onSignIn} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenBalance={onOpenBalance} onRefreshBalance={onRefreshBalance} />
         </div>

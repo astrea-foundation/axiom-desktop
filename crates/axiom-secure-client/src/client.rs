@@ -94,6 +94,18 @@ impl SecureClient {
             .await
     }
 
+    /// Authorize one fresh generation after a confirmed, reconciled failure.
+    pub async fn authorize_recovery(
+        &self,
+        previous: &str,
+        successor: &str,
+        cancellation: CancellationToken,
+    ) -> Result<bool> {
+        crate::relay::client::RelayClient::new(&self.config, &self.credential)
+            .authorize_recovery(previous, successor, &cancellation)
+            .await
+    }
+
     /// Whether the chat model's catalog tags select the uncensored image
     /// adapter. Uses the accepted catalog, refreshing it when absent or stale;
     /// an unknown chat model uses the standard adapter.
@@ -210,11 +222,16 @@ impl SecureClient {
                 }
                 Ok(models)
             }
-            // Locally pinned discovery remains useful when no other provider
-            // is configured. Inference still requires fresh worker admission.
+            // Locally pinned discovery remains useful during catalog outages,
+            // but must not hide account authorization failures. Inference
+            // still requires fresh worker admission.
             Err(error)
                 if !configured_pool.is_empty()
-                    && error.kind() != axiom_inference::ProviderFailureKind::Cancelled =>
+                    && !matches!(
+                        error.kind(),
+                        axiom_inference::ProviderFailureKind::Cancelled
+                            | axiom_inference::ProviderFailureKind::Authentication
+                    ) =>
             {
                 Ok(configured_pool)
             }
@@ -507,6 +524,7 @@ mod tests {
     use super::*;
 
     fn installed_direct_config(relay: &str) -> SecureClientConfig {
+        let fixture_root = std::env::temp_dir();
         let mut config = SecureClientConfig::new("https://relay.example").unwrap();
         config.relay_base_url = url::Url::parse(relay).unwrap();
         config.endpoint_policy.require_https = false;
@@ -515,8 +533,8 @@ mod tests {
         config.direct = Some(
             serde_json::from_value(serde_json::json!({
                 "origin":"https://worker.example:8443", "connect_ip":null,
-                "model_manifest":"aa".repeat(32), "issuer_key_file":"/private/operator.pem",
-                "verifier":{"binary":"/installed/verifier", "binary_sha256":"bb".repeat(32),
+                "model_manifest":"aa".repeat(32), "issuer_key_file":fixture_root.join("axiom-test-operator.pem"),
+                "verifier":{"binary":fixture_root.join("axiom-test-verifier"), "binary_sha256":"bb".repeat(32),
                     "publisher_key":"cc".repeat(32), "minimum_policy_sequence":20}
             }))
             .unwrap(),
@@ -776,6 +794,40 @@ mod tests {
             client.models(cancelled).await.unwrap_err().kind(),
             axiom_inference::ProviderFailureKind::Cancelled
         );
+    }
+
+    #[tokio::test]
+    async fn installed_astreaai_does_not_hide_catalog_authentication_failures() {
+        for (status, body, expected_detail) in [
+            (
+                "401 Unauthorized",
+                serde_json::json!({"detail":"invalid session"}),
+                "Axiom authentication failed",
+            ),
+            (
+                "403 Forbidden",
+                serde_json::json!({"detail":{"code":"consent_required","consent_url":"https://untrusted.invalid/private"}}),
+                "Review the current policies on your Axiom account page to restore model access",
+            ),
+            (
+                "403 Forbidden",
+                serde_json::json!({"detail":"private authorization failure"}),
+                "Axiom authentication failed",
+            ),
+        ] {
+            let (relay, server) = catalog_server(status, body).await;
+            let client =
+                SecureClient::new(installed_direct_config(&relay), ApiCredential::new("test"))
+                    .unwrap();
+            let error = client.models(CancellationToken::new()).await.unwrap_err();
+            assert_eq!(
+                error.kind(),
+                axiom_inference::ProviderFailureKind::Authentication
+            );
+            assert_eq!(error.safe_detail(), expected_detail);
+            assert!(client.catalog_cache.read().await.is_none());
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

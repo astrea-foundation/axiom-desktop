@@ -6,7 +6,7 @@
     "binary": "runtime/axiom-direct-verify",
     "binary_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "publisher_key": "e8b28619216fe6e0f4c2e15e734b1e689896647417459f8905a90a820bee3aaf",
-    "minimum_policy_sequence": 22
+    "minimum_policy_sequence": 23
   },
   "account": {
     "origin": "https://api.axiom.stream",

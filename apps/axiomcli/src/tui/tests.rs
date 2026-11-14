@@ -649,6 +649,14 @@ fn compaction_has_a_visible_compression_animation_and_static_status_marker() {
     state.compacting = true;
     state.status = "Compacting conversation context…".into();
     state.status_tone = StatusTone::Active;
+    state.apply(&AppEvent::CompactionProgressUpdated {
+        progress: axiom_acp_extension::CompactionProgress {
+            completed: 1,
+            total: 3,
+            generated_tokens: 1246,
+            estimated: true,
+        },
+    });
     state.apply(&AppEvent::ProviderStatusChanged {
         connected: true,
         detail: "Attested end-to-end encrypted inference connected".into(),
@@ -660,6 +668,7 @@ fn compaction_has_a_visible_compression_animation_and_static_status_marker() {
     let compressed = render_symbols(100, 30, &state);
     assert!(spread.contains("● [▰   ▰   ▰]  Compacting"));
     assert!(compressed.contains("● [    ◆    ]  Compacting"));
+    assert!(spread.contains("Pass 2/3 · ~1246 tokens generated"));
     assert!(!spread.contains("Attested end-to-end"));
     assert_ne!(spread, compressed);
 
@@ -1203,6 +1212,7 @@ fn ascii_mode_and_every_semantic_category_render_without_controls() {
             }],
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: "c1".into(),
             name: "read_file".into(),
@@ -1417,6 +1427,7 @@ fn task_events_update_one_live_card_and_keep_raw_details_folded() {
             text: "private scratch reasoning".into(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: "read-1".into(),
             name: "read_file".into(),
@@ -1503,6 +1514,7 @@ fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
     });
 
     state.apply(&AppEvent::ToolProposed {
+        mcp_source: None,
         turn_id: turn.clone(),
         call_id: "command".into(),
         name: "run_command".into(),
@@ -1542,6 +1554,7 @@ fn tool_feedback_shows_live_commands_queries_and_workspace_relative_paths() {
         ),
     ] {
         state.apply(&AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: turn.clone(),
             call_id: call_id.into(),
             name: name.into(),
@@ -1684,6 +1697,7 @@ fn typical_operational_document_snapshot() {
         output_tokens: 7,
     });
     state.apply(&AppEvent::ToolProposed {
+        mcp_source: None,
         turn_id: turn.clone(),
         call_id: "tool-1".into(),
         name: "read_file".into(),
@@ -1870,6 +1884,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             ],
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: working_turn.clone(),
             call_id: "read-release".into(),
             name: "read_file".into(),
@@ -1889,6 +1904,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             success: true,
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: working_turn.clone(),
             call_id: "package".into(),
             name: "shell".into(),
@@ -1921,6 +1937,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             turn_id: waiting_turn.clone(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: waiting_turn,
             call_id: "write-manifest".into(),
             name: "apply_patch".into(),
@@ -1990,6 +2007,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             text: "The regression begins in the task reducer. I should inspect the call identity path before editing.".into(),
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: details_turn.clone(),
             call_id: "search-reducer".into(),
             name: "search_files".into(),
@@ -2009,6 +2027,7 @@ fn preview_scenarios() -> Vec<(&'static str, u16, u16, TuiState)> {
             success: true,
         },
         AppEvent::ToolProposed {
+            mcp_source: None,
             turn_id: details_turn.clone(),
             call_id: "patch-reducer".into(),
             name: "apply_patch".into(),

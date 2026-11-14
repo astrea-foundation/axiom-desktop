@@ -287,6 +287,108 @@ pub trait ApprovalHandler: Send + Sync {
     ) -> Result<ApprovalResponse>;
 }
 
+/// Authorization for resources discovered during execution, such as search
+/// candidates and redirect destinations. Tool-level approval is not authority
+/// for a resource that was absent from the original effect list.
+#[async_trait]
+pub trait EffectAuthorizer: Send + Sync {
+    async fn authorize(&self, effect: Effect, cancellation: CancellationToken) -> Result<()>;
+
+    /// Background bookkeeping may use only existing authority. Implementations
+    /// that cannot evaluate policy without interaction must fail closed.
+    fn immediately_allows(&self, _effect: Effect) -> bool {
+        false
+    }
+}
+
+pub struct ExecutionAuthorizer {
+    pub policy: PolicyEngine,
+    pub profile: PermissionProfile,
+    pub approval: Option<Arc<dyn ApprovalHandler>>,
+    pub events: Option<tokio::sync::mpsc::Sender<crate::app::AppEvent>>,
+}
+
+#[async_trait]
+impl EffectAuthorizer for ExecutionAuthorizer {
+    fn immediately_allows(&self, effect: Effect) -> bool {
+        self.policy.evaluate(self.profile, effect).kind == DecisionKind::Allow
+    }
+
+    async fn authorize(&self, effect: Effect, cancellation: CancellationToken) -> Result<()> {
+        use crate::app::AppEvent;
+        if cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        let decision = self.policy.evaluate(self.profile, effect);
+        match decision.kind {
+            DecisionKind::Allow => return Ok(()),
+            DecisionKind::Deny => return Err(AxiomError::PermissionDenied(decision.explanation)),
+            DecisionKind::Ask => {}
+        }
+        // Confirm already approved the tool's routine effects. Explicit ask
+        // rules are never covered by that approval or by session grants.
+        if self.profile == PermissionProfile::Confirm && decision.session_grant_allowed {
+            return Ok(());
+        }
+        let request = ApprovalRequest::new(&decision);
+        if let Some(events) = &self.events {
+            events
+                .send(AppEvent::PermissionRequired {
+                    request_id: request.request_id.clone(),
+                    explanation: request.explanation.clone(),
+                    effect: serde_json::to_value(&request.effect)?,
+                    choices: request
+                        .offered_choices()
+                        .iter()
+                        .map(|choice| choice.as_str().into())
+                        .collect(),
+                })
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+        }
+        let response = if let Some(handler) = &self.approval {
+            tokio::select! {
+                () = cancellation.cancelled() => Err(AxiomError::Cancelled),
+                response = handler.request(request.clone(), cancellation.clone()) => response,
+            }
+        } else {
+            Err(AxiomError::PermissionDenied(
+                "approval handler is unavailable".into(),
+            ))
+        };
+        let (result, choice) = match response {
+            Ok(response) => match self.policy.apply_approval(&request, response) {
+                Err(error) => (Err(error), "rejected_scope"),
+                Ok(()) if response.choice.is_allowed() => (Ok(()), response.choice.as_str()),
+                Ok(()) => (Err(AxiomError::ApprovalDeclined), response.choice.as_str()),
+            },
+            Err(error) => (Err(error), "failed_closed"),
+        };
+        if let Some(events) = &self.events {
+            events
+                .send(AppEvent::PermissionResolved {
+                    request_id: request.request_id,
+                    allowed: result.is_ok(),
+                    choice: Some(choice.into()),
+                })
+                .await
+                .map_err(|_| AxiomError::Cancelled)?;
+        }
+        result
+    }
+}
+
+pub struct DenyDynamicEffects;
+
+#[async_trait]
+impl EffectAuthorizer for DenyDynamicEffects {
+    async fn authorize(&self, _effect: Effect, _cancellation: CancellationToken) -> Result<()> {
+        Err(AxiomError::PermissionDenied(
+            "dynamic resource authorization is required".into(),
+        ))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DenyApproval;
 

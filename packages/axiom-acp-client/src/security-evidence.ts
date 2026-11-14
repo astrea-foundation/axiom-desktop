@@ -9,19 +9,54 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
   const evidence = result.evidence;
   if (result.status.state !== "verified" && result.status.state !== "degraded") return null;
   const degraded = result.status.state === "degraded";
+  const acceptedOutdatedCheck = (check: { name: string; detail: string; passed: boolean }) =>
+    degraded && evidence?.providerId === "near" && evidence.e2eeProtocol === "near-v3"
+    && ["near-tdx-nvidia-v2", "near-tdx-nvidia-gateway-v1", "near-tdx-nvidia-gateway-v2"].includes(evidence.attestationProtocol)
+    && (check.name === "Intel TDX"
+      || (evidence.attestationProtocol.startsWith("near-tdx-nvidia-gateway-") && check.name === "NEAR gateway (Intel TDX)")
+      || (evidence.attestationProtocol === "near-tdx-nvidia-gateway-v2" && /^Worker (?:[2-9]|1[0-6]) \(Intel TDX\)$/.test(check.name)))
+    && check.detail === "OutOfDate" && check.passed === false;
   const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
   const positive = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
   const fingerprint = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
   const directTinfoil = evidence?.providerId === "tinfoil"
     && evidence.attestationProtocol === "tinfoil-snp-sigstore-v1"
     && evidence.e2eeProtocol === "tinfoil-ehbp-v1";
+  // Display-only contract for the explicit local debug adapter. This report
+  // must retain its missing provenance check and can never claim verified.
+  const directPreview = degraded && evidence?.providerId === "chutes-preview"
+    && evidence.modelId === "chutes-preview:qwen3.8-27b"
+    && evidence.attestationProtocol === "chutes-hardware-development-v1"
+    && evidence.e2eeProtocol === "chutes-mlkem768-desktop-v1"
+    && evidence.e2eeEncryptionVersion === 1 && Array.isArray(evidence.checks)
+    && ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge"]
+      .every(name => evidence.checks.some(check => check.name === name && check.passed === true))
+    && evidence.checks.some(check => check.name === "Application provenance"
+      && check.passed === false && check.detail === "unqualified development preview");
+  // The native adapter has already checked the installed publisher pin. This
+  // projection describes hardware + key + release authorization, never claims
+  // independent measurement of the application image or model weights.
+  const directRelease = !degraded && ((evidence?.providerId === "chutes-preview"
+    && evidence.modelId === "chutes-preview:qwen3.8-27b") || (evidence?.providerId === "chutes"
+    && evidence.modelId === "chutes:qwen3.8-27b"))
+    && evidence.attestationProtocol === "chutes-tdx-nvidia-release-v1"
+    && evidence.e2eeProtocol === "chutes-mlkem768-desktop-v1"
+    && evidence.e2eeEncryptionVersion === 1 && Array.isArray(evidence.checks)
+    && ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
+      .every(name => evidence.checks.some(check => check.name === name && check.passed === true))
+    && evidence.checks.some(check => check.name === "Intel TDX" && check.detail === "UpToDate")
+    && Array.isArray(evidence.providerClaims)
+    && evidence.providerClaims.some(claim => claim.name === "release_authority_fingerprint" && fingerprint(claim.value))
+    && evidence.providerClaims.some(claim => claim.name === "release_channel"
+      && (claim.value === "staging" || (evidence.providerId === "chutes" && claim.value === "production")))
+    && evidence.providerClaims.some(claim => claim.name === "execution_provenance"
+      && claim.value === "Not independently established by the Chutes evidence; release authorization is a separate claim.");
   const validGeneration = evidence?.attestationGeneration == null
-    ? directTinfoil : positive(evidence.attestationGeneration);
+    ? directTinfoil || directPreview || directRelease : positive(evidence.attestationGeneration);
   if (!evidence || evidence.status.state !== result.status.state || evidence.modelId !== modelId
-    || (degraded && (evidence.providerId !== "near" || evidence.e2eeProtocol !== "near-v3"
-      || evidence.attestationProtocol !== "near-tdx-nvidia-v2"
-      || !Array.isArray(evidence.checks)
-      || !evidence.checks.some((check) => check.name === "Intel TDX" && check.detail === "OutOfDate" && check.passed === false)))
+    || (["chutes-preview", "chutes"].includes(evidence.providerId) && !directPreview && !directRelease)
+    || (degraded && !directPreview && (!Array.isArray(evidence.checks)
+      || !evidence.checks.some(acceptedOutdatedCheck)))
     || !text(evidence.providerId) || !text(evidence.modelId)
     || !text(evidence.attestationProtocol) || !text(evidence.e2eeProtocol) || !text(evidence.trustPolicyVersion)
     || !validGeneration || !positive(evidence.e2eeEncryptionVersion)
@@ -32,7 +67,8 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
     || (evidence.tlsSpkiFingerprint != null && !fingerprint(evidence.tlsSpkiFingerprint))
     || !Array.isArray(evidence.checks) || evidence.checks.length === 0 || evidence.checks.length > 128
     || evidence.checks.some((check) => !text(check.name) || !text(check.detail, 8192)
-      || (check.passed !== true && !(degraded && check.name === "Intel TDX" && check.detail === "OutOfDate" && check.passed === false)))
+      || (check.passed !== true && !(!directPreview && acceptedOutdatedCheck(check))
+        && !(directPreview && check.name === "Application provenance" && check.detail === "unqualified development preview" && check.passed === false)))
     || !Array.isArray(evidence.providerClaims) || evidence.providerClaims.length > 128
     || evidence.providerClaims.some((claim) => !text(claim.name) || typeof claim.value !== "string" || claim.value.length > 8192)
     || (evidence.workloadManifest != null && (typeof evidence.workloadManifest !== "string"

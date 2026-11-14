@@ -5,7 +5,8 @@ import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse } from "@axiom/axiom-acp-client";
+import { securityEvidence } from "../../../../fixtures/desktop-security.mts";
+import type { ClientState, DesktopMcpRequest, DesktopMcpResponse, ApiKeyRecord, AccountStatus, BillingStatus, ClientSessionState, ClientTimelineItem, ContextUsage, ConfigureDesktopAgentRequest, DesktopAgentSettings, ListModelsResponse, LocalPayloadRequest } from "@axiom/axiom-acp-client";
 
 // Real renderer/DOM focus tests, but no Electron window, OS input, account,
 // sidecar, or provider request. The bridge below operates only on fake threads.
@@ -29,7 +30,7 @@ function depositBilling(postedMicrousd: number, revision = 1): BillingStatus {
 }
 
 before(async () => {
-  server = await createServer({
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/deletion-focus.test", import.meta.url)),
     configFile: false,
     root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()],
@@ -46,8 +47,29 @@ after(async () => {
   await server?.close();
 });
 
-async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model") {
+async function openApp(platform = "linux", failDelete = false, thinkingLevels: string[] = [], rememberedThinking = "medium", supportsImages = false, bypassCSP = true, modelCatalog?: ListModelsResponse, rememberedModel = "test-model", recoverLegacy = false, initialAccount?: AccountStatus) {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 }, bypassCSP });
+  // Synthetic native persistence lives in the test process, survives renderer
+  // reloads, and never writes draft/outbox data into browser storage.
+  const nativePayloads = new Map<string, any>();
+  if (recoverLegacy) nativePayloads.set(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]), {
+    version: 1, kind: "prompt", payload: { text: "Keep this authored account draft", attachments: [] },
+  });
+  await page.exposeFunction("__nativeLocalPayload", (request: LocalPayloadRequest) => {
+    const key = JSON.stringify([request.accountId, request.id]);
+    if (request.action.kind === "get") return { value: structuredClone(nativePayloads.get(key)) };
+    if (request.action.kind === "import_legacy") {
+      const value = structuredClone(request.action.value);
+      if (!request.action.preview && !nativePayloads.has(key)) nativePayloads.set(key, value);
+      // These browser scenarios use healthy payloads; native/client integration
+      // tests exercise decoder omissions and encrypted source recovery.
+      return { value, omittedMedia: 0 };
+    }
+    if (request.action.kind === "put") nativePayloads.set(key, structuredClone(request.action.value));
+    else if (request.action.kind === "remove") nativePayloads.delete(key);
+    else throw new Error("Unsupported fixture local storage action");
+    return {};
+  });
   page.setDefaultTimeout(8_000);
   const errors: string[] = [];
   const nativeDialogs: string[] = [];
@@ -60,7 +82,8 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     if (route.request().url().startsWith(origin)) return route.continue();
     return route.abort();
   });
-  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string }) => {
+  const installBridge = ({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount }: { platform: string; failDelete: boolean; thinkingLevels: string[]; rememberedThinking: string; supportsImages: boolean; modelCatalog?: ListModelsResponse; rememberedModel: string; recoverLegacy: boolean; initialAccount?: AccountStatus }) => {
+    if (recoverLegacy) localStorage.setItem("axiom.draft.v1:anonymous:new", "Recovered draft from before sign-in. Review before sending.");
     const savedThinking = () => localStorage.getItem("test-thinking") ?? rememberedThinking;
     const settingsCalls: { threadId: string; model?: string; thinkingLevel?: string }[] = [];
     const defaultDirectory = (id: string) => platform === "win32" ? `C:\\Axiom\\chat\\${id}` : `/axiom/chat/${id}`;
@@ -90,9 +113,9 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const state = {
       connected: true, runtimeInstanceId: "test-runtime", lastSequence: 0,
       sessions: {} as Record<string, ReturnType<typeof session>>,
-      catalog: [summary("old-thread")],
-      collections: { revision: 1, collections: [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
-      preferences: null, account: { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
+      catalog: initialAccount && initialAccount.state !== "valid" ? [] : [summary("old-thread")],
+      collections: { revision: 1, collections: initialAccount && initialAccount.state !== "valid" ? [] : [{ id: "folder", name: "Test folder", collapsed: false, threadIds: [] }] },
+      preferences: null, account: initialAccount ?? { revision: 1, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } } as AccountStatus,
       billing: null as BillingStatus | null, diagnostic: "", error: null as string | null,
     };
     const calls: { method: string; id?: string; text?: string; webEnabled?: boolean; userItemId?: string; expectedRevision?: number }[] = [];
@@ -105,10 +128,20 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
     const setupGates = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>();
     const waitForSetup = async (stage: string) => { await setupGates.get(stage)?.promise; };
     const listeners = new Set<(state: unknown) => void>();
+    let flushLocal: () => Promise<void> = async () => { throw new Error("Local flush handler not registered"); };
+    let releaseLocal = () => {};
     const emit = () => {
       for (const listener of listeners) listener(structuredClone(state));
     };
     const agent = {
+      localPayload: async (request: LocalPayloadRequest) => {
+        const owner = state.account.account?.id, runtime = state.runtimeInstanceId;
+        if (!state.connected || state.account.state !== "valid" || owner !== request.accountId) throw new Error("Fixture account changed");
+        if (request.action.kind !== "get") await waitForSetup("local-save");
+        const result = await (window as any).__nativeLocalPayload(request);
+        if (!state.connected || state.account.account?.id !== owner || state.runtimeInstanceId !== runtime) throw new Error("Fixture account changed");
+        return result;
+      },
       onState: (listener: (state: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
       prewarmSecurity: async (modelId: string) => {
         calls.push({ method: "prewarm", id: modelId });
@@ -306,7 +339,12 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         setAccountState: (account: AccountStatus) => { state.account = account; state.sessions = {}; state.catalog = []; emit(); },
         setBilling: (billing: BillingStatus) => { state.billing = billing; emit(); },
         setError: (error: string | null) => { state.error = error; emit(); },
-        setSecurity: (security: string) => { state.sessions["old-thread"]!.security = { state: security }; emit(); },
+        setSecurity: (security: string, evidence: ClientSessionState["securityEvidence"] = null) => {
+          const selected = state.sessions["old-thread"]!;
+          selected.security = { state: security };
+          (selected as ClientSessionState).securityEvidence = evidence;
+          emit();
+        },
         failBalance: (fail: boolean) => { failBalance = fail; },
         setRuntime: (id: string, connected = true) => { state.runtimeInstanceId = id; state.connected = connected; emit(); },
         finishTurn: () => { state.sessions["old-thread"]!.running = false; state.sessions["old-thread"]!.activeTurnId = null; emit(); },
@@ -320,6 +358,10 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
           state.sessions["old-thread"]!.timeline = timeline;
           state.sessions["old-thread"]!.running = running;
           state.sessions["old-thread"]!.activeTurnId = running ? "active-test-turn" : null;
+          emit();
+        },
+        setToolCallDraft: (turnId: string | null) => {
+          (state.sessions["old-thread"] as ClientSessionState).toolCallDraftTurnId = turnId;
           emit();
         },
         setRequestUsage: (usage: NonNullable<ClientSessionState["requestUsage"]>) => { state.sessions["old-thread"]!.requestUsage = usage; emit(); },
@@ -349,6 +391,13 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       axiomDesktop: {
         platform, agent, setTheme: () => {},
+        onBeforeLocalStateChange: (flush: () => Promise<void>, release: () => void) => {
+          flushLocal = flush; releaseLocal = release; return () => {};
+        },
+        close: async () => {
+          try { await flushLocal(); calls.push({ method: "close" }); }
+          finally { releaseLocal(); }
+        },
         isFullScreen: async () => false, onFullScreenChange: () => () => {},
         isFocused: async () => true, onActiveChange: () => () => {},
         isMaximized: async () => false, onMaximizedChange: () => () => {},
@@ -357,18 +406,183 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
   };
   // tsx adds a function-name helper to nested callbacks; serialized browser
   // fixtures must define that helper in their own JavaScript realm.
-  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel })});` });
+  await page.addInitScript({ content: `window.__name = (fn) => fn; (${installBridge.toString()})(${JSON.stringify({ platform, failDelete, thinkingLevels, rememberedThinking, supportsImages, modelCatalog, rememberedModel, recoverLegacy, initialAccount })});` });
   await page.goto(origin);
   try {
-    if (modelCatalog) await page.locator("textarea[data-chat-input]").waitFor();
+    if (initialAccount?.state === "starting") await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+    else if (modelCatalog || initialAccount) await page.locator("textarea[data-chat-input]").waitFor();
     else await page.getByRole("button", { name: "Test model" }).waitFor();
   } catch (error) {
     console.error("Renderer startup failed", errors, await page.locator("body").innerText());
     await page.close();
     throw error;
   }
-  return { page, errors, nativeDialogs };
+  return { page, errors, nativeDialogs, nativePayloads };
 }
+
+test("legacy anonymous conflict becomes a saved preparation without overwriting or automatic sending", async () => {
+  const { page, errors, nativePayloads } = await openApp("linux", false, [], "medium", false, true, undefined, "test-model", true);
+  try {
+    const input = page.locator("textarea[data-chat-input]");
+    const queue = page.getByRole("region", { name: "Message queue" });
+    await queue.getByText(/Recovered a draft from before sign-in/).waitFor();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Keep this authored account draft");
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
+    assert.equal(await page.evaluate(() => localStorage.getItem("axiom.draft.v1:anonymous:new")), null);
+    const saved = nativePayloads.get(JSON.stringify(["test-account", "axiom.message-queue.v1"]));
+    assert.equal(saved.items.length, 1);
+    assert.equal(saved.items[0].preparing, true);
+    if (process.env.AXIOM_RECOVERY_SCREENSHOT) await page.screenshot({ path: process.env.AXIOM_RECOVERY_SCREENSHOT, animations: "disabled" });
+    await page.reload();
+    await queue.getByText(/Recovered a draft from before sign-in/).waitFor();
+    assert.equal(await queue.getByRole("button", { name: "Review draft", exact: true }).count(), 1);
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
+    await input.fill("");
+    await queue.getByRole("button", { name: "Review draft", exact: true }).click();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Recovered draft from before sign-in. Review before sending.");
+    await queue.waitFor({ state: "hidden" });
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
+    await input.press("Enter");
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+    assert.equal((await calls(page)).filter(call => call.method === "prompt").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("ordinary close flushes the latest draft before its debounce and waits for native acknowledgement", async () => {
+  const { page, errors, nativePayloads } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("local-save"));
+    await page.locator("textarea[data-chat-input]").fill("Last edit before closing");
+    assert.equal(nativePayloads.has(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"])), false);
+    await page.evaluate(() => { (window as any).__closeResult = (window as any).axiomDesktop.close(); });
+    assert.equal((await calls(page)).some(call => call.method === "close"), false);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("local-save"));
+    await page.evaluate(() => (window as any).__closeResult);
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Last edit before closing");
+    assert.equal((await calls(page)).filter(call => call.method === "close").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a failed ordinary close preserves the draft and leaves input usable for retry", async () => {
+  const { page, errors, nativePayloads } = await openApp();
+  try {
+    await page.locator("textarea[data-chat-input]").fill("Keep this unsaved edit");
+    await page.evaluate(() => {
+      const agent = (window as any).axiomDesktop.agent, original = agent.localPayload;
+      agent.localPayload = async (request: LocalPayloadRequest) => {
+        if (request.action.kind === "put") throw Error("Fixture keyring locked");
+        return original(request);
+      };
+      (window as any).__restoreLocalPayload = () => { agent.localPayload = original; };
+    });
+    const error = await page.evaluate(() => (window as any).axiomDesktop.close().then(() => null, (error: Error) => error.message));
+    assert.match(error, /keyring locked/);
+    assert.equal((await calls(page)).some(call => call.method === "close"), false);
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this unsaved edit");
+    await page.evaluate(() => (window as any).__restoreLocalPayload());
+    await page.locator("textarea[data-chat-input]").fill("Latest edit after retry");
+    await page.evaluate(() => (window as any).axiomDesktop.close());
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Latest edit after retry");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("close racing a recovered draft replacement cannot flush an older empty draft over it", async () => {
+  const { page, errors, nativePayloads } = await openApp("linux", false, [], "medium", false, true, undefined, "test-model", true);
+  try {
+    const review = page.getByRole("region", { name: "Message queue" }).getByRole("button", { name: "Review draft", exact: true });
+    await review.waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("local-save"));
+    await page.locator("textarea[data-chat-input]").fill("");
+    await review.click();
+    await page.evaluate(() => { (window as any).__closeResult = (window as any).axiomDesktop.close(); });
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("local-save"));
+    await page.evaluate(() => (window as any).__closeResult);
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Recovered draft from before sign-in. Review before sending.");
+    assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const ending of ["completion", "stop", "failure"]) test(`model selection stays locked through generation until ${ending}`, async () => {
+  const modelCatalog: ListModelsResponse = { models: ["test-model", "other-model"].map(id => ({
+    id, label: id === "test-model" ? "Test model" : "Other model", shortLabel: id === "test-model" ? "Test model" : "Other model",
+    providerId: "test", providerLabel: "Test provider", upstreamModel: id, thinkingLevels: [],
+  })) };
+  const { page, errors } = await openApp("linux", false, [], "medium", false, true, modelCatalog);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    const selector = page.locator('.composer-shell button[aria-haspopup="menu"]').first();
+    await selector.click();
+    const picker = page.getByRole("dialog", { name: "Choose a model", exact: true });
+    await picker.waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setTimeline([
+      { id: "reply", turnId: "active-test-turn", kind: "assistant", text: "Generating a reply…", status: "streaming" },
+    ], true));
+    await picker.waitFor({ state: "detached" });
+    assert.equal(await selector.isDisabled(), true);
+    assert.equal(await selector.getAttribute("aria-expanded"), "false");
+    assert.equal(await selector.getAttribute("title"), "Model is fixed for the current response");
+    await selector.evaluate((button: HTMLButtonElement) => button.click());
+    assert.equal(await picker.count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
+    await page.locator("textarea[data-chat-input]").fill("Next question");
+    if (ending === "completion" && process.env.AXIOM_MODEL_LOCK_SCREENSHOT) {
+      await page.screenshot({ path: process.env.AXIOM_MODEL_LOCK_SCREENSHOT, animations: "disabled" });
+    }
+    // A different conversation can still choose its own model.
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    assert.equal(await selector.isEnabled(), true);
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    assert.equal(await selector.isDisabled(), true);
+    if (ending === "stop") {
+      await page.getByRole("button", { name: "Stop generating", exact: true }).click();
+    } else {
+      await page.evaluate((failed) => (window as any).__deletionTest.setTimeline([
+        { id: "reply", kind: "assistant", text: "Final content", status: failed ? "failed" : "completed", terminalVerified: !failed },
+      ], false), ending === "failure");
+    }
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('.composer-shell button[aria-haspopup="menu"]')?.disabled);
+    assert.equal(await selector.getAttribute("aria-expanded"), "false", "the old picker stays closed after generation");
+    await selector.click();
+    await picker.getByRole("button", { name: /Other model/ }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.settingsCalls.some((request: any) => request.model === "other-model"));
+    assert.equal(await selector.innerText(), "Other model");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Desktop automatic TEE renewal uses its cached-report action and explicit Refresh forces verification", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate((report) => {
+      const app = (window as any).__deletionTest;
+      const agent = (window as any).axiomDesktop.agent;
+      agent.ensureSecurity = async (id: string) => {
+        app.calls.push({ method: "ensureSecurity", id });
+        app.setSecurity("verified", report);
+        return { status: { state: "verified" }, evidence: report };
+      };
+      agent.verifySecurity = async (id: string) => {
+        app.calls.push({ method: "verifySecurity", id });
+        app.setSecurity("verified", report);
+        return { status: { state: "verified" }, evidence: report };
+      };
+    }, securityEvidence());
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "ensureSecurity").length, 1);
+    assert.equal((await calls(page)).filter(call => call.method === "verifySecurity").length, 0);
+    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "verifySecurity"));
+    assert.equal((await calls(page)).filter(call => call.method === "ensureSecurity").length, 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 test("outdated TEE consent retries the paused turn through attachment-preserving revision", async () => {
   const { page, errors } = await openApp();
@@ -450,8 +664,8 @@ test("a loaded thread also corrects stale thinking before its next message", asy
 
 async function enableDraftAgent(page: Page) {
   await page.getByRole("button", { name: "Agent", exact: true }).click();
-  await page.getByRole("switch", { name: "Enable agent mode" }).click();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByText("Ask for permission", { exact: true }).click();
+  await page.getByRole("button", { name: "Close Agent settings", exact: true }).click();
   await page.getByRole("dialog", { name: "Agent settings" }).waitFor({ state: "hidden" });
 }
 
@@ -551,7 +765,7 @@ for (const stage of ["new", "settings", "agent"]) {
 
 for (const destination of ["new", "existing", "account", "runtime"]) {
   test(`leaving thread preparation for ${destination} preserves the message without stealing focus`, async () => {
-    const { page, errors } = await openApp();
+    const { page, errors, nativePayloads } = await openApp();
     try {
       await page.evaluate(() => (window as any).__deletionTest.holdSetup("new"));
       await page.locator("textarea[data-chat-input]").fill("Private pending message");
@@ -575,12 +789,10 @@ for (const destination of ["new", "existing", "account", "runtime"]) {
       } else {
         assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
         assert.equal(await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length), 0);
-        const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("axiom.message-queue.v1:test-account")!));
-        assert.equal(saved[0].text, "", "large payloads are not stored in localStorage");
-        const payload = await page.evaluate(async (id: string) => {
-          const { localPayloads } = await import(`${location.origin}/src/localPayloads.ts`);
-          return localPayloads.get("test-account", id);
-        }, saved[0].payloadId);
+        assert.equal(await page.evaluate(() => localStorage.getItem("axiom.message-queue.v1:test-account")), null);
+        const saved = nativePayloads.get(JSON.stringify(["test-account", "axiom.message-queue.v1"]))!.items;
+        assert.equal(saved[0].text, "", "queue metadata refers to the separately saved payload");
+        const payload = nativePayloads.get(JSON.stringify(["test-account", saved[0].payloadId]))!.payload;
         assert.equal(payload.text, "Private pending message");
         assert.equal(saved[0].preparing, true);
       }
@@ -604,17 +816,22 @@ for (const batched of [false, true]) for (const change of ["disconnect", "runtim
         else app.setRuntime(change === "runtime" ? "another-runtime" : "test-runtime", change !== "disconnect");
         if (batched) { app.setAccount("test-account"); app.setRuntime("test-runtime"); }
       }, { change, batched });
-      await input.waitFor({ state: "visible" });
+      if (!batched && change === "disconnect") {
+        await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+        assert.equal(await input.count(), 0, "the composer is replaced while the runtime reconnects");
+      } else await input.waitFor({ state: "visible" });
       await page.waitForFunction(() => !document.querySelector('[aria-label="Sending message"]'));
       if (!batched) await page.evaluate(() => {
         const app = (window as any).__deletionTest;
         app.setAccount("test-account"); app.setRuntime("test-runtime");
       });
+      await input.waitFor({ state: "visible" });
       const queue = page.getByRole("region", { name: "Message queue" });
       await queue.getByText("Restored after reconnect. Review and send when ready.", { exact: true }).waitFor();
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("new"));
       await page.waitForFunction(() => document.querySelector('[data-thread-id="new-thread"]'));
       assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+      await queue.getByRole("button", { name: "Review draft", exact: true }).waitFor();
       assert.equal(await queue.getByRole("button", { name: "Review draft", exact: true }).count(), 1);
       assert.equal(await input.isEnabled(), true, "the privacy lock does not disable the welcome composer");
       await queue.getByRole("button", { name: "Review draft", exact: true }).click();
@@ -874,7 +1091,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`Agent controls save per-thread permissions and folders, with safe new-thread defaults (${platform})`, async () => {
+  test(`Agent levels save on every dismissal and preserve per-thread folders and safe defaults (${platform})`, async () => {
     const { page, errors, nativeDialogs } = await openApp(platform);
     const agent = page.getByRole("button", { name: "Agent", exact: true });
     try {
@@ -889,11 +1106,14 @@ for (const platform of ["linux", "win32", "darwin"]) {
           && Math.abs(rect.top + rect.height / 2 - innerHeight / 2) < 2;
       });
       if (platform === "linux" && process.env.AXIOM_AGENT_SCREENSHOT) {
+        await page.setViewportSize({ width: 1320, height: 900 });
         await page.screenshot({ path: `${process.env.AXIOM_AGENT_SCREENSHOT}.light.png` });
         await page.emulateMedia({ colorScheme: "dark" });
         await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
         await page.waitForTimeout(350); // Settle the theme transition for visual inspection.
         await page.screenshot({ path: process.env.AXIOM_AGENT_SCREENSHOT });
+        await dialog.screenshot({ path: process.env.AXIOM_AGENT_SCREENSHOT.replace(/\.png$/, "-dialog.png"), animations: "disabled" });
+        await page.setViewportSize({ width: 960, height: 640 });
       }
       assert.equal(await page.locator("dialog:modal").count(), 1);
       // The native HTML modal makes the composer inert, rather than merely
@@ -901,50 +1121,68 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.locator("textarea[data-chat-input]").evaluate((element: HTMLTextAreaElement) => element.focus());
       assert.equal(await dialog.evaluate((element) => element.contains(document.activeElement)), true);
       const close = dialog.getByRole("button", { name: "Close Agent settings" });
-      const save = dialog.getByRole("button", { name: "Save changes" });
+      assert.equal(await dialog.getByRole("radio").count(), 3);
+      assert.equal(await dialog.getByRole("switch").count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Save changes" }).count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Cancel", exact: true }).count(), 0);
+      const browse = dialog.getByRole("button", { name: "Choose working directory" });
       await close.focus(); await page.keyboard.press("Shift+Tab");
-      assert.equal(await save.evaluate((element) => element === document.activeElement), true);
+      assert.equal(await browse.evaluate((element) => element === document.activeElement), true);
       await page.keyboard.press("Tab");
       assert.equal(await close.evaluate((element) => element === document.activeElement), true);
       await page.setViewportSize({ width: 1320, height: 900 });
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      assert.equal(await agent.getAttribute("aria-pressed"), "false");
+      assert.equal(await dialog.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+      await dialog.getByRole("radio", { name: "Off", exact: true }).focus();
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await dialog.getByRole("radio", { name: "Ask for permission", exact: true }).isChecked(), true);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await agent.getAttribute("aria-pressed"), "true", "Escape saves the draft access level");
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await agent.click();
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
       await dialog.getByText("Full access", { exact: true }).click();
       await dialog.getByRole("button", { name: "Choose working directory" }).click();
       const custom = platform === "win32" ? "C:\\Projects\\My Project 日本語" : "/Projects/My Project 日本語";
       assert.equal(await dialog.getByLabel("Working directory", { exact: true }).inputValue(), custom);
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+      await close.click();
       await dialog.waitFor({ state: "hidden" });
       assert.equal(await agent.getAttribute("aria-pressed"), "true");
+      let applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.permission, "full_access");
+      assert.equal(applied.workingDirectory, custom);
       await page.reload();
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await agent.click();
       assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
       assert.equal(await dialog.getByLabel("Working directory", { exact: true }).inputValue(), custom);
       await dialog.getByRole("button", { name: "Use default thread folder" }).click();
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
-      await dialog.waitFor({ state: "hidden" });
-      assert.equal(await agent.getAttribute("aria-pressed"), "false");
-      await agent.click();
+      await dialog.getByText("Ask for permission", { exact: true }).click();
       await page.keyboard.press("Escape");
-      assert.equal(await dialog.count(), 0);
+      await dialog.waitFor({ state: "hidden" });
+      applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.enabled, true);
+      assert.equal(applied.permission, "approve_commands");
+      assert.equal(applied.usesDefaultDirectory, true);
       await agent.click();
+      assert.equal(await dialog.getByRole("radio", { name: "Ask for permission", exact: true }).isChecked(), true);
+      await dialog.getByText("Off", { exact: true }).click();
       await page.mouse.click(12, 12);
-      assert.equal(await dialog.count(), 0, "clicking the modal backdrop closes settings");
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await agent.getAttribute("aria-pressed"), "false", "clicking the backdrop saves Off");
+      applied = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].desktopAgent);
+      assert.equal(applied.enabled, false);
+      assert.equal(applied.permission, "approve_commands");
       assert.equal(await agent.evaluate((element) => element === document.activeElement), true);
+      const savedCalls = (await calls(page)).filter(call => call.method === "configureAgent").length;
+      await agent.click();
+      await close.click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, savedCalls, "closing unchanged settings makes no write");
       await page.getByRole("button", { name: "New thread", exact: true }).click();
       await agent.click();
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
-      await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+      assert.equal(await dialog.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+      await dialog.getByText("Ask for permission", { exact: true }).click();
+      await close.click();
       await dialog.waitFor({ state: "hidden" });
       await page.locator("textarea[data-chat-input]").fill("Work in this thread folder");
       await page.locator("textarea[data-chat-input]").press("Enter");
@@ -961,8 +1199,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Agent", exact: true }).click();
-      await page.getByRole("switch", { name: "Enable agent mode" }).click();
-      await page.getByRole("button", { name: "Save changes", exact: true }).click();
+      await page.getByText("Ask for permission", { exact: true }).click();
+      await page.getByRole("button", { name: "Close Agent settings", exact: true }).click();
       await page.getByRole("dialog", { name: "Agent settings" }).waitFor({ state: "hidden" });
       await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
       await page.locator("textarea[data-chat-input]").fill("Keep my draft");
@@ -978,13 +1216,12 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
-  test(`Agent modal keeps failed edits local and restores focus on cancellation (${platform})`, async () => {
+  test(`Agent modal retains failed autosaves for retry and supports explicit discard (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
       await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
       await page.getByRole("button", { name: "Agent", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Agent settings" });
-      await dialog.getByRole("switch", { name: "Enable agent mode" }).click();
       await dialog.getByText("Full access", { exact: true }).click();
       const input = dialog.getByLabel("Working directory", { exact: true });
       await input.fill("/unavailable/project");
@@ -997,11 +1234,23 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "false");
       assert.equal((await calls(page)).some((call) => call.method === "prompt"), false);
       await page.keyboard.press("Escape");
-      assert.equal(await page.locator("dialog:modal").count(), 0);
+      await dialog.getByRole("alert").waitFor();
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true, "failed Escape never discards the selection");
+      await page.evaluate(() => (window as any).__deletionTest.failAgent(false));
+      await dialog.getByRole("button", { name: "Try again", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal(await page.locator("[data-agent-toggle]").getAttribute("aria-pressed"), "true");
       assert.equal(await page.locator("[data-agent-toggle]").evaluate((element) => document.activeElement === element), true);
       await page.keyboard.press("Enter");
-      assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-      assert.equal(await dialog.getByLabel("Approve commands", { exact: true }).isChecked(), true);
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
+      await dialog.getByText("Ask for permission", { exact: true }).click();
+      await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
+      await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+      await dialog.getByRole("alert").waitFor();
+      await dialog.getByRole("button", { name: "Discard changes", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      await page.keyboard.press("Enter");
+      assert.equal(await dialog.getByLabel("Full access", { exact: true }).isChecked(), true);
       assert.equal(await dialog.getByRole("alert").count(), 0);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -1022,6 +1271,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
           { id: `partial-${status}`, turnId: "stopped-turn", kind: "assistant", text: `Keep the ${status} partial answer.`, status, terminalVerified: false },
         ], false), status);
         const transcript = page.getByRole("region", { name: "Chat messages" });
+        if (status === "interrupted") {
+          await transcript.getByText("Interrupted attempt · Show partial answer", { exact: true }).click();
+        }
         await transcript.getByText(`Keep the ${status} partial answer.`, { exact: true }).waitFor();
         assert.doesNotMatch(await transcript.innerText(), /before verified completion|unverified|cannot be copied|Generating|E2EE/);
         const copy = transcript.getByRole("button", { name: "Copy", exact: true });
@@ -1137,6 +1389,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await queue.locator("[data-queued-message]").count(), 1, "only the waiting follow-up remains queued");
       await page.evaluate(() => (window as any).__deletionTest.releaseSetup("prompt"));
       await queue.waitFor({ state: "hidden" });
+      // The next item enters its sending state before its native outbox commit
+      // acknowledges dispatch; wait for that asynchronous boundary as well.
+      await page.waitForFunction(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prompt").length === 2);
       assert.deepEqual((await calls(page)).filter((call) => call.method === "prompt").map((call) => call.text), [
         "Use the revised requirements instead.", "After that, summarize the result.",
       ]);
@@ -1241,6 +1496,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await settle();
       assert.equal(await viewport.evaluate((el) => el.scrollTop), pausedTop, "scrolling up preserves the reading position");
 
+      await jump.hover(); // Floating controls must pass wheel scrolling through to the chat.
       await page.mouse.wheel(0, 10_000);
       await atBottom();
       await jump.waitFor({ state: "hidden" });
@@ -1418,7 +1674,8 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt" && call.webEnabled === true));
 
       await page.evaluate(() => (window as any).__deletionTest.setRuntime("restarted-runtime", false));
-      await expectWeb(false); // A disconnected runtime cannot inherit permission.
+      await page.getByRole("region", { name: "Chat preparation", exact: true }).waitFor();
+      assert.equal(await web.count(), 0, "a disconnected runtime has no composer or Web control");
       await page.evaluate(() => (window as any).__deletionTest.setRuntime("restarted-runtime"));
       await expectWeb(true);
       await page.evaluate(() => (window as any).__deletionTest.setAccount("another-account"));
@@ -1547,11 +1804,11 @@ for (const platform of ["linux", "win32", "darwin"]) {
     try {
       const indicator = page.locator("[data-context-usage]");
       await indicator.waitFor();
-      assert.equal(await indicator.innerText(), "—");
+      assert.equal(await indicator.innerText(), "N/A");
       assert.doesNotMatch(await page.locator(".composer-shell").innerText(), /Ctrl|⌘|↵/);
       await page.locator('[data-thread-id="old-thread"]').click();
       await page.locator("textarea").waitFor();
-      assert.equal(await indicator.innerText(), "—");
+      assert.equal(await indicator.innerText(), "N/A");
       const setUsage = (total: number, modelId = "test-model") => page.evaluate((usage) => (window as any).__deletionTest.setContextUsage(usage), {
         inputTokens: total - 1_000, outputTokens: 1_000, modelId,
         reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000,
@@ -1605,7 +1862,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
         await page.screenshot({ path: "/tmp/axiom-context-usage.png" });
       }
       await page.getByRole("button", { name: "New thread", exact: true }).click();
-      assert.equal(await indicator.innerText(), "—");
+      assert.equal(await indicator.innerText(), "N/A");
       await page.locator("textarea").fill("Composer still works");
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -2016,9 +2273,9 @@ $$`);
   } finally { await page.close(); }
 });
 
-async function openAccountScreen(page: Page, name: "Settings" | "Balance") {
+async function openAccountScreen(page: Page, name: "Settings" | "Billing") {
   await page.getByRole("button", { name: "Account menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: name === "Settings" ? "Settings" : /^Balance/ }).click();
+  await page.getByRole("menuitem", { name: name === "Settings" ? "Settings" : /^Billing/ }).click();
   await page.getByRole("region", { name, exact: true }).waitFor();
 }
 
@@ -2106,9 +2363,9 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const menu = page.getByRole("menu", { name: "Account actions", exact: true });
       const bounds = await menu.boundingBox(), anchor = await trigger.boundingBox();
       assert.ok(bounds && anchor && bounds.y + bounds.height <= anchor.y);
-      assert.match(await menu.getByRole("menuitem", { name: /^Balance/ }).innerText(), /\$12\.35$/);
+      assert.match(await menu.getByRole("menuitem", { name: /^Billing/ }).innerText(), /\$12\.35$/);
       await page.getByRole("menuitem", { name: "Settings", exact: true }).press("ArrowDown");
-      assert.equal(await page.evaluate(() => document.activeElement?.textContent?.startsWith("Balance")), true);
+      assert.equal(await page.evaluate(() => document.activeElement?.textContent?.startsWith("Billing")), true);
       await page.keyboard.press("Escape");
       assert.equal(await menu.count(), 0);
       assert.equal(await trigger.getAttribute("aria-expanded"), "false");
@@ -2126,7 +2383,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       await menu.waitFor({ state: "detached" });
       await page.evaluate(() => (window as any).__deletionTest.failBalance(true));
       await trigger.click();
-      await menu.getByRole("menuitem", { name: "Balance Unavailable", exact: true }).waitFor();
+      await menu.getByRole("menuitem", { name: "Billing Unavailable", exact: true }).waitFor();
       const logout = menu.getByRole("menuitem", { name: "Log out", exact: true });
       if (platform === "linux") {
         await logout.click();
@@ -2152,7 +2409,7 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
   try {
     const billing = depositBilling(25_000_000);
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     assert.equal(await page.getByRole("region", { name: "Settings", exact: true }).count(), 0);
     const address = page.getByLabel("Mainnet deposit address", { exact: true });
     assert.equal(await address.innerText(), billing.paymentAccount!.address);
@@ -2167,7 +2424,7 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
     await page.getByRole("button", { name: "Back", exact: true }).click();
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     await page.getByText("Sign in to view your balance and payment options.").waitFor();
     assert.equal(await page.getByRole("region", { name: "Zcash deposits", exact: true }).count(), 0);
     assert.equal(await address.count(), 0);
@@ -2175,7 +2432,7 @@ test("balance is a separate screen and payments stay hidden after sign-out", asy
     await page.getByRole("region", { name: "Browser sign-in", exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog").count(), 0);
     assert.deepEqual(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "nativeLoginStart").map((call: any) => call.text)), ["[]"]);
-    assert.equal(await page.getByRole("region", { name: "Balance", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("region", { name: "Billing", exact: true }).count(), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -2190,7 +2447,7 @@ test("balance refreshes keep one top-up panel and preserve gift code input", asy
     await page.clock.install();
     const billing = depositBilling(900_000);
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), billing);
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     const giftCode = panel.getByLabel("Gift code", { exact: true });
     await giftCode.fill("AXG-UNSUBMITTED");
@@ -2228,7 +2485,7 @@ test("failed balance reads show an error, back off, and recover without blaming 
     await page.clock.install({ time: now });
     await page.clock.pauseAt(now + 100);
     await page.evaluate(() => (window as any).__deletionTest.failBalance(true));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByText("Balance unavailable", { exact: true }).waitFor();
     await panel.getByRole("alert").getByText("Balance test failure", { exact: true }).waitFor();
@@ -2269,7 +2526,7 @@ test("a failed deposit refresh retains loaded credit and stops polling after lea
       (window as any).__deletionTest.setBilling(billing);
       (window as any).__deletionTest.failBalance(true);
     }, depositBilling(4_000_000));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByRole("alert").waitFor();
     assert.equal(await panel.getByText("$4.00", { exact: true }).first().isVisible(), true);
@@ -2292,7 +2549,7 @@ test("deposit monitoring resumes when a later refresh enables a payment account"
     await page.clock.install({ time: now });
     await page.clock.pauseAt(now + 100);
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling({ ...billing, paymentAccount: null }), depositBilling(1_000_000));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
     const count = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "billingStatus").length);
     let previous = await count();
@@ -2313,7 +2570,7 @@ test("a stale manual balance failure cannot overwrite a new account's active ref
   const { page, errors } = await openApp();
   try {
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling({ ...billing, paymentAccount: null }), depositBilling(1_000_000));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const refresh = page.getByRole("button", { name: "Refresh balance", exact: true });
     await page.waitForFunction(() => !(document.querySelector('[aria-label="Refresh balance"]') as HTMLButtonElement)?.disabled);
     await page.evaluate(() => {
@@ -2340,7 +2597,7 @@ test("balance shows debt and a reusable deposit address without displaying a res
   const { page, errors } = await openApp();
   try {
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(-230_534));
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
     await panel.getByText("-$0.23", { exact: true }).waitFor();
     await panel.getByText("Top up to send another message.", { exact: true }).waitFor();
@@ -2377,6 +2634,175 @@ test("sign in opens browser authorization directly and leaves the composer usabl
     await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
     await status.waitFor({ state: "detached" });
     assert.equal(await page.locator("textarea").inputValue(), "Keep this draft while I sign in");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("decryption screen replaces the composer, preserves drafts and keeps Settings accessible", async () => {
+  const { page, errors } = await openApp("darwin");
+  try {
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft while my chats open");
+    const starting = (phase: string, revision: number) => page.evaluate(({ phase, revision }) => {
+      const bridge = (window as any).__deletionTest;
+      bridge.setAccountState({ revision, state: "starting", preparationPhase: phase });
+    }, { phase, revision });
+    await starting("checking_sign_in", 2);
+    const status = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await status.waitFor();
+    await status.getByRole("heading", { name: "Checking your sign-in", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Sign in", exact: true }).count(), 0);
+    await starting("opening_chats", 3);
+    await status.getByRole("heading", { name: "Unlocking your chats", exact: true }).waitFor();
+    assert.match(await status.innerText(), /key for your encrypted chats/);
+    assert.doesNotMatch(await status.innerText(), /unavailable|decrypting/i);
+    await starting("decrypting_chats", 4);
+    await status.getByRole("heading", { name: "Decrypting your chats", exact: true }).waitFor();
+    assert.equal(await status.locator('li[aria-current="step"]').innerText(), "Decrypt chats\nIn progress");
+    assert.match(await status.innerText(), /on this device/);
+    assert.equal(await page.getByRole("alert").count(), 0, (await page.getByRole("alert").allTextContents()).join("; "));
+    assert.equal(await page.getByRole("progressbar").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+    assert.equal(await page.locator(".astrea-banner").count(), 0);
+    for (const theme of ["dark", "light"] as const) {
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+      await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
+      if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-${theme}.png`, animations: "disabled" });
+    }
+    await page.setViewportSize({ width: 720, height: 740 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.locator(".chat-preparation-activity span").evaluate(element => getComputedStyle(element).animationName), "none");
+    if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-narrow.png`, animations: "disabled" });
+    await page.setViewportSize({ width: 1320, height: 900 });
+    await page.getByRole("button", { name: "Account menu", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    const settings = page.getByRole("region", { name: "Settings", exact: true });
+    await settings.waitFor();
+    await settings.getByRole("tab", { name: "Account", exact: true }).click();
+    await settings.getByText("Decrypting your chats", { exact: true }).waitFor();
+    assert.equal(await settings.getByRole("button", { name: "Getting ready…", exact: true }).isEnabled(), false);
+    await page.setViewportSize({ width: 720, height: 740 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 5, state: "valid", account: { id: "test-account", displayName: "Test User", verifiedEmail: "test@example.invalid", linkedMethods: ["password"] } }));
+    await page.waitForFunction(() => document.querySelector('textarea[data-chat-input]'));
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft while my chats open");
+    assert.equal(await settings.evaluate(element => element.contains(document.activeElement)), true, "ready does not steal focus from Settings");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a real chat-storage failure stays in the preparation screen with retry and diagnostics", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "unavailable", preparationPhase: "opening_chats", detail: "Synthetic key access was denied" }));
+    const screen = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await screen.getByRole("heading", { name: "Couldn’t open your chats", exact: true }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.equal(await screen.getByText("In progress", { exact: true }).count(), 0);
+    await screen.getByRole("button", { name: "Try again", exact: true }).waitFor();
+    await screen.getByText("Details", { exact: true }).click();
+    await screen.getByText(/Synthetic key access was denied/).waitFor();
+    if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-failure.png`, animations: "disabled" });
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.accountStatus = async () => { throw new Error("Synthetic fresh retry failure"); };
+    });
+    await screen.getByRole("button", { name: "Try again", exact: true }).click();
+    await screen.getByText(/Synthetic fresh retry failure/).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Dismiss notice", exact: true }).count(), 0, "retry errors stay in the preparation screen");
+    await page.evaluate(() => {
+      (window as any).axiomDesktop.agent.accountStatus = async () => {
+        (window as any).__deletionTest.setAccountState({ revision: 3, state: "starting", preparationPhase: "checking_sign_in" });
+        return { status: { revision: 3, state: "starting", preparationPhase: "checking_sign_in" } };
+      };
+    });
+    await screen.getByRole("button", { name: "Try again", exact: true }).click();
+    await screen.getByRole("heading", { name: "Checking your sign-in", exact: true }).waitFor();
+    assert.equal(await screen.getByText("Done", { exact: true }).count(), 0, "a failed stage never becomes a completed stage on retry");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a decryption observation shows only stages the native runtime actually reported", async () => {
+  const { page, errors } = await openApp("darwin", false, [], "medium", false, true, undefined, "test-model", false,
+    { revision: 1, state: "starting", preparationPhase: "decrypting_chats" });
+  try {
+    const screen = page.getByRole("region", { name: "Chat preparation", exact: true });
+    await screen.getByRole("heading", { name: "Decrypting your chats", exact: true }).waitFor();
+    assert.equal(await screen.getByRole("listitem").count(), 1);
+    assert.equal(await screen.getByText("Done", { exact: true }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("storage migration replaces browser approval with live progress until saved data is ready", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "signed_out" }));
+    await page.locator("textarea[data-chat-input]").fill("Keep my sign-in draft");
+    await page.getByRole("button", { name: "Sign in", exact: true }).first().click();
+    await page.getByRole("region", { name: "Browser sign-in" }).getByText("ABCD-1234", { exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "starting", storageMigration: { phase: "encrypting" } }));
+    const heading = page.getByRole("heading", { name: "Updating your local chat storage" });
+    await heading.waitFor();
+    await page.waitForFunction(() => document.activeElement?.id === "storage-migration-title");
+    assert.equal(await page.getByRole("region", { name: "Browser sign-in" }).count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    const progress = page.getByRole("progressbar", { name: "Current storage update step" });
+    assert.equal(await progress.getAttribute("aria-valuenow"), null, "database conversion has no invented percentage");
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 4, state: "starting", storageMigration: { phase: "moving_media", completed: 4, total: 10 } }));
+    await page.getByRole("status").filter({ hasText: "4 of 10 saved records" }).waitFor();
+    assert.equal(await progress.getAttribute("aria-valuenow"), "40");
+    if (process.env.AXIOM_MIGRATION_SCREENSHOT) await page.screenshot({ path: process.env.AXIOM_MIGRATION_SCREENSHOT });
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 5, state: "starting", storageMigration: { phase: "checking", completed: 3, total: 3 } }));
+    await page.getByRole("status").filter({ hasText: "3 of 3 files" }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 6, state: "starting", storageMigration: { phase: "finalizing" } }));
+    await page.getByRole("status").filter({ hasText: "Finishing up" }).waitFor();
+    assert.equal(await progress.getAttribute("aria-valuenow"), null);
+    assert.equal((await calls(page)).filter(call => call.method === "nativeLoginStart").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.finishLogin("test-login-1"));
+    await heading.waitFor({ state: "detached" });
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Keep my sign-in draft");
+    assert.equal((await calls(page)).some(call => call.method === "prompt"), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("restored-account migration failure stays visible and retries without browser sign-in", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 2, state: "starting", storageMigration: { phase: "checking", completed: 0, total: 2 } }));
+    await page.getByRole("heading", { name: "Updating your local chat storage" }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "unavailable", detail: "Synthetic media check failed. Saved data retained.", storageMigration: { phase: "failed" } }));
+    await page.getByRole("heading", { name: "Your storage update needs attention" }).waitFor();
+    await page.getByText("Details", { exact: true }).click();
+    await page.getByText("Synthetic media check failed. Saved data retained.", { exact: true }).waitFor();
+    assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
+    await page.evaluate(() => {
+      const fixture = (window as any).__deletionTest;
+      (window as any).axiomDesktop.agent.accountStatus = async () => {
+        fixture.calls.push({ method: "migrationRetry" });
+        fixture.setAccountState({ revision: 4, state: "starting", storageMigration: { phase: "finalizing" } });
+        await new Promise<void>(resolve => { (window as any).__finishMigrationRetry = resolve; });
+        const status = { revision: 5, state: "valid", account: { id: "test-account", displayName: "Test User", linkedMethods: ["passkey"] } };
+        fixture.setAccountState(status);
+        return { status };
+      };
+    });
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "Finishing up" }).waitFor();
+    await page.setViewportSize({ width: 640, height: 700 });
+    await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    await page.evaluate(() => (window as any).__finishMigrationRetry());
+    await page.getByRole("heading", { name: "Updating your local chat storage" }).waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "migrationRetry").length, 1);
+    assert.equal((await calls(page)).some(call => call.method === "nativeLoginStart" || call.method === "prompt"), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -2457,8 +2883,8 @@ test("balance deposit controls fit the reference window, respect reduced motion,
       }
       await page.getByRole("button", { name: "Back", exact: true }).click();
       await page.setViewportSize({ width: 751, height: 791 });
-      await openAccountScreen(page, "Balance");
-      assert.equal(await page.getByRole("region", { name: "Balance", exact: true }).evaluate((element) => getComputedStyle(element).animationName), "none");
+      await openAccountScreen(page, "Billing");
+      assert.equal(await page.getByRole("region", { name: "Billing", exact: true }).evaluate((element) => getComputedStyle(element).animationName), "none");
       const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
       if (screenshot) await page.screenshot({ path: `${screenshot}-${theme}-balance.png`, animations: "disabled" });
       assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "balance content fits the panel width");
@@ -2472,7 +2898,7 @@ test("balance deposit controls fit the reference window, respect reduced motion,
       assert.ok(giftBounds && panelBounds && giftBounds.y >= panelBounds.y && giftBounds.y + giftBounds.height <= panelBounds.y + panelBounds.height);
       await page.getByRole("button", { name: "Back", exact: true }).click();
     }
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     for (const width of [800, 560]) {
       await page.setViewportSize({ width, height: 600 });
       const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
@@ -2526,7 +2952,7 @@ test("deposit progress keeps ZEC primary and changes estimated USD to credited U
       });
     }, { confirmations, credited });
     await showDeposit("3");
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const row = page.getByRole("region", { name: "Zcash deposits" }).locator("li summary");
     await row.getByText("~$0.10", { exact: true }).waitFor();
     // Measure both amounts in the same frame while the account panel animates.
@@ -2631,12 +3057,22 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 0);
     await page.getByRole("button", { name: "Save and send", exact: true }).click();
     await page.getByRole("textbox", { name: "Edited message" }).waitFor({ state: "hidden" });
+    const regenerateMessage = page.getByRole("button", { name: "Regenerate message", exact: true });
+    assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).evaluate((button) => button.nextElementSibling?.getAttribute("aria-label")), "Regenerate message");
+    await regenerateMessage.click();
+    assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise").length), 1);
+    await regenerateMessage.click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
+    await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Regenerate", exact: true }).click();
     await page.getByRole("button", { name: "Regenerate from here", exact: true }).click();
     await page.getByRole("button", { name: "Regenerate from here", exact: true }).waitFor({ state: "hidden" });
     const calls = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
     assert.deepEqual(calls.map(({ id, text, userItemId, expectedRevision }: any) => ({ id, text, userItemId, expectedRevision })), [
       { id: "old-thread", text: "Changed message", userItemId: "user", expectedRevision: 1 },
+      { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
       { id: "old-thread", text: "Original message", userItemId: "user", expectedRevision: 1 },
     ]);
     await page.evaluate(() => (window as any).__deletionTest.setTimeline([
@@ -2645,7 +3081,48 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     ], true));
     await page.waitForFunction(() => (document.querySelector('button[aria-label="Edit message"]') as HTMLButtonElement)?.disabled);
     assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).isDisabled(), true);
+    assert.equal(await regenerateMessage.isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Regenerate", exact: true }).evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled)), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("user-message regeneration resends the selected original text or attachment-only prompt", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true);
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    for (const text of ["  Original **request**\n日本語 and trailing spaces  ", ""]) {
+      await page.evaluate(({ text, image }) => {
+        const attachment = { id: "reference", name: "reference.png", kind: "image", mimeType: "image/png", size: 69,
+          image: { mimeType: "image/png", data: image } };
+        (window as any).axiomDesktop.agent.getAttachments = async () => [attachment];
+        (window as any).__deletionTest.setTimeline([
+          { id: "earlier-user", turnId: "earlier", kind: "user", text, status: "completed",
+            ...(text ? {} : { raw: { metadata: { attachments: [{ name: "reference.png", kind: "image" }] } } }) },
+          { id: "earlier-answer", turnId: "earlier", kind: "assistant", text: "Earlier answer", status: "completed" },
+          { id: "later-user", turnId: "later", kind: "user", text: "A different later request", status: "completed" },
+          { id: "later-answer", turnId: "later", kind: "assistant", text: "Later answer", status: "completed" },
+        ]);
+      }, { text, image: tinyPng.toString("base64") });
+      const row = page.locator('[data-timeline-kind="user"]').first();
+      await row.getByRole("button", { name: "Regenerate message", exact: true }).click();
+      assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
+      const confirm = row.getByRole("button", { name: "Regenerate from here", exact: true });
+      assert.equal(await confirm.isEnabled(), true);
+      await confirm.click();
+      await confirm.waitFor({ state: "hidden" });
+      const requests = await page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "revise"));
+      const latest = requests.at(-1);
+      assert.equal(latest.id, "old-thread");
+      assert.equal(latest.userItemId, "earlier-user");
+      assert.equal(latest.text, text);
+      assert.equal(latest.expectedRevision, 1);
+      if (text && process.env.AXIOM_REGENERATE_SCREENSHOT) {
+        await row.getByRole("button", { name: "Regenerate message", exact: true }).focus();
+        await row.locator(".group > div").first().screenshot({ path: process.env.AXIOM_REGENERATE_SCREENSHOT, animations: "disabled" });
+      }
+    }
+    assert.equal((await calls(page)).filter(call => call.method === "revise").length, 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -2710,21 +3187,72 @@ test("proxy view follows native state and sends start, restart, stop and clipboa
 });
 
 test("an anonymous draft follows sign-in and each account recovers only its own draft", async () => {
-  const { page, errors } = await openApp();
+  const { page, errors, nativePayloads } = await openApp();
   try {
     const input = page.locator("textarea[data-chat-input]");
     await input.fill("Old account secret");
-    await page.evaluate(() => (window as any).axiomDesktop.agent.logout());
+    await page.evaluate(async () => {
+      // The mock logout changes accounts immediately; perform the same draft
+      // flush that Electron's account lifecycle awaits before native logout.
+      const { flushLocalState, releaseLocalStateFlush } = await import(`${location.origin}/src/updateFlush.ts`);
+      try {
+        await flushLocalState("account");
+        await (window as any).axiomDesktop.agent.logout();
+      } finally { releaseLocalStateFlush(); }
+    });
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Old account secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
     assert.equal(await input.inputValue(), "");
     await input.fill("New draft written while signed out");
+    await page.evaluate(() => {
+      const hydration = {
+        readRequested: false, writeRequested: false, writeAcknowledged: false,
+        releaseRead: () => {}, releaseWrite: () => {},
+      };
+      const read = new Promise<void>(resolve => { hydration.releaseRead = resolve; });
+      const write = new Promise<void>(resolve => { hydration.releaseWrite = resolve; });
+      const agent = (window as any).axiomDesktop.agent, original = agent.localPayload;
+      agent.localPayload = async (request: LocalPayloadRequest) => {
+        const draft = request.accountId === "account-b" && request.id === "axiom.draft.v1:account-b:new";
+        if (draft && request.action.kind === "get") { hydration.readRequested = true; await read; }
+        if (draft && request.action.kind === "put") { hydration.writeRequested = true; await write; }
+        const result = await original(request);
+        if (draft && request.action.kind === "put") hydration.writeAcknowledged = true;
+        return result;
+      };
+      (window as any).__draftHydration = hydration;
+    });
     await page.evaluate(() => (window as any).__deletionTest.setAccountState({ revision: 3, state: "valid", account: { id: "account-b", displayName: "B", linkedMethods: ["password"] } }));
     await page.getByRole("button", { name: "Test model", exact: true }).waitFor();
-    assert.equal(await input.inputValue(), "New draft written while signed out");
+    await page.waitForFunction(() => (window as any).__draftHydration.readRequested);
+    // Model readiness precedes draft hydration. Hold both native operations so
+    // the composer cannot appear ready merely because local storage was fast.
+    assert.equal(await input.inputValue(), "");
+    assert.equal(nativePayloads.has(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"])), false);
+    await page.evaluate(() => (window as any).__draftHydration.releaseRead());
+    await page.waitForFunction(() => (window as any).__draftHydration.writeRequested);
+    assert.equal(await page.evaluate(() => (window as any).__draftHydration.writeAcknowledged), false);
+    assert.equal(await input.inputValue(), "");
+    assert.equal(nativePayloads.has(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"])), false);
+    await page.evaluate(() => (window as any).__draftHydration.releaseWrite());
+    await page.waitForFunction(() => (window as any).__draftHydration.writeAcknowledged
+      && (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New draft written while signed out");
+    assert.equal(nativePayloads.get(JSON.stringify(["account-b", "axiom.draft.v1:account-b:new"]))?.payload.text, "New draft written while signed out");
     await page.evaluate(() => (window as any).__deletionTest.setAccount("test-account"));
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Old account secret");
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:new"]))?.payload.text, "Old account secret");
+    await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New draft written while signed out");
+    assert.equal((await calls(page)).some(call => call.method === "prompt" || call.method === "attachments"), false);
     assert.deepEqual(errors, []);
-  } finally { await page.close(); }
+  } finally {
+    try {
+      await page.evaluate(() => {
+        (window as any).__draftHydration?.releaseRead();
+        (window as any).__draftHydration?.releaseWrite();
+      });
+    } finally { await page.close(); }
+  }
 });
 
 test("usage shows model shares in both themes, exact small charges, and an honest empty state", async () => {
@@ -2888,7 +3416,7 @@ test("API keys discard a creation response after account switching", async () =>
 
 
 test("drafts survive reselecting, switching threads, reloading, and account changes", async () => {
-  const { page, errors } = await openApp();
+  const { page, errors, nativePayloads } = await openApp();
   try {
     const input = page.locator("textarea[data-chat-input]");
     const existing = page.locator('[data-thread-id="old-thread"]');
@@ -2900,10 +3428,18 @@ test("drafts survive reselecting, switching threads, reloading, and account chan
     assert.equal(await input.inputValue(), "Existing conversation draft");
     await page.getByRole("button", { name: "New thread", exact: true }).click();
     assert.equal(await input.inputValue(), "New conversation draft");
+    // Raw renderer reload does not run the app's coordinated restart flush.
+    // Await the asynchronous draft commits before testing their restoration.
+    await page.evaluate(async () => {
+      const { flushForUpdate, releaseUpdateFlush } = await import(`${location.origin}/src/updateFlush.ts`);
+      await flushForUpdate(); releaseUpdateFlush();
+    });
+    assert.equal(nativePayloads.get(JSON.stringify(["test-account", "axiom.draft.v1:test-account:old-thread"]))?.payload.text, "Existing conversation draft");
     await page.reload();
     await input.waitFor();
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "New conversation draft");
     await existing.click();
+    await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "Existing conversation draft");
     assert.equal(await input.inputValue(), "Existing conversation draft");
     await page.evaluate(() => (window as any).__deletionTest.setAccount("account-b"));
     await page.waitForFunction(() => (document.querySelector("textarea[data-chat-input]") as HTMLTextAreaElement)?.value === "");
@@ -3014,7 +3550,7 @@ for (const vision of [false, true]) {
       const send = page.getByRole("button", { name: "Send", exact: true });
       if (!vision) {
         assert.ok(await send.isDisabled());
-        await page.getByText("Enable Images for image editing, or choose a model that supports these files.").waitFor();
+        await page.getByText("Choose a model that supports these image or file uploads.").waitFor();
       } else {
         await send.click();
         await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "attachments"));
@@ -3034,7 +3570,10 @@ for (const vision of [false, true]) {
           };
           return { original: await pixels(original), sent: await pixels(sent) };
         }, { original: tinyPng.toString("base64"), sent: image.data });
-        assert.deepEqual(decoded.sent, decoded.original);
+        assert.deepEqual(decoded.original.slice(0, 2), [1, 1]);
+        assert.deepEqual(decoded.sent.slice(0, 2), [32, 32]);
+        assert.ok(decoded.sent.slice(2).every((value, index) => value === decoded.original[2 + index % 4]),
+          "the 32-pixel reference grid preserves every original color and alpha channel");
       }
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -3063,7 +3602,7 @@ test("PDF bytes upload directly and unsupported documents keep the draft", async
     assert.equal(JSON.parse(call.text!).attachments[0].file.data, textPdf("Local PDF fact").toString("base64"));
     await page.locator("textarea[data-chat-input]").fill("Keep this draft");
     await page.locator('input[type="file"]').setInputFiles({ name: "binary.docx", mimeType: "application/octet-stream", buffer: Buffer.from("binary") });
-    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these files" }).waitFor();
+    await page.getByRole("alert").filter({ hasText: "Choose a model that supports these image or file uploads." }).waitFor();
     assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
     assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft");
     assert.deepEqual(errors, []);
@@ -3071,7 +3610,7 @@ test("PDF bytes upload directly and unsupported documents keep the draft", async
 });
 
 
-test("gift redemption is masked, updates balance, retries safely and clears on account switch", async () => {
+test("gift redemption shows the code, updates balance, retries safely and clears on account switch", async () => {
   const {page, errors} = await openApp();
   try {
     await page.evaluate(() => {
@@ -3087,12 +3626,12 @@ test("gift redemption is masked, updates balance, retries safely and clears on a
         return {creditedMicrousd: 25_000_000, alreadyRedeemed: false, status};
       };
     });
-    await openAccountScreen(page, "Balance");
+    await openAccountScreen(page, "Billing");
     const code = "AXG-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA";
     const field = page.getByLabel("Gift code", {exact: true});
     await field.fill(code);
-    assert.equal(await field.getAttribute("type"), "password");
-    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH});
+    assert.equal(await field.getAttribute("type"), "text");
+    if (process.env.AXIOM_GIFT_CAPTURE_PATH) await page.screenshot({path: process.env.AXIOM_GIFT_CAPTURE_PATH, animations: "disabled"});
     await page.getByRole("button", {name: "Redeem", exact: true}).click();
     await page.getByRole("status").filter({hasText: "$25.00 added to your account."}).waitFor();
     assert.equal(await field.inputValue(), "");
@@ -3217,7 +3756,7 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
     await picker.getByRole("button", { name: "Only models that accept images", exact: true }).click();
     assert.equal(await rows.count(), 1);
     assert.match(await rows.first().innerText(), /^Qwen3.6 35B/);
-    assert.match(await status.innerText(), /^1 model · Cheap \+ Images$/);
+    assert.match(await status.innerText(), /^1 model: Cheap \+ Images$/);
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
     await picker.screenshot({ path: "/tmp/axiom-tagged-picker-filtered.png" });
 
@@ -3257,7 +3796,7 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     assert.equal(await picker.getByRole("img", {name:"File uploads"}).count(), 1);
     const logo = picker.locator('img[title="Tinfoil"]');
     assert.ok(await logo.evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > 0));
-    assert.doesNotMatch(await picker.innerText(), / · Images|File uploads/);
+    assert.doesNotMatch(await picker.innerText(), /: Images|File uploads/);
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
     await page.screenshot({path:"/tmp/axiom-provider-picker.png"});
     await picker.getByRole("button", {name:/New vision/}).click();
@@ -3337,7 +3876,7 @@ for (const existing of [false, true]) {
         { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Original file bytes") },
       ]);
       await page.getByRole("button", { name: "Remove notes.txt" }).waitFor();
-      await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[data-attachment-card] img')?.naturalWidth === 1);
+      await page.waitForFunction(() => document.querySelector<HTMLImageElement>('[data-attachment-card] img')?.naturalWidth === 32);
       await page.locator("textarea[data-chat-input]").fill("What is in these files?");
       await page.evaluate(() => {
         const state = { running: true, missing: 0, frames: 0 };
@@ -3440,6 +3979,7 @@ for (const existing of [false, true]) {
       if (existing) await page.locator('[data-thread-id="old-thread"]').click();
       const zone = page.locator("[data-chat-drop-zone]");
       for (const [index, selector] of ["[data-chat-drop-zone]", "[data-chat-drop-zone] header", "textarea[data-chat-input]"].entries()) {
+        await page.waitForFunction(() => (document.querySelector('button[aria-label="Attach files"]') as HTMLButtonElement | null)?.disabled === false);
         const transfer = await page.evaluateHandle((name) => {
           const data = new DataTransfer();
           data.items.add(new File(["Dropped original bytes"], name, { type: "text/plain" }));
@@ -3473,7 +4013,7 @@ for (const existing of [false, true]) {
       await dialog.dispatchEvent("dragenter", { dataTransfer: outside });
       await dialog.dispatchEvent("drop", { dataTransfer: outside });
       assert.equal(await page.locator("[data-file-drop-overlay]").count(), 0);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
       assert.equal(await page.locator("[data-attachment-card]").count(), 3, "a dialog outside the panel does not attach files");
       await outside.dispose();
       assert.deepEqual(errors, []);
@@ -3626,7 +4166,7 @@ test("regenerating one image keeps the original and chat response and sends only
     const originalUrl=await originalImage.getAttribute("src");
     const regenerate=page.getByRole("button",{name:"Regenerate image",exact:true}).first();
     await regenerate.click();
-    await page.getByText("Generating image · 38%",{exact:true}).waitFor();
+    await page.getByText("Generating image (38%)",{exact:true}).waitFor();
     assert.equal(await regenerate.isDisabled(),true);
     assert.equal(await originalImage.getAttribute("src"),originalUrl);
     assert.equal(await page.getByText("The original chat response stays intact.",{exact:true}).count(),1);
@@ -3651,7 +4191,7 @@ test("image generation percentages update live and saved images have distinct ra
         input: {prompt: "A synthetic test image"}, content: [], locations: [], imageProgress: {stage: "generating", percent: 38},
       }}]);
     });
-    await page.getByText("Generating image · 38%", {exact: true}).waitFor();
+    await page.getByText("Generating image (38%)", {exact: true}).waitFor();
     const bar = page.getByRole("progressbar", {name: "Image generation progress"});
     assert.equal(await bar.getAttribute("aria-valuenow"), "38");
     assert.equal(await page.getByRole("link", {name: "Save image", exact: true}).count(), 0);
@@ -3662,7 +4202,7 @@ test("image generation percentages update live and saved images have distinct ra
         input: {}, content: [], locations: [], imageProgress: {stage: "finishing", percent: 99},
       }}]);
     });
-    await page.getByText("Finishing image · 99%", {exact: true}).waitFor();
+    await page.getByText("Finishing image (99%)", {exact: true}).waitFor();
     assert.equal(await bar.getAttribute("aria-valuenow"), "99");
     await page.evaluate(() => {
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1024;
@@ -3680,7 +4220,7 @@ test("image generation percentages update live and saved images have distinct ra
     for (const name of names) assert.match(name!, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/);
     assert.notEqual(names[0], names[1]);
     assert.equal(await page.getByRole("progressbar").count(), 0);
-    assert.equal(await page.getByText(/(?:Generated|Edited) image · 100%/).count(), 0);
+    assert.equal(await page.getByText(/(?:Generated|Edited) image \(100%\)/).count(), 0);
     const downloaded = page.waitForEvent("download");
     await links.first().click();
     const firstName = (await downloaded).suggestedFilename();
@@ -3760,6 +4300,111 @@ test("generated and edited images open the local viewer with keyboard and backdr
   } finally { await page.close(); }
 });
 
+test("image tool details show the viewed image, request cards above the result, and a writing row until the call arrives", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  const viewed = `img_${"3e".repeat(16)}`, first = `img_${"a1".repeat(16)}`, second = `img_${"b2".repeat(16)}`;
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(async ({ viewed, first, second }) => {
+      const draw = async (color: string, label: string, width = 768, height = 512) => {
+        const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = color; context.fillRect(0, 0, width, height);
+        context.fillStyle = "white"; context.font = "56px sans-serif"; context.fillText(label, 40, height / 2);
+        return canvas;
+      };
+      const base64 = async (color: string, label: string) => (await draw(color, label)).toDataURL("image/png").split(",")[1]!;
+      const images: Record<string, { origin: string; name: string; mimeType: string; data: string }> = {
+        [viewed]: { origin: "uploaded", name: "cat.png", mimeType: "image/png", data: await base64("#0e7490", "Uploaded cat") },
+        [first]: { origin: "uploaded", name: "cat.png", mimeType: "image/png", data: await base64("#7c3aed", "Reference one") },
+        [second]: { origin: "generated", name: "Axiom image", mimeType: "image/png", data: await base64("#db2777", "Reference two") },
+      };
+      (window as any).__resolveCalls = [];
+      (window as any).axiomDesktop.agent.resolveImage = async (threadId: string, imageId: string) => {
+        (window as any).__resolveCalls.push([threadId, imageId]);
+        const image = images[imageId];
+        if (!image) throw new Error("missing image");
+        return { imageId, ...image };
+      };
+      const result = await draw("#164e63", "Generated result", 2048, 1152);
+      const blob = await new Promise<Blob>(resolve => result.toBlob(value => resolve(value!), "image/png"));
+      (window as any).__timeline = [
+        { id: "view", kind: "tool", text: "view_image", status: "completed", tool: {
+          callId: "view", name: "view_image", title: "view_image", kind: "other", status: "completed",
+          input: { image_id: viewed }, locations: [],
+          content: [{ type: "text", text: `Viewed image ${viewed}. The image is supplied as visual input after the tool responses.` }],
+        } },
+        { id: "generated", kind: "tool", text: "generate", status: "completed", tool: {
+          callId: "generated", name: "generate", title: "generate", kind: "other", status: "completed",
+          input: { prompt: "Place <image1> on the sofa from <image2> at golden hour.", reference_image_ids: [first, second], aspect_ratio: "16:9" },
+          locations: [], content: [{ type: "image", mimeType: "image/png", imageUrl: URL.createObjectURL(blob), width: 2048, height: 1152 }],
+        } },
+      ];
+      (window as any).__deletionTest.setTimeline((window as any).__timeline);
+    }, { viewed, first, second });
+
+    await page.getByRole("button", { name: `Viewed image ${viewed}; show details`, exact: true }).click();
+    const viewedFigure = page.locator(`[data-viewed-image="${viewed}"]`);
+    const viewedImage = viewedFigure.getByRole("button", { name: `View image ${viewed}`, exact: true });
+    await viewedImage.waitFor();
+    await page.waitForFunction((id) => document.querySelector<HTMLImageElement>(`[data-viewed-image="${id}"] img`)?.naturalWidth === 768, viewed);
+    assert.match(await viewedFigure.innerText(), new RegExp(`${viewed}[\\s\\S]*Uploaded image: cat\\.png`));
+    assert.equal(await page.getByText("supplied as visual input").count(), 0, "raw tool output stays hidden");
+    assert.equal(await page.getByText('"input"').count(), 0);
+    await viewedImage.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: cat.png", exact: true });
+    await dialog.waitFor();
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+
+    await page.getByRole("button", { name: "Edited image; show details", exact: true }).click();
+    const details = page.locator("[data-image-request-details]");
+    await details.waitFor();
+    const text = await details.innerText();
+    assert.match(text, /Prompt\s+Place <image1> on the sofa from <image2> at golden hour\./);
+    assert.match(text, /Aspect ratio\s+16:9/);
+    assert.match(text, /Size\s+2048 × 1152/);
+    const cards = details.locator("[data-reference-image]");
+    assert.equal(await cards.count(), 2);
+    assert.match(await cards.nth(0).innerText(), new RegExp(`<image1>\\s+${first}`));
+    assert.match(await cards.nth(1).innerText(), new RegExp(`<image2>\\s+${second}`));
+    await details.getByRole("button", { name: "View reference image 2", exact: true }).waitFor();
+    const result = page.getByRole("button", { name: "View generated image", exact: true });
+    await result.waitFor();
+    assert.ok(await details.evaluate((element, trigger) => Boolean(element.compareDocumentPosition(trigger!) & Node.DOCUMENT_POSITION_FOLLOWING),
+      await result.elementHandle()), "request details appear above the generated image");
+    assert.deepEqual(new Set(await page.evaluate(() => (window as any).__resolveCalls.map((call: string[]) => call.join(" ")))),
+      new Set([viewed, first, second].map((id) => `old-thread ${id}`)));
+    if (process.env.AXIOM_VIEWED_IMAGE_CAPTURE) await page.screenshot({ path: process.env.AXIOM_VIEWED_IMAGE_CAPTURE, animations: "disabled" });
+    await page.getByRole("button", { name: `Viewed image ${viewed}; show details`, exact: true }).click();
+    await viewedFigure.waitFor({ state: "detached" });
+    if (process.env.AXIOM_IMAGE_TOOL_DETAILS_CAPTURE) {
+      await result.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: process.env.AXIOM_IMAGE_TOOL_DETAILS_CAPTURE, animations: "disabled" });
+    }
+
+    await page.evaluate(() => {
+      (window as any).__deletionTest.setTimeline([{ id: "answer", turnId: "active-test-turn", kind: "assistant", text: "I'll make that edit.", status: "completed" }], true);
+      (window as any).__deletionTest.setToolCallDraft("active-test-turn");
+    });
+    const writing = page.getByText("Writing tool call…", { exact: true });
+    await writing.waitFor();
+    if (process.env.AXIOM_TOOL_DRAFT_CAPTURE) await page.screenshot({ path: process.env.AXIOM_TOOL_DRAFT_CAPTURE, animations: "disabled" });
+    await page.evaluate(() => {
+      (window as any).__deletionTest.setToolCallDraft(null);
+      (window as any).__deletionTest.setTimeline([
+        { id: "answer", turnId: "active-test-turn", kind: "assistant", text: "I'll make that edit.", status: "completed" },
+        { id: "pending", turnId: "active-test-turn", kind: "tool", text: "generate", status: "in_progress", tool: {
+          callId: "pending", name: "generate", title: "generate", kind: "other", status: "in_progress",
+          input: { prompt: "Make it blue" }, locations: [], content: [],
+        } },
+      ], true);
+    });
+    await page.getByText("Generating image", { exact: true }).waitFor();
+    assert.equal(await writing.count(), 0, "the validated call replaces the writing row");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("1536-pixel local image resources survive streaming updates while the composer accepts input", async () => {
   const { page, errors } = await openApp("linux", false, [], "medium", true, false);
   try {
@@ -3807,6 +4452,66 @@ test("1536-pixel local image resources survive streaming updates while the compo
   } finally { await page.close(); }
 });
 
+test("lazy generated images fetch near the viewport, preserve layout, and retry a failed read", async () => {
+  const { page, errors } = await openApp("linux", false, [], "medium", true, false);
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.evaluate(() => {
+      const reads: string[] = [], releases: string[] = [];
+      const urls = new Map<string, string>();
+      let failMiddle = true;
+      Object.assign(window, { __lazyImageReads: reads, __lazyImageReleases: releases });
+      (window as any).axiomDesktop.agent.loadGeneratedImage = async (id: string) => {
+        if (urls.has(id)) return { imageUrl: urls.get(id), width: 1024, height: 1024 };
+        reads.push(id);
+        if (id === "asset-10" && failMiddle) { failMiddle = false; throw new Error("fixture read failed"); }
+        const canvas = document.createElement("canvas"); canvas.width = 1024; canvas.height = 1024;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "#164e63"; context.fillRect(0, 0, 1024, 1024);
+        context.fillStyle = "white"; context.font = "64px sans-serif"; context.fillText(`Image ${id.slice(6)}`, 120, 510);
+        const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), "image/png"));
+        const imageUrl = URL.createObjectURL(blob); urls.set(id, imageUrl);
+        return { imageUrl, width: 1024, height: 1024 };
+      };
+      (window as any).axiomDesktop.agent.releaseGeneratedImage = (id: string) => { releases.push(id); };
+      (window as any).__deletionTest.setTimeline(Array.from({ length: 20 }, (_, index) => ({
+        id: `generated-${index}`, kind: "tool", text: "", status: "completed", tool: {
+          callId: `generated-${index}`, name: "generate", title: "generate", kind: "other", status: "completed",
+          input: { prompt: `Image ${index}` }, locations: [],
+          content: [{ type: "image", mimeType: "image/png", assetId: `asset-${index}`, width: 1024, height: 1024 }],
+        },
+      })));
+    });
+    const middle = page.locator('[data-tool-call-id="generated-10"]');
+    await page.locator('[data-tool-call-id="generated-19"] img').waitFor();
+    const before = await middle.locator("figure").boundingBox();
+    const initial = await page.evaluate(() => (window as any).__lazyImageReads as string[]);
+    assert.ok(initial.length <= 6, `only nearby images load on open: ${initial}`);
+    assert.ok(!initial.includes("asset-10"), "opening the thread must leave distant originals unfetched");
+    assert.equal(await middle.locator("img").count(), 0);
+    await page.locator("[data-chat-scroll]").hover();
+    await page.mouse.wheel(0, -300);
+    await middle.scrollIntoViewIfNeeded();
+    await middle.getByRole("button", { name: "Retry loading image", exact: true }).click();
+    const trigger = middle.getByRole("button", { name: "View generated image", exact: true });
+    await trigger.waitFor();
+    const after = await middle.locator("figure").boundingBox();
+    assert.ok(before && after && Math.abs(before.height - after.height) < 1, "reserved image dimensions prevent scroll jumps");
+    const source = await trigger.locator("img").getAttribute("src");
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Image preview: Generated image", exact: true });
+    await dialog.waitFor();
+    assert.equal(await dialog.locator("img").getAttribute("src"), source);
+    await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+    assert.equal(await middle.getByRole("link", { name: "Save image", exact: true }).getAttribute("href"), source);
+    const final = await page.evaluate(() => ({ reads: (window as any).__lazyImageReads, releases: (window as any).__lazyImageReleases }));
+    assert.equal(final.reads.filter((id: string) => id === "asset-10").length, 2, "one failed read and one explicit retry");
+    assert.ok(final.reads.length < 20);
+    assert.ok(final.releases.includes("asset-19"), "scrolled-out images release their displayed resource");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("vision uploads accept ten normalized images and reject an eleventh", async () => {
   const { page, errors } = await openApp("linux", false, [], "medium", true, false);
   try {
@@ -3844,8 +4549,8 @@ test("image card viewer enlarges local images, fits the window, and restores key
     const image = dialog.getByRole("img", { name: "landscape.png" });
     await page.waitForFunction(() => (document.querySelector<HTMLImageElement>("dialog img")?.naturalWidth ?? 0) > 1000);
     const normalized = await image.evaluate(element => ({ width: element.naturalWidth, height: element.naturalHeight, src: element.src }));
-    assert.ok(normalized.width < 1600 && normalized.width * normalized.height <= 1024 * 1024);
-    assert.ok(Math.abs(normalized.width / normalized.height - 16 / 9) < .005);
+    assert.deepEqual([normalized.width, normalized.height], [1600, 896]);
+    assert.ok(Math.abs(normalized.width / normalized.height - 16 / 9) < .01);
     assert.match(normalized.src, /^data:image\/(png|jpeg);base64,/);
     assert.notEqual(normalized.src, `data:image/png;base64,${data}`);
     const enlarged = await image.boundingBox();
@@ -4110,7 +4815,101 @@ test("only editing the signed-in composer starts model-only verification, includ
   } finally { await page.close(); }
 });
 
-test("MCP selection in Agent settings applies only to that thread with Agent off", async () => {
+test("Agent autosave can undo an acknowledged MCP selection after the access-level save fails", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    const echo = dialog.getByRole("checkbox", { name: /echo Echo from a local server/ });
+    await echo.check();
+    await dialog.getByText("Full access", { exact: true }).click();
+    await page.evaluate(() => (window as any).__deletionTest.failAgent(true));
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await dialog.getByRole("alert").filter({ hasText: "MCP tools were saved" }).waitFor();
+    const selectedTools = () => page.evaluate(async () => (await (window as any).axiomDesktop.agent.desktopMcp({ threadId: "old-thread", action: { kind: "list" } })).selectedTools);
+    assert.equal((await selectedTools()).length, 1);
+    await echo.uncheck();
+    await dialog.getByText("Off", { exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(await selectedTools(), [], "returning to the original choices must undo the MCP selection already saved by this dialog");
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Agent close waits for acknowledgement and repeated dismissals never duplicate an autosave", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.getByText("Full access", { exact: true }).click();
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 0, "selecting a level waits until close to save");
+    await page.evaluate(() => (window as any).__deletionTest.holdSetup("agent"));
+    const close = dialog.getByRole("button", { name: "Close Agent settings", exact: true });
+    await close.click();
+    await dialog.getByRole("status").filter({ hasText: "Saving changes…" }).waitFor();
+    assert.equal(await close.isDisabled(), true);
+    assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    await page.keyboard.press("Escape");
+    await page.mouse.click(12, 12);
+    assert.equal(await dialog.count(), 1);
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 1);
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("agent"));
+    await dialog.waitFor({ state: "hidden" });
+    await page.waitForFunction(() => document.querySelector('[data-agent-toggle]')?.getAttribute("aria-pressed") === "true");
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "true");
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    assert.equal(await dialog.getByRole("radio", { name: "Full access", exact: true }).isChecked(), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const change of ["account", "runtime"]) test(`Agent choices are not autosaved into a changed ${change} context`, async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.getByText("Full access", { exact: true }).click();
+    await page.evaluate(kind => {
+      const fixture = (window as any).__deletionTest;
+      if (kind === "account") fixture.setAccount("replacement-account");
+      else fixture.setRuntime("replacement-runtime", false);
+    }, change);
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal((await calls(page)).filter(call => call.method === "configureAgent").length, 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("composer has no separate Tools control, including with configured MCP connections", async () => {
+  const { page, errors } = await openApp();
+  try {
+    const tools = page.getByRole("button", { name: "Tools", exact: true });
+    assert.equal(await tools.count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).count(), 1);
+    await page.evaluate(() => (window as any).__deletionTest.enableMcp());
+    assert.equal(await tools.count(), 0);
+    if (process.env.AXIOM_COMPOSER_SCREENSHOT) await page.locator(".composer-shell").screenshot({ path: process.env.AXIOM_COMPOSER_SCREENSHOT, animations: "disabled" });
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agent settings", exact: true });
+    await dialog.waitFor();
+    await dialog.getByRole("region", { name: "MCP connections", exact: true }).getByRole("checkbox", { name: /echo Echo from a local server/ }).waitFor();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
+    await page.evaluate(() => (window as any).axiomDesktop.agent.desktopMcp({ expectedRevision: 1, action: { kind: "delete", name: "fixture" } }));
+    assert.equal(await tools.count(), 0);
+    assert.equal(await page.getByRole("dialog", { name: "Tools for this conversation", exact: true }).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("MCP selection under Agent applies only to that thread with Agent off", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
@@ -4118,12 +4917,12 @@ test("MCP selection in Agent settings applies only to that thread with Agent off
     await page.getByRole("button", { name: "Agent", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Agent settings" });
     await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).check();
-    assert.equal(await dialog.getByRole("switch", { name: "Enable agent mode" }).getAttribute("aria-checked"), "false");
-    await dialog.getByRole("button", { name: "Save changes" }).click();
+    assert.equal(await page.getByRole("button", { name: "Agent", exact: true }).getAttribute("aria-pressed"), "false");
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), true);
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Agent settings", exact: true }).click();
     await page.getByRole("button", { name: "New thread", exact: true }).click();
     await page.getByRole("button", { name: "Agent", exact: true }).click();
     assert.equal(await dialog.getByRole("checkbox", { name: /echo Echo from a local server/ }).isChecked(), false);
@@ -4137,17 +4936,18 @@ test("MCP settings add and test a local server without displaying saved secrets"
     await page.evaluate(() => (window as any).__deletionTest.enableMcp());
     await openAccountScreen(page, "Settings");
     await page.getByRole("tab", { name: "MCP connections", exact: true }).click();
-    await page.getByRole("button", { name: "Add local server" }).click();
-    await page.getByRole("textbox", { name: "Name", exact: true }).fill("new_local");
+    await page.getByRole("button", { name: "Add connection" }).click();
+    await page.getByRole("radio", { name: "Local process", exact: true }).check();
+    await page.getByRole("textbox", { name: /^Name/ }).fill("new_local");
     await page.getByRole("textbox", { name: "Command", exact: true }).fill("npx");
     await page.getByRole("textbox", { name: "Arguments (JSON array)" }).fill('["-y","example-server"]');
     await page.getByRole("button", { name: "Add variable", exact: true }).click();
     await page.getByRole("textbox", { name: "Variable 1 name" }).fill("API_KEY");
     await page.getByLabel("Variable 1 value").fill("browser-fixture-secret-value");
     await page.getByRole("button", { name: "Save connection" }).click();
-    const server = page.getByRole("heading", { name: "new_local", exact: true }).locator("..").locator("..");
+    const server = page.getByRole("region", { name: "new_local connection" });
     await server.getByRole("button", { name: "Test connection" }).click();
-    await server.getByText(/Tested · 1 tools/).waitFor();
+    await server.getByText(/Ready with 1 tool/).waitFor();
     await server.getByText("Inspect tools").click();
     await server.getByText("mcp__new_local__echo", { exact: true }).waitFor();
     await server.getByRole("button", { name: "Edit", exact: true }).click();

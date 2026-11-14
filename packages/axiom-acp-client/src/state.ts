@@ -24,6 +24,8 @@ import type {
 import type { PendingInteraction, SessionConfigOption, SessionMode } from "./types.js";
 
 export type ToolActivity = {
+  mcpSource?: { server: string; destination?: string | null };
+  started?: boolean;
   callId: string;
   name?: string;
   title: string;
@@ -70,6 +72,7 @@ export interface ClientSessionState {
   securityVerificationError?: string | null;
   contextUsage?: ContextUsage | null;
   requestUsage?: RequestUsage[];
+  compaction?: { completed: number; total: number; generatedTokens: number; estimated: boolean } | null;
   modes: SessionMode[];
   currentModeId: string | null;
   configOptions: SessionConfigOption[];
@@ -77,6 +80,8 @@ export interface ClientSessionState {
   interactions: PendingInteraction[];
   running: boolean;
   activeTurnId?: string | null;
+  /** Turn whose model output is currently writing a tool call; display-only. */
+  toolCallDraftTurnId?: string | null;
   desktopAgent?: DesktopAgentSettings | null;
   desktopMcp?: Pick<DesktopMcpResponse, "revision" | "selectedTools"> | null;
   needsResync: boolean;
@@ -97,7 +102,7 @@ export interface ClientState {
   collections: CollectionState;
   preferences: ProfilePreferences | null;
   account: AccountStatus | null;
-  billing: BillingStatus | null;
+  billing: (BillingStatus & { credits?: import("@axiom/chat-core/creditBalances").CreditBalanceSummary | null }) | null;
   diagnostic: string;
   error: string | null;
 }
@@ -159,6 +164,18 @@ function deliveryMetadata(record: Record<string, unknown>, update: Record<string
   return candidate as DeliveryMetadata;
 }
 
+function mcpSource(value: unknown): ToolActivity["mcpSource"] {
+  const source = object(value);
+  if (typeof source?.server !== "string" || source.server.length > 128) return undefined;
+  if (source.destination == null) return { server: source.server, destination: null };
+  if (typeof source.destination !== "string" || source.destination.length > 4096) return undefined;
+  try {
+    const url = new URL(source.destination);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return undefined;
+    return { server: source.server, destination: url.href };
+  } catch { return undefined; }
+}
+
 function imageProgress(value: unknown, previous?: ToolActivity["imageProgress"]): ToolActivity["imageProgress"] {
   const progress = object(value);
   const stages = ["queued", "generating", "finishing"] as const;
@@ -175,12 +192,17 @@ function mergeTool(
   callId: string,
   update: Record<string, unknown>,
 ): ToolActivity {
-  const content = Array.isArray(update.content) ? update.content : [];
+  const resource = object(object(update.rawOutput)?.imageResource);
+  const content = resource ? [{ type: "image", mimeType: resource.mimeType, width: resource.width, height: resource.height,
+    imageResource: { callId: resource.callId, sha256: resource.sha256 } }]
+    : Array.isArray(update.content) ? update.content : [];
   const locations = Array.isArray(update.locations) ? update.locations : [];
   return {
     callId,
-    name: typeof update.title === "string" && /(?:^| · )[a-z][a-z0-9_]*$/.test(update.title)
-      ? update.title.split(" · ").at(-1) : previous?.name,
+    mcpSource: mcpSource(object(update._meta)?.axiomMcpSource) ?? previous?.mcpSource,
+    started: update.status === "in_progress" ? true : previous?.started ?? false,
+    name: typeof update.title === "string" && /(?:^|(?: \u00b7|:) )[a-z][a-z0-9_]*$/.test(update.title)
+      ? update.title.split(/(?: \u00b7|:) /).at(-1) : previous?.name,
     title: typeof update.title === "string" ? update.title : (previous?.title ?? "Tool activity"),
     kind: typeof update.kind === "string" ? update.kind : (previous?.kind ?? "other"),
     status: typeof update.status === "string" ? update.status : (previous?.status ?? "pending"),
@@ -212,6 +234,8 @@ function durableTool(item: DurableTimelineItem): ToolActivity {
       : [];
   return {
     callId: item.externalId ?? item.id,
+    mcpSource: mcpSource(metadata.mcp_source),
+    started: typeof metadata.started === "boolean" ? metadata.started : undefined,
     name: typeof metadata.name === "string" ? metadata.name : undefined,
     title: typeof metadata.title === "string"
       ? metadata.title
@@ -416,7 +440,14 @@ export class AxiomStateStore extends EventEmitter {
   setBilling(status: BillingStatus): void {
     if (this.value.billing && status.revision <= this.value.billing.revision) return;
     if (this.value.billing && status.ledgerSequence < this.value.billing.ledgerSequence) return;
-    this.value.billing = status;
+    this.value.billing = { ...status, ...(this.value.billing?.credits ? {credits: this.value.billing.credits} : {}) };
+    this.changed();
+  }
+
+  setCreditBalances(summary: import("@axiom/chat-core/creditBalances").CreditBalanceSummary | null): void {
+    if (!this.value.billing) return;
+    if (summary && this.value.billing.credits && BigInt(summary.revision) < BigInt(this.value.billing.credits.revision)) return;
+    this.value.billing = { ...this.value.billing, credits: summary };
     this.changed();
   }
 
@@ -548,7 +579,11 @@ export class AxiomStateStore extends EventEmitter {
   setRunning(sessionId: string, running: boolean): void {
     const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
     session.running = running;
-    if (!running) session.activeTurnId = null;
+    if (!running) {
+      session.activeTurnId = null;
+      session.compaction = null;
+      session.toolCallDraftTurnId = null;
+    }
     this.changed();
   }
 
@@ -605,6 +640,7 @@ export class AxiomStateStore extends EventEmitter {
       }
       const kind = type === "user_message_chunk" ? "user" : type === "agent_message_chunk" ? "assistant" : "reasoning";
       const text = textFromContent(update.content);
+      if (kind === "assistant" && text) session.toolCallDraftTurnId = null;
       const messageId = typeof update.messageId === "string"
         ? update.messageId
         : metadata?.timelineItemId ?? metadata?.clientItemId ?? crypto.randomUUID();
@@ -637,6 +673,8 @@ export class AxiomStateStore extends EventEmitter {
       });
       if (metadata) this.textRevisions.set(record.sessionId, metadata.threadRevision);
     } else if (type === "tool_call" || type === "tool_call_update") {
+      // The validated call replaces the transient "writing tool call" row.
+      session.toolCallDraftTurnId = null;
       const callId = String(update.toolCallId ?? update.id ?? metadata?.timelineItemId ?? crypto.randomUUID());
       const existing = session.timeline.find((item) => item.id === callId || item.tool?.callId === callId);
       if (existing) {
@@ -729,7 +767,7 @@ export class AxiomStateStore extends EventEmitter {
     if (session.settings?.model && session.settings.model !== thread.selectedModel) this.invalidateSecurity(session);
     session.settings = settingsFromThread(thread);
     session.running = !["ready", "closed"].includes(thread.lifecycle);
-    if (!session.running) session.activeTurnId = null;
+    if (!session.running) { session.activeTurnId = null; session.toolCallDraftTurnId = null; }
     session.threadRevision = thread.revision;
     session.lastTimelineSequence = thread.lastTimelineSequence;
     session.lastMessageAt = thread.lastMessageAt ?? null;
@@ -750,6 +788,23 @@ export class AxiomStateStore extends EventEmitter {
     else if (event.kind === "active_turn_changed" && sessionId) {
       const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
       session.activeTurnId = event.turnId ?? null;
+      if (!session.activeTurnId) session.compaction = null;
+      session.toolCallDraftTurnId = null;
+    }
+    else if (event.kind === "compaction" && sessionId) {
+      const session = this.value.sessions[sessionId] ??= emptySession(sessionId);
+      if (["completed", "cancelled", "failed"].includes(event.phase)) session.compaction = null;
+      else if (["started", "summarizing", "replacing_context"].includes(event.phase)) {
+        const progress = event.progress;
+        if (progress && [progress.completed, progress.total, progress.generatedTokens].every((count) => Number.isSafeInteger(count) && count >= 0)
+          && progress.completed <= progress.total && typeof progress.estimated === "boolean") session.compaction = progress;
+        else if (!session.compaction) session.compaction = { completed: 0, total: 0, generatedTokens: 0, estimated: true };
+      }
+    }
+    else if (event.kind === "tool_call_drafting" && sessionId) {
+      const session = this.value.sessions[sessionId];
+      if (session?.running && typeof event.turnId === "string"
+        && (!session.activeTurnId || session.activeTurnId === event.turnId)) session.toolCallDraftTurnId = event.turnId;
     }
     else if (event.kind === "collections_changed") {
       if (event.state.revision >= this.value.collections.revision) this.value.collections = event.state;
@@ -762,7 +817,7 @@ export class AxiomStateStore extends EventEmitter {
           && event.status.ledgerSequence >= this.value.billing.ledgerSequence
         )
       ) {
-        this.value.billing = event.status;
+        this.value.billing = { ...event.status, ...(this.value.billing?.credits ? {credits: this.value.billing.credits} : {}) };
       }
     }
     else if (event.kind === "security_changed" && sessionId) {
@@ -786,7 +841,7 @@ export class AxiomStateStore extends EventEmitter {
       const index = (session.requestUsage ??= []).findIndex((item) => item.requestId === event.usage.requestId);
       if (index < 0) session.requestUsage.push(event.usage);
       else session.requestUsage[index] = event.usage;
-      if (event.usage.responseVerified) session.needsResync = true;
+      if (event.usage.responseVerified || ["failed", "cancelled"].includes(event.usage.state ?? "")) session.needsResync = true;
     }
     else if (event.kind === "context_usage_changed" && sessionId) {
       (this.value.sessions[sessionId] ??= emptySession(sessionId)).contextUsage = validContextUsage(event.usage);

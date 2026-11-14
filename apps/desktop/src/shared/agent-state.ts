@@ -10,3 +10,12 @@ export interface AgentStatePacket {
   state: ClientState;
   images: { id: string; bytes: ArrayBuffer; width: number; height: number }[];
 }
+
+export interface AgentImagePacket {
+  generation: number;
+  context: string;
+  id: string;
+  bytes: ArrayBuffer;
+  width: number;
+  height: number;
+}

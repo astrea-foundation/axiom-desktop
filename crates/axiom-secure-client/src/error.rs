@@ -31,10 +31,13 @@ pub enum SecureErrorCode {
     SessionNotAccepted,
     ReceiptUnavailable,
     InvalidRequest,
+    /// Authenticated, explicit rejection before generation for context size.
+    ContextLengthExceeded,
     InvalidResponse,
     Cancelled,
     Transient,
     StreamTimeout,
+    StreamInterrupted,
     ResponseTooLarge,
     ProviderDisconnected,
 }
@@ -59,10 +62,12 @@ impl SecureErrorCode {
             Self::SessionNotAccepted => "SESSION_NOT_ACCEPTED",
             Self::ReceiptUnavailable => "RECEIPT_UNAVAILABLE",
             Self::InvalidRequest => "INVALID_REQUEST",
+            Self::ContextLengthExceeded => "CONTEXT_LENGTH_EXCEEDED",
             Self::InvalidResponse => "INVALID_RESPONSE",
             Self::Cancelled => "CANCELLED",
             Self::Transient => "TRANSIENT_FAILURE",
             Self::StreamTimeout => "STREAM_TIMEOUT",
+            Self::StreamInterrupted => "STREAM_INTERRUPTED",
             Self::ResponseTooLarge => "RESPONSE_TOO_LARGE",
             Self::ProviderDisconnected => "PROVIDER_DISCONNECTED",
         }
@@ -80,6 +85,16 @@ pub struct SecureClientError {
 }
 
 impl SecureClientError {
+    pub(crate) fn trial_capacity(retry_at: Option<i64>) -> Self {
+        Self::with_code(
+            ProviderFailureKind::RateLimited,
+            SecureErrorCode::TrialCapacity,
+            "Free trials are currently at capacity. Please try again later.",
+            true,
+        )
+        .with_retry_at(retry_at.filter(|at| (1..=253_402_300_799).contains(at)))
+    }
+
     #[must_use]
     pub const fn new(kind: ProviderFailureKind, safe_detail: &'static str) -> Self {
         Self {

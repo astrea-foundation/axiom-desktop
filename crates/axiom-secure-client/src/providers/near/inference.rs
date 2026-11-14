@@ -1,10 +1,7 @@
-use std::io::Write;
-
 use base64::{Engine, engine::general_purpose};
 use ed25519_dalek::{Signature, VerifyingKey};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::ser::Formatter;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -307,9 +304,11 @@ fn build_request(
         verified_keyset_digest: binding.keyset_digest.clone(),
     };
     let request_body = near_upstream_request_bytes(model, &relay)?;
-    let request_hash = hex::encode(Sha256::digest(request_body));
+    let request_hash = hex::encode(Sha256::digest(&request_body));
     relay.provider_e2ee_context = Some(serde_json::json!({
         "request_body_hash": request_hash,
+        "request_body_base64": general_purpose::STANDARD.encode(request_body),
+        "response_wire_version": 1,
         "response_signing_address": response_signing_address,
     }));
     Ok((identity, relay, request_hash))
@@ -515,13 +514,8 @@ fn near_upstream_request_bytes(model: &ModelInfo, relay: &RelayChatRequest) -> R
         tool_choice,
         parallel_tool_calls: relay.parallel_tool_calls,
     };
-    let mut bytes = Vec::new();
-    let mut serializer =
-        serde_json::Serializer::with_formatter(&mut bytes, PythonCompactUtf8Formatter);
-    request
-        .serialize(&mut serializer)
-        .map_err(|_| invalid_request("NEAR upstream request could not be serialized"))?;
-    Ok(bytes)
+    serde_json::to_vec(&request)
+        .map_err(|_| invalid_request("NEAR upstream request could not be serialized"))
 }
 
 fn public_response_format(format: &ResponseFormat) -> Result<Option<serde_json::Value>> {
@@ -539,106 +533,6 @@ fn is_fixed_json_object_format(value: &serde_json::Value) -> bool {
         object.len() == 1
             && object.get("type").and_then(serde_json::Value::as_str) == Some("json_object")
     })
-}
-
-struct PythonCompactUtf8Formatter;
-
-impl Formatter for PythonCompactUtf8Formatter {
-    fn write_f32<W>(&mut self, writer: &mut W, value: f32) -> std::io::Result<()>
-    where
-        W: ?Sized + Write,
-    {
-        writer.write_all(python_float_repr(f64::from(value)).as_bytes())
-    }
-
-    fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> std::io::Result<()>
-    where
-        W: ?Sized + Write,
-    {
-        writer.write_all(python_float_repr(value).as_bytes())
-    }
-
-    fn write_number_str<W>(&mut self, writer: &mut W, value: &str) -> std::io::Result<()>
-    where
-        W: ?Sized + Write,
-    {
-        if (value.contains('.') || value.contains('e') || value.contains('E'))
-            && let Ok(number) = value.parse::<f64>()
-            && number.is_finite()
-        {
-            return writer.write_all(python_float_repr(number).as_bytes());
-        }
-        writer.write_all(value.as_bytes())
-    }
-}
-
-fn python_float_repr(value: f64) -> String {
-    if value == 0.0 {
-        return if value.is_sign_negative() {
-            "-0.0".to_owned()
-        } else {
-            "0.0".to_owned()
-        };
-    }
-    let mut buffer = ryu::Buffer::new();
-    let rendered = buffer.format_finite(value);
-    let (negative, unsigned) = rendered
-        .strip_prefix('-')
-        .map_or((false, rendered), |value| (true, value));
-    let (mantissa, explicit_exponent) = unsigned
-        .split_once(['e', 'E'])
-        .map_or((unsigned, None), |(mantissa, exponent)| {
-            (mantissa, exponent.parse::<i32>().ok())
-        });
-    let decimal_index = mantissa.find('.').unwrap_or(mantissa.len());
-    let mut digits: String = mantissa
-        .chars()
-        .filter(|character| *character != '.')
-        .collect();
-    let first_nonzero = digits.find(|character| character != '0').unwrap_or(0);
-    let decimal_index = i32::try_from(decimal_index).expect("a float spelling is bounded");
-    let first_nonzero_i32 = i32::try_from(first_nonzero).expect("a float spelling is bounded");
-    let exponent = explicit_exponent.unwrap_or(decimal_index - first_nonzero_i32 - 1);
-    digits.drain(..first_nonzero);
-    while digits.len() > 1 && digits.ends_with('0') {
-        digits.pop();
-    }
-
-    let mut output = String::new();
-    if negative {
-        output.push('-');
-    }
-    if !(-4..16).contains(&exponent) {
-        output.push(digits.as_bytes()[0] as char);
-        if digits.len() > 1 {
-            output.push('.');
-            output.push_str(&digits[1..]);
-        }
-        output.push('e');
-        output.push(if exponent < 0 { '-' } else { '+' });
-        let absolute = exponent.unsigned_abs();
-        if absolute < 10 {
-            output.push('0');
-        }
-        output.push_str(&absolute.to_string());
-    } else if exponent < 0 {
-        output.push_str("0.");
-        let zero_count = usize::try_from(-exponent - 1).expect("negative exponent was checked");
-        output.extend(std::iter::repeat_n('0', zero_count));
-        output.push_str(&digits);
-    } else {
-        let integer_digits = usize::try_from(exponent).expect("positive exponent was checked") + 1;
-        if digits.len() <= integer_digits {
-            output.push_str(&digits);
-            output.extend(std::iter::repeat_n('0', integer_digits - digits.len()));
-            output.push_str(".0");
-        } else {
-            output.push_str(&digits[..integer_digits]);
-            output.push('.');
-            output.push_str(&digits[integer_digits..]);
-        }
-    }
-    output
 }
 
 fn encrypt_message(
@@ -1031,6 +925,22 @@ fn verify_near_proof(
     expected_signing_address: &str,
     expected_model: &str,
 ) -> Result<(NearCompletionProof, Vec<u8>)> {
+    verify_near_proof_bytes(
+        value,
+        expected_request_hash,
+        expected_signing_address,
+        expected_model,
+        None,
+    )
+}
+
+fn verify_near_proof_bytes(
+    value: serde_json::Value,
+    expected_request_hash: &str,
+    expected_signing_address: &str,
+    expected_model: &str,
+    streamed: Option<(&[u8], u64)>,
+) -> Result<(NearCompletionProof, Vec<u8>)> {
     let proof: NearCompletionProof = serde_json::from_value(value)
         .map_err(|_| invalid("NEAR completion receipt schema is invalid"))?;
     if proof.provider != super::PROVIDER_ID || proof.protocol != super::E2EE_PROTOCOL {
@@ -1048,17 +958,31 @@ fn verify_near_proof(
     {
         return Err(invalid("NEAR completion receipt binding is invalid"));
     }
-    let maximum_encoded = NEAR_RECEIPT_RAW_RESPONSE_BYTES
-        .div_ceil(3)
-        .saturating_mul(4);
-    if proof.response_body_base64.len() > maximum_encoded {
-        return Err(invalid(
-            "NEAR completion receipt response exceeds its bound",
-        ));
-    }
-    let raw_body = general_purpose::STANDARD
-        .decode(&proof.response_body_base64)
-        .map_err(|_| invalid("NEAR completion receipt response encoding is invalid"))?;
+    let raw_body = if let Some((raw, count)) = streamed {
+        if proof.response_wire_version != Some(1)
+            || proof.response_chunk_count != Some(count)
+            || count == 0
+            || !proof.response_body_base64.is_empty()
+        {
+            return Err(invalid("NEAR raw stream completion contract is invalid"));
+        }
+        raw.to_vec()
+    } else {
+        if proof.response_wire_version.is_some() || proof.response_chunk_count.is_some() {
+            return Err(invalid("NEAR completion omitted its raw stream"));
+        }
+        let maximum_encoded = NEAR_RECEIPT_RAW_RESPONSE_BYTES
+            .div_ceil(3)
+            .saturating_mul(4);
+        if proof.response_body_base64.len() > maximum_encoded {
+            return Err(invalid(
+                "NEAR completion receipt response exceeds its bound",
+            ));
+        }
+        general_purpose::STANDARD
+            .decode(&proof.response_body_base64)
+            .map_err(|_| invalid("NEAR completion receipt response encoding is invalid"))?
+    };
     if raw_body.is_empty() || raw_body.len() > NEAR_RECEIPT_RAW_RESPONSE_BYTES {
         return Err(invalid(
             "NEAR completion receipt response exceeds its bound",
@@ -1424,6 +1348,10 @@ struct StreamState {
     /// Text is emitted as provisional after AEAD decryption. Tool-call deltas,
     /// usage and success remain gated on the exact signed transcript and EOF.
     verified_events: Vec<ProviderEvent>,
+    raw_stream: Vec<u8>,
+    raw_line: Vec<u8>,
+    raw_parts: u64,
+    raw_done: bool,
     message_completed: bool,
     run_completed: bool,
 }
@@ -1448,6 +1376,10 @@ impl StreamState {
             usage: None,
             finish_reason: None,
             verified_events: Vec::new(),
+            raw_stream: Vec::new(),
+            raw_line: Vec::new(),
+            raw_parts: 0,
+            raw_done: false,
             message_completed: false,
             run_completed: false,
         }
@@ -1496,75 +1428,42 @@ impl StreamState {
                 .await?;
             }
             RelayEvent::Delta(payload) => {
+                if self.raw_parts != 0 {
+                    return Err(invalid("mixed NEAR stream encodings"));
+                }
+                self.accept_delta(payload, identity, sink, cancellation)
+                    .await?;
+            }
+            RelayEvent::ProviderChunk(payload) => {
                 self.require_run(&payload.run_id)?;
-                let _provider_field_metadata = (
-                    payload.content_field.as_deref(),
-                    payload.reasoning_field.as_deref(),
-                    payload.refusal_field.as_deref(),
-                );
-                if self.message_completed {
-                    return Err(invalid("relay emitted a delta after message completion"));
-                }
-                if let Some(expected) = self.next_sequence
-                    && payload.sequence != expected
+                if self.message_completed
+                    || payload.index != self.raw_parts
+                    || payload.data.is_empty()
+                    || payload.data.len() > 88 * 1024
+                    || (self.raw_parts == 0 && self.next_sequence != Some(1))
                 {
-                    return Err(invalid("relay event sequence is invalid"));
+                    return Err(invalid("NEAR provider chunk ordering is invalid"));
                 }
-                self.next_sequence = Some(
-                    payload
-                        .sequence
-                        .checked_add(1)
-                        .ok_or_else(|| invalid("relay event sequence overflowed"))?,
-                );
-                if let Some(response_id) = payload.response_id.as_deref() {
-                    validate_run_id(response_id)?;
-                    if self
-                        .response_id
-                        .as_ref()
-                        .is_some_and(|existing| existing != response_id)
-                    {
-                        return Err(invalid("NEAR relay delta changed its response ID"));
+                let bytes = general_purpose::STANDARD
+                    .decode(payload.data)
+                    .map_err(|_| invalid("NEAR provider chunk encoding is invalid"))?;
+                if bytes.is_empty()
+                    || bytes.len() > 64 * 1024
+                    || self.raw_stream.len().saturating_add(bytes.len())
+                        > NEAR_RECEIPT_RAW_RESPONSE_BYTES
+                {
+                    return Err(invalid("NEAR provider stream exceeds its bound"));
+                }
+                self.raw_parts += 1;
+                self.raw_stream.extend_from_slice(&bytes);
+                for byte in bytes {
+                    if byte == b'\n' {
+                        let line = std::mem::take(&mut self.raw_line);
+                        self.accept_raw_line(&line, identity, sink, cancellation)
+                            .await?;
+                    } else {
+                        self.raw_line.push(byte);
                     }
-                    self.response_id = Some(response_id.to_owned());
-                }
-                if let Some(value) = payload.encrypted_delta {
-                    let value = decrypt(identity, &value)?;
-                    append_bounded(&mut self.text, &value)?;
-                    send(sink, ProviderEvent::TextDelta(value), cancellation).await?;
-                }
-                if let Some(value) = payload.encrypted_reasoning_delta {
-                    let value = decrypt(identity, &value)?;
-                    append_bounded(&mut self.reasoning, &value)?;
-                    send(sink, ProviderEvent::ReasoningDelta(value), cancellation).await?;
-                }
-                if let Some(value) = payload.encrypted_refusal_delta {
-                    let value = decrypt(identity, &value)?;
-                    append_bounded(&mut self.refusal, &value)?;
-                    send(sink, ProviderEvent::RefusalDelta(value), cancellation).await?;
-                }
-                for encrypted in payload.encrypted_tool_calls {
-                    let delta = ToolCallDelta {
-                        index: encrypted.index,
-                        id: encrypted.id,
-                        kind: encrypted.kind,
-                        name: encrypted
-                            .function
-                            .as_ref()
-                            .and_then(|function| function.encrypted_name.as_ref())
-                            .map(|value| decrypt(identity, value))
-                            .transpose()?,
-                        arguments: encrypted
-                            .function
-                            .as_ref()
-                            .and_then(|function| function.encrypted_arguments.as_ref())
-                            .map(|value| decrypt(identity, value))
-                            .transpose()?,
-                    };
-                    self.tool_calls
-                        .push(delta.clone())
-                        .map_err(|_| invalid("relay tool-call fragments are invalid"))?;
-                    self.verified_events
-                        .push(ProviderEvent::ToolCallDelta(delta));
                 }
             }
             RelayEvent::MessageCompleted(payload) => {
@@ -1575,11 +1474,15 @@ impl StreamState {
                 let proof_value = payload
                     .proof
                     .ok_or_else(|| invalid("NEAR stream omitted its signed receipt"))?;
-                let (proof, raw_body) = verify_near_proof(
+                if !self.raw_line.is_empty() {
+                    return Err(invalid("unterminated NEAR provider frame"));
+                }
+                let (proof, raw_body) = verify_near_proof_bytes(
                     proof_value,
                     &self.expected_request_hash,
                     &self.expected_signing_address,
                     &self.expected_model,
+                    (self.raw_parts != 0).then_some((self.raw_stream.as_slice(), self.raw_parts)),
                 )?;
                 if self
                     .response_id
@@ -1656,6 +1559,178 @@ impl StreamState {
         Ok(())
     }
 
+    async fn accept_delta(
+        &mut self,
+        payload: crate::relay::dto::DeltaPayload,
+        identity: &crypto::ClientIdentity,
+        sink: &mpsc::Sender<ProviderEvent>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_run(&payload.run_id)?;
+        let _provider_field_metadata = (
+            payload.content_field.as_deref(),
+            payload.reasoning_field.as_deref(),
+            payload.refusal_field.as_deref(),
+        );
+        if self.message_completed {
+            return Err(invalid("relay emitted a delta after message completion"));
+        }
+        if let Some(expected) = self.next_sequence
+            && payload.sequence != expected
+        {
+            return Err(invalid("relay event sequence is invalid"));
+        }
+        self.next_sequence = Some(
+            payload
+                .sequence
+                .checked_add(1)
+                .ok_or_else(|| invalid("relay event sequence overflowed"))?,
+        );
+        if let Some(response_id) = payload.response_id.as_deref() {
+            validate_run_id(response_id)?;
+            if self
+                .response_id
+                .as_ref()
+                .is_some_and(|existing| existing != response_id)
+            {
+                return Err(invalid("NEAR relay delta changed its response ID"));
+            }
+            self.response_id = Some(response_id.to_owned());
+        }
+        if let Some(value) = payload.encrypted_delta {
+            let value = decrypt(identity, &value)?;
+            append_bounded(&mut self.text, &value)?;
+            send(sink, ProviderEvent::TextDelta(value), cancellation).await?;
+        }
+        if let Some(value) = payload.encrypted_reasoning_delta {
+            let value = decrypt(identity, &value)?;
+            append_bounded(&mut self.reasoning, &value)?;
+            send(sink, ProviderEvent::ReasoningDelta(value), cancellation).await?;
+        }
+        if let Some(value) = payload.encrypted_refusal_delta {
+            let value = decrypt(identity, &value)?;
+            append_bounded(&mut self.refusal, &value)?;
+            send(sink, ProviderEvent::RefusalDelta(value), cancellation).await?;
+        }
+        for encrypted in payload.encrypted_tool_calls {
+            let delta = ToolCallDelta {
+                index: encrypted.index,
+                id: encrypted.id,
+                kind: encrypted.kind,
+                name: encrypted
+                    .function
+                    .as_ref()
+                    .and_then(|function| function.encrypted_name.as_ref())
+                    .map(|value| decrypt(identity, value))
+                    .transpose()?,
+                arguments: encrypted
+                    .function
+                    .as_ref()
+                    .and_then(|function| function.encrypted_arguments.as_ref())
+                    .map(|value| decrypt(identity, value))
+                    .transpose()?,
+            };
+            let first = self.tool_calls.is_empty();
+            self.tool_calls
+                .push(delta.clone())
+                .map_err(|_| invalid("relay tool-call fragments are invalid"))?;
+            self.verified_events
+                .push(ProviderEvent::ToolCallDelta(delta));
+            if first {
+                // Progress only: names and arguments stay gated on the signed
+                // transcript like every other tool-call delta.
+                send(sink, ProviderEvent::ToolCallStarted, cancellation).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn accept_raw_line(
+        &mut self,
+        bytes: &[u8],
+        identity: &crypto::ClientIdentity,
+        sink: &mpsc::Sender<ProviderEvent>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let line =
+            std::str::from_utf8(bytes).map_err(|_| invalid("NEAR provider frame is not UTF-8"))?;
+        if self.raw_done && !line.trim().is_empty() {
+            return Err(invalid("NEAR provider data after completion"));
+        }
+        let Some(payload) = line.strip_prefix("data:") else {
+            return Ok(());
+        };
+        let payload = payload.trim();
+        if payload == "[DONE]" {
+            self.raw_done = true;
+            return Ok(());
+        }
+        let chunk: RawNearStreamChunk =
+            serde_json::from_str(payload).map_err(|_| invalid("NEAR provider frame is invalid"))?;
+        if chunk
+            .model
+            .as_ref()
+            .is_some_and(|m| m != &self.expected_model)
+        {
+            return Err(invalid("NEAR provider model changed"));
+        }
+        let choice = chunk.choices.into_iter().next().unwrap_or_default();
+        let delta = choice.delta;
+        let encrypted_delta =
+            optional_ciphertext(delta.content)?.or(optional_ciphertext(choice.text)?);
+        let encrypted_reasoning_delta = optional_ciphertext(delta.reasoning_content)?;
+        let encrypted_refusal_delta = optional_ciphertext(delta.refusal)?;
+        let encrypted_tool_calls = delta
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|call| {
+                Ok(crate::relay::dto::EncryptedToolCallDelta {
+                    index: call.index,
+                    id: call.id,
+                    kind: call.kind,
+                    function: call
+                        .function
+                        .map(|f| -> Result<_> {
+                            Ok(crate::relay::dto::EncryptedFunctionCallDelta {
+                                encrypted_name: optional_ciphertext(f.name)?,
+                                encrypted_arguments: optional_ciphertext(f.arguments)?,
+                            })
+                        })
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if encrypted_delta.is_some()
+            || encrypted_reasoning_delta.is_some()
+            || encrypted_refusal_delta.is_some()
+            || !encrypted_tool_calls.is_empty()
+        {
+            self.accept_delta(
+                crate::relay::dto::DeltaPayload {
+                    run_id: self
+                        .run_id
+                        .clone()
+                        .ok_or_else(|| invalid("missing NEAR run"))?,
+                    sequence: self.next_sequence.unwrap_or(1),
+                    response_id: chunk.id,
+                    encrypted_delta,
+                    encrypted_reasoning_delta,
+                    encrypted_refusal_delta,
+                    encrypted_tool_calls,
+                    content_field: None,
+                    reasoning_field: None,
+                    refusal_field: None,
+                },
+                identity,
+                sink,
+                cancellation,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     fn require_run(&self, run_id: &str) -> Result<()> {
         if self.run_id.as_deref() == Some(run_id) {
             Ok(())
@@ -1694,7 +1769,12 @@ impl StreamState {
 
     fn finish(self) -> Result<(InferenceResponse, Vec<ProviderEvent>)> {
         if !self.message_completed || !self.run_completed {
-            return Err(invalid("relay stream ended without terminal completion"));
+            return Err(SecureClientError::with_code(
+                axiom_inference::ProviderFailureKind::Transient,
+                crate::SecureErrorCode::StreamInterrupted,
+                "The response was interrupted before verification finished.",
+                true,
+            ));
         }
         let tool_calls = self
             .tool_calls
@@ -1782,12 +1862,6 @@ mod tests {
     use axiom_inference::{FunctionDefinition, ToolDefinition};
     use ed25519_dalek::{Signer, SigningKey};
 
-    #[derive(Serialize)]
-    struct SerializationVector<'a> {
-        text: &'a str,
-        value: f64,
-    }
-
     fn model() -> ModelInfo {
         ModelInfo {
             id: "secure-model".to_owned(),
@@ -1866,30 +1940,34 @@ mod tests {
     }
 
     #[test]
-    fn python_compact_utf8_serialization_matches_backend_vectors() {
-        for (value, expected) in [
-            (1e-5, "1e-05"),
-            (1e-4, "0.0001"),
-            (1e16, "1e+16"),
-            (1.2e15, "1200000000000000.0"),
-            (-0.0, "-0.0"),
-        ] {
-            assert_eq!(python_float_repr(value), expected);
-        }
-
-        let mut bytes = Vec::new();
-        let mut serializer =
-            serde_json::Serializer::with_formatter(&mut bytes, PythonCompactUtf8Formatter);
-        SerializationVector {
-            text: "café 😀\u{7f}",
-            value: 1e-5,
-        }
-        .serialize(&mut serializer)
-        .unwrap();
-        assert_eq!(
-            String::from_utf8(bytes).unwrap(),
-            "{\"text\":\"café 😀\u{7f}\",\"value\":1e-05}"
+    fn client_owns_exact_serialization_and_request_hash() {
+        let recipient = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&recipient.public_key_hex()).unwrap();
+        let mut request = InferenceRequest::streaming(
+            "secure-model",
+            vec![ChatMessage::text(ChatRole::User, "café 😀")],
+            vec![],
         );
+        request.sampling.temperature = Some(1e-7);
+        let (_, relay, hash) = build_request(
+            &model(),
+            key,
+            &response_signer().1,
+            &binding(),
+            &request,
+            true,
+        )
+        .unwrap();
+        let context = relay.provider_e2ee_context.as_ref().unwrap();
+        let bytes = general_purpose::STANDARD
+            .decode(context["request_body_base64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(hex::encode(Sha256::digest(&bytes)), hash);
+        assert_eq!(
+            bytes,
+            near_upstream_request_bytes(&model(), &relay).unwrap()
+        );
+        assert_eq!(context["response_wire_version"], 1);
     }
 
     #[test]
@@ -1968,13 +2046,13 @@ mod tests {
         assert_eq!(
             body,
             format!(
-                "{{\"model\":\"provider/model\",\"messages\":[{{\"role\":\"user\",\"content\":\"{ciphertext}\"}}],\"stream\":false,\"max_tokens\":8192,\"temperature\":1e-05,\"response_format\":{{\"type\":\"json_object\"}},\"reasoning_effort\":\"medium\",\"tool_choice\":\"none\"}}"
+                "{{\"model\":\"provider/model\",\"messages\":[{{\"role\":\"user\",\"content\":\"{ciphertext}\"}}],\"stream\":false,\"max_tokens\":8192,\"temperature\":0.00001,\"response_format\":{{\"type\":\"json_object\"}},\"reasoning_effort\":\"medium\",\"tool_choice\":\"none\"}}"
             )
         );
         assert!(!body.contains("\\u00e9"));
         assert_eq!(
             hex::encode(Sha256::digest(&bytes)),
-            "3f4a823af653ec0d07fd480eaecbe3bbbcec9ea9ad82ec9e6f3d8a29177610c3"
+            "ad8ba0be6bea65b647b14ac0b3dfbdbda220c57281fc8e2c109e16985af3d08d"
         );
         relay.response_format = Some(serde_json::json!({
             "type": "json_schema",
@@ -2583,6 +2661,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_wire_stream_authenticates_exact_order_and_completion_without_terminal_copy() {
+        use crate::relay::dto::ProviderChunkPayload;
+        let identity = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&identity.public_key_hex()).unwrap();
+        let encrypted = encrypt(key, b"hello").unwrap();
+        let raw = format!(
+            "data: {}\r\n\r\ndata: [DONE]\n\n",
+            serde_json::json!({
+                "id":"chat-1", "model":"provider/model",
+                "choices":[{"delta":{"content":encrypted.as_str()},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}
+            })
+        );
+        let hash = "55".repeat(32);
+        let (signer, address) = response_signer();
+        let mut proof = signed_proof(raw.as_bytes(), &hash, "chat-1", &signer, &address);
+        proof
+            .as_object_mut()
+            .unwrap()
+            .remove("response_body_base64");
+        let chunks = raw.as_bytes().chunks(37).collect::<Vec<_>>();
+        proof["response_wire_version"] = serde_json::json!(1);
+        proof["response_chunk_count"] = serde_json::json!(chunks.len());
+        let cancel = CancellationToken::new();
+        for mutation in 0..6 {
+            let (tx, mut rx) = mpsc::channel(16);
+            let mut state = StreamState::new(hash.clone(), address.clone(), model().upstream_model);
+            state.run_id = Some("r".into());
+            for (index, chunk) in chunks.iter().enumerate() {
+                if mutation == 1 && index == chunks.len() - 1 {
+                    break;
+                }
+                let event = RelayEvent::ProviderChunk(ProviderChunkPayload {
+                    run_id: "r".into(),
+                    index: index as u64,
+                    data: general_purpose::STANDARD.encode(chunk),
+                });
+                state.accept(event, &identity, &tx, &cancel).await.unwrap();
+            }
+            assert!(!state.message_completed);
+            if mutation == 0 {
+                assert!(matches!(rx.try_recv(), Ok(ProviderEvent::TextDelta(t)) if t == "hello"));
+            }
+            if mutation == 2 {
+                assert!(
+                    state
+                        .accept(
+                            RelayEvent::ProviderChunk(ProviderChunkPayload {
+                                run_id: "r".into(),
+                                index: 0,
+                                data: "e30=".into()
+                            }),
+                            &identity,
+                            &tx,
+                            &cancel
+                        )
+                        .await
+                        .is_err()
+                );
+                continue;
+            }
+            let mut candidate = proof.clone();
+            if mutation == 3 {
+                candidate["response_chunk_count"] = serde_json::json!(chunks.len() + 1);
+            }
+            if mutation == 4 {
+                candidate["response_hash"] = serde_json::json!("66".repeat(32));
+            }
+            if mutation == 5 {
+                candidate["response_body_base64"] = serde_json::json!("e30=");
+            }
+            let accepted = state.accept(RelayEvent::MessageCompleted(CompletedPayload {
+                run_id:"r".into(),finish_reason:"stop".into(),
+                usage:serde_json::from_value(serde_json::json!({"prompt_tokens":2,"completion_tokens":3,"total_tokens":5})).unwrap(),
+                proof:Some(candidate),
+            }), &identity,&tx,&cancel).await;
+            if mutation != 0 {
+                assert!(accepted.is_err(), "mutation {mutation}");
+                continue;
+            }
+            accepted.unwrap();
+            assert!(!state.run_completed);
+            state
+                .accept(
+                    RelayEvent::RunCompleted(RunPayload { run_id: "r".into() }),
+                    &identity,
+                    &tx,
+                    &cancel,
+                )
+                .await
+                .unwrap();
+            assert_eq!(state.finish().unwrap().0.assistant.text, "hello");
+        }
+    }
+
+    #[tokio::test]
     async fn stream_requires_receipt_before_run_completion() {
         let identity = crypto::ClientIdentity::generate();
         let (sink, _output) = mpsc::channel(8);
@@ -2748,6 +2922,12 @@ mod tests {
         assert!(matches!(
             output.try_recv(),
             Ok(ProviderEvent::TextDelta(value)) if value == "working "
+        ));
+        // Only content-free progress may precede verification; names and
+        // arguments stay in the verified events below.
+        assert!(matches!(
+            output.try_recv(),
+            Ok(ProviderEvent::ToolCallStarted)
         ));
         assert!(output.try_recv().is_err(), "tools must await verification");
         state

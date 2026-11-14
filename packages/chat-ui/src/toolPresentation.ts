@@ -19,7 +19,7 @@ function object(value: unknown): Record<string, unknown> | null {
 }
 
 export function toolName(tool: ToolActivity): string {
-  return tool.name ?? tool.title.split(" · ").at(-1) ?? tool.title;
+  return tool.name ?? tool.title.split(/(?: \u00b7|:) /).at(-1) ?? tool.title;
 }
 
 export function toolFailed(tool: ToolActivity): boolean {
@@ -28,11 +28,61 @@ export function toolFailed(tool: ToolActivity): boolean {
 
 export function toolImageProgress(tool: ToolActivity): ToolActivity["imageProgress"] | null {
   const progress = tool.imageProgress;
-  if (!["generate", "generate_image", "edit_image"].includes(toolName(tool)) || tool.status === "completed" || toolFailed(tool) || !progress
+  if (!isImageGenerationTool(tool) || tool.status === "completed" || toolFailed(tool) || !progress
     || !["queued", "generating", "finishing"].includes(progress.stage) || !Number.isInteger(progress.percent)
     || progress.percent < 0 || progress.percent > 99
     || (progress.stage === "queued" && progress.percent !== 0) || (progress.stage === "finishing" && progress.percent !== 99)) return null;
   return { ...progress };
+}
+
+const IMAGE_TOOLS = ["generate", "generate_image", "edit_image"];
+const IMAGE_ID = /^img_[0-9a-f]{32}$/;
+
+export function isImageGenerationTool(tool: ToolActivity): boolean {
+  return IMAGE_TOOLS.includes(toolName(tool));
+}
+
+export function validImageId(value: unknown): value is string {
+  return typeof value === "string" && IMAGE_ID.test(value);
+}
+
+/** The conversation-local image a `view_image` call inspected, if well formed. */
+export function viewedImageId(tool: ToolActivity): string | null {
+  if (toolName(tool) !== "view_image") return null;
+  const id = object(tool.input)?.image_id;
+  return validImageId(id) ? id : null;
+}
+
+export interface ImageRequestSummary {
+  prompt: string;
+  /** Requested width:height ratio, or a legacy explicit size. */
+  aspectRatio: string | null;
+  /** Ordered reference IDs; the first is <image1>. */
+  references: string[];
+}
+
+/** Display fields of an image request; never the raw argument object. */
+export function imageRequestSummary(tool: ToolActivity): ImageRequestSummary | null {
+  if (!isImageGenerationTool(tool)) return null;
+  const input = object(tool.input);
+  if (!input || typeof input.prompt !== "string") return null;
+  const references = Array.isArray(input.reference_image_ids)
+    ? input.reference_image_ids
+    : input.image_id !== undefined ? [input.image_id] : [];
+  const width = Number(input.width), height = Number(input.height);
+  let aspectRatio: string | null = null;
+  if (typeof input.aspect_ratio === "string" && /^\d{1,4}:\d{1,4}$/.test(input.aspect_ratio)) aspectRatio = input.aspect_ratio;
+  else if (Number.isSafeInteger(width) && Number.isSafeInteger(height) && width > 0 && height > 0 && width <= 8192 && height <= 8192) {
+    // Regeneration and older requests record an explicit size; show its ratio.
+    let [a, b] = [width, height];
+    while (b) [a, b] = [b, a % b];
+    aspectRatio = `${width / a}:${height / a}`;
+  }
+  return {
+    prompt: redactToolText(input.prompt).slice(0, 8192),
+    aspectRatio,
+    references: references.filter(validImageId).slice(0, 8),
+  };
 }
 
 export function isFetchTool(tool: ToolActivity): boolean {
@@ -88,10 +138,12 @@ export function toolLabel(tool: ToolActivity): string {
   let label: string;
   if (name.startsWith("mcp__")) {
     const [server, ...parts] = name.slice(5).split("__");
-    const target = compact(`${server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
-    label = `${failed ? "Failed to call" : done ? "Called" : "Calling"} ${target} · MCP`;
+    const target = compact(`${tool.mcpSource?.server ?? server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
+    label = `${failed ? "Failed to call" : done ? "Called" : tool.status === "pending" ? "Preparing" : "Calling"} ${target} using MCP`;
   } else if (name === "view_image") {
-    label = failed ? `Image viewing failed${reason ? `: ${reason}` : ""}` : done ? "Viewed image" : "Viewing image";
+    const id = viewedImageId(tool);
+    label = failed ? `Image viewing failed${reason ? `: ${reason}` : ""}`
+      : `${done ? "Viewed image" : "Viewing image"}${id ? ` ${id}` : ""}`;
   } else if (name === "edit_image" || ((name === "generate" && Array.isArray(input?.reference_image_ids) && input.reference_image_ids.length > 0) || (name === "generate_image" && typeof input?.image_id === "string"))) {
     label = failed ? `Image editing failed${reason ? `: ${reason}` : ""}` : done ? "Edited image" : "Editing image";
   } else if ((name === "generate" || name === "generate_image")) {
@@ -115,7 +167,7 @@ export function toolLabel(tool: ToolActivity): string {
     label = reason ? `${reason}: ${target}` : `${verb} ${target}`;
   } else {
     // New snapshots already use the native TUI formatter for every tool.
-    label = tool.title.replace(/ · [a-z][a-z0-9_]*$/, "").replace(/`([^`]+)`/g, "$1");
+    label = tool.title.replace(/(?: \u00b7|:) [a-z][a-z0-9_]*$/, "").replace(/`([^`]+)`/g, "$1");
     if (label === name && /^[a-z][a-z0-9_]*$/.test(name)) {
       label = `${failed ? "Failed to run" : done ? "Ran" : "Running"} ${name.replace(/_/g, " ")}`;
     }
@@ -125,7 +177,7 @@ export function toolLabel(tool: ToolActivity): string {
   if (progress) {
     if (!done && progress.stage === "queued") label = "Waiting for GPU";
     if (!done && progress.stage === "finishing") label = "Finishing image";
-    label += ` · ${progress.percent}%`;
+    label += ` (${progress.percent}%)`;
   }
   return compact(label, 220);
 }

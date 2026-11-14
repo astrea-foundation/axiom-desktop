@@ -36,8 +36,9 @@ use crate::{
 const INTEL_PCCS: &str = "https://api.trustedservices.intel.com/";
 const NVIDIA_NRAS: &str = "https://nras.attestation.nvidia.com/v3/attest/gpu";
 const NVIDIA_JWKS: &str = "https://nras.attestation.nvidia.com/.well-known/jwks.json";
+const MAX_WORKER_ATTESTATIONS: usize = 16;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 struct AttestationReport {
     #[serde(default)]
     signing_algo: Option<String>,
@@ -145,6 +146,124 @@ pub(crate) struct VerifiedNearAttestation {
     pub(crate) evidence: SecurityEvidence,
 }
 
+#[derive(Debug)]
+struct VerifiedWorker {
+    key: Ed25519PublicKey,
+    tls_fingerprint: [u8; 32],
+    manifest: String,
+    intel: IntelEvidence,
+    outdated_accepted: bool,
+}
+
+/// V2 requires the group and repeats the selected worker as its first member.
+/// Reject a missing group, substituted selection, or mixed recipient keys
+/// before making vendor requests.
+fn parse_worker_reports(
+    evidence: Value,
+    protocol: &str,
+    nonce: &[u8; 32],
+    model: &str,
+) -> Result<Vec<AttestationReport>> {
+    let group = evidence.get("worker_attestations").cloned();
+    let primary: AttestationReport = serde_json::from_value(normalize_report(evidence)?)
+        .map_err(|_| SecureClientError::attestation("NEAR worker evidence schema is invalid"))?;
+    let reports = if protocol == super::GATEWAY_GROUP_ATTESTATION_PROTOCOL {
+        let entries = group
+            .and_then(|group| group.as_array().cloned())
+            .ok_or_else(|| {
+                SecureClientError::attestation("NEAR worker attestation group is missing")
+            })?;
+        if entries.is_empty() || entries.len() > MAX_WORKER_ATTESTATIONS {
+            return Err(SecureClientError::attestation(
+                "NEAR worker attestation group size is invalid",
+            ));
+        }
+        let reports: Vec<AttestationReport> = entries
+            .into_iter()
+            .map(|entry| {
+                if entry.get("worker_attestations").is_some()
+                    || entry.get("model_attestations").is_some()
+                {
+                    return Err(SecureClientError::attestation(
+                        "nested NEAR worker groups are invalid",
+                    ));
+                }
+                serde_json::from_value(entry).map_err(|_| {
+                    SecureClientError::attestation("NEAR worker evidence schema is invalid")
+                })
+            })
+            .collect::<Result<_>>()?;
+        if reports.first() != Some(&primary) {
+            return Err(SecureClientError::attestation(
+                "NEAR selected worker disagrees with its group",
+            ));
+        }
+        reports
+    } else {
+        if group.is_some() {
+            return Err(SecureClientError::attestation(
+                "NEAR worker group requires the v2 gateway contract",
+            ));
+        }
+        vec![primary]
+    };
+    let key = reports[0].model_key()?;
+    for report in &reports {
+        validate_report_identity(report, nonce, model, "ed25519")?;
+        if report.model_key()? != key {
+            return Err(SecureClientError::attestation(
+                "NEAR worker group contains a different recipient key",
+            ));
+        }
+    }
+    Ok(reports)
+}
+
+async fn verify_worker(
+    report: &AttestationReport,
+    nonce: &[u8; 32],
+    policy: &TrustPolicy,
+    config: &SecureClientConfig,
+    cancellation: &CancellationToken,
+) -> Result<VerifiedWorker> {
+    let key = report.model_key()?;
+    let tls_fingerprint = decode_hex_32(
+        report
+            .tls_fingerprint()
+            .ok_or_else(|| SecureClientError::attestation("attestation omitted TLS binding"))?,
+        "attestation TLS fingerprint is invalid",
+    )?;
+    let manifest = report.workload_manifest()?;
+    let quote = decode_quote(
+        report
+            .intel_quote
+            .as_deref()
+            .ok_or_else(|| SecureClientError::attestation("attestation omitted Intel evidence"))?,
+        config.limits.attestation_quote_bytes,
+    )?;
+    let payload = report
+        .nvidia_payload
+        .as_ref()
+        .ok_or_else(|| SecureClientError::attestation("attestation omitted NVIDIA evidence"))?;
+    let (intel, ()) = tokio::select! {
+        () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
+        result = async { tokio::try_join!(
+            verify_intel(&quote, key.as_bytes(), &tls_fingerprint, nonce, &manifest, config),
+            verify_nvidia(payload, nonce, config, &policy.nvidia_anchor_sha256),
+        ) } => result?,
+    };
+    let outdated_accepted = accept_intel_status(&intel.status, policy, config).inspect_err(|_| {
+        tracing::warn!(status = %intel.status, advisory_ids = ?intel.advisory_ids, "NEAR Intel TDX rejected by policy");
+    })?;
+    Ok(VerifiedWorker {
+        key,
+        tls_fingerprint,
+        manifest,
+        intel,
+        outdated_accepted,
+    })
+}
+
 #[derive(Deserialize)]
 struct WorkerSessionEnvelope {
     provider: String,
@@ -212,7 +331,7 @@ pub(crate) async fn verify_model(
             "model selected an unsupported NEAR attestation contract",
         ));
     }
-    let gateway_route = attestation_protocol == super::GATEWAY_ATTESTATION_PROTOCOL;
+    let gateway_route = super::is_gateway_protocol(attestation_protocol);
     let mut nonce = [0_u8; 32];
     OsRng.fill_bytes(&mut nonce);
     let wire: WorkerSessionEnvelope = crate::relay::client::RelayClient::new(config, credential)
@@ -253,28 +372,12 @@ pub(crate) async fn verify_model(
         &nonce,
         config.limits.attestation_quote_bytes,
     )?;
-    let report: AttestationReport = serde_json::from_value(normalize_report(wire.evidence)?)
-        .map_err(|_| SecureClientError::attestation("NEAR worker evidence schema is invalid"))?;
-    validate_report_identity(&report, &nonce, &model.upstream_model, "ed25519")?;
-    let model_key = report.model_key()?;
-    let tls_fingerprint = decode_hex_32(
-        report
-            .tls_fingerprint()
-            .ok_or_else(|| SecureClientError::attestation("attestation omitted TLS binding"))?,
-        "attestation TLS fingerprint is invalid",
+    let reports = parse_worker_reports(
+        wire.evidence,
+        attestation_protocol,
+        &nonce,
+        &model.upstream_model,
     )?;
-    let manifest = report.workload_manifest()?;
-    let quote = decode_quote(
-        report
-            .intel_quote
-            .as_deref()
-            .ok_or_else(|| SecureClientError::attestation("attestation omitted Intel evidence"))?,
-        config.limits.attestation_quote_bytes,
-    )?;
-    let nvidia_payload = report
-        .nvidia_payload
-        .as_ref()
-        .ok_or_else(|| SecureClientError::attestation("attestation omitted NVIDIA evidence"))?;
     // The relay transports untrusted evidence. Local vendor signature, challenge,
     // workload and key checks authenticate it; a server 'verified' flag does not.
     let gateway_intel = async {
@@ -292,19 +395,15 @@ pub(crate) async fn verify_model(
             None => Ok(None),
         }
     };
-    let (intel, (), gateway_intel) = tokio::select! {
+    let (worker, gateway_intel) = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
         result = async {
             tokio::try_join!(
-                verify_intel(&quote, model_key.as_bytes(), &tls_fingerprint, &nonce, &manifest, config),
-                verify_nvidia(nvidia_payload, &nonce, config, &policy.nvidia_anchor_sha256),
+                verify_worker(&reports[0], &nonce, policy, config, cancellation),
                 gateway_intel,
             )
         } => result?,
     };
-    let outdated_accepted = accept_intel_status(&intel.status, policy, config).inspect_err(|_| {
-        tracing::warn!(status = %intel.status, advisory_ids = ?intel.advisory_ids, "NEAR Intel TDX rejected by policy");
-    })?;
     let gateway_outdated_accepted = match &gateway_intel {
         Some(gateway_intel) => accept_intel_status(&gateway_intel.status, policy, config)
             .inspect_err(|_| {
@@ -317,16 +416,17 @@ pub(crate) async fn verify_model(
             "near-v3 requires NVIDIA verification",
         ));
     }
+    let model_key = worker.key;
     let mut evidence = build_evidence(
         &model.id,
         attestation_protocol,
         policy,
         model_key,
-        &tls_fingerprint,
-        &intel,
-        manifest,
+        &worker.tls_fingerprint,
+        &worker.intel,
+        worker.manifest.clone(),
     );
-    if outdated_accepted {
+    if worker.outdated_accepted {
         evidence.state = SecurityState::Degraded;
         if let Some(check) = evidence
             .checks
@@ -347,6 +447,44 @@ pub(crate) async fn verify_model(
             gateway_intel,
             gateway_outdated_accepted,
         );
+    }
+    if attestation_protocol == super::GATEWAY_GROUP_ATTESTATION_PROTOCOL {
+        let mut manifests = vec![serde_json::json!({
+            "tls_spki_sha256": hex::encode(worker.tls_fingerprint),
+            "app_compose_sha256": worker.intel.compose_hash,
+            "app_compose": worker.manifest,
+        })];
+        for (index, report) in reports.iter().enumerate().skip(1) {
+            // Every supplied same-key environment must pass the complete native
+            // verifier before any accepted material enters the session cache.
+            let peer = verify_worker(report, &nonce, policy, config, cancellation).await?;
+            add_replica_evidence(&mut evidence, index + 1, &peer);
+            manifests.push(serde_json::json!({
+                "tls_spki_sha256": hex::encode(peer.tls_fingerprint),
+                "app_compose_sha256": peer.intel.compose_hash,
+                "app_compose": peer.manifest,
+            }));
+        }
+        let manifest_bundle = serde_json::to_string_pretty(&serde_json::json!({
+            "format": super::GATEWAY_GROUP_ATTESTATION_PROTOCOL,
+            "workers": manifests,
+            "gateway": gateway.as_ref().map(|gateway| serde_json::json!({
+                "tls_spki_sha256": hex::encode(gateway.tls_fingerprint),
+                "app_compose_sha256": gateway_intel.as_ref().map(|intel| &intel.compose_hash),
+                "app_compose": gateway.manifest,
+            })),
+        }))
+        .map_err(|_| SecureClientError::attestation("NEAR workload manifest bundle is invalid"))?;
+        if manifest_bundle.len() > 1024 * 1024 {
+            return Err(SecureClientError::attestation(
+                "NEAR workload manifest bundle is too large",
+            ));
+        }
+        evidence.workload_manifest = Some(manifest_bundle);
+        evidence.provider_claims.push(EvidenceClaim {
+            name: "verified_worker_environments".into(),
+            value: reports.len().to_string(),
+        });
     }
     evidence.checks.push(check(
         "response_signature",
@@ -890,6 +1028,48 @@ fn add_gateway_evidence(
     }
 }
 
+fn add_replica_evidence(evidence: &mut SecurityEvidence, index: usize, worker: &VerifiedWorker) {
+    let prefix = format!("worker_{index}");
+    let mut intel = check(
+        &format!("{prefix}_intel_tdx"),
+        &format!("Worker {index} (Intel TDX)"),
+        &worker.intel.status,
+    );
+    intel.passed = !worker.outdated_accepted;
+    evidence.checks.push(intel);
+    evidence.checks.push(check(
+        &format!("{prefix}_nvidia_gpu"),
+        &format!("Worker {index} NVIDIA GPU"),
+        "verified",
+    ));
+    evidence.checks.push(check(
+        &format!("{prefix}_bindings"),
+        &format!("Worker {index} key, challenge, TLS and manifest"),
+        "quote-bound",
+    ));
+    for (name, value) in [
+        ("tls_spki_sha256", hex::encode(worker.tls_fingerprint)),
+        (
+            "workload_manifest_sha256",
+            worker.intel.compose_hash.clone(),
+        ),
+        ("intel_mr_td", worker.intel.mr_td.clone()),
+        ("intel_advisory_ids", worker.intel.advisory_ids.join(",")),
+    ] {
+        evidence.provider_claims.push(EvidenceClaim {
+            name: format!("{prefix}_{name}"),
+            value,
+        });
+    }
+    if worker.outdated_accepted {
+        evidence.state = SecurityState::Degraded;
+        evidence.provider_claims.push(EvidenceClaim {
+            name: format!("{prefix}_outdated_tcb_accepted"),
+            value: "Accepted by user for this provider until restart".into(),
+        });
+    }
+}
+
 fn check(id: &str, label: &str, status: &str) -> EvidenceCheck {
     EvidenceCheck {
         id: id.into(),
@@ -1110,6 +1290,219 @@ mod tests {
         assert!(validate_report_identity(&candidate, &[0x11; 32], "model/a", "ed25519",).is_err());
         candidate = report();
         assert!(validate_report_identity(&candidate, &[0x12; 32], "model/a", "ed25519",).is_err());
+    }
+
+    fn group_wire() -> Value {
+        let primary = serde_json::json!({
+            "signing_algo": "ed25519", "signing_public_key": report().signing_public_key,
+            "signing_address": report().signing_address, "nonce": "11".repeat(32),
+            "tls_fingerprint": "22".repeat(32), "model_name": "model/a",
+            "intel_quote": "00", "nvidia_payload": {"nonce": "11".repeat(32)},
+            "app_compose": "primary",
+        });
+        let mut peer = primary.clone();
+        peer["tls_fingerprint"] = Value::String("33".repeat(32));
+        peer["app_compose"] = Value::String("peer".into());
+        let mut wire = primary.clone();
+        wire["worker_attestations"] = serde_json::json!([primary, peer]);
+        wire
+    }
+
+    #[test]
+    fn gateway_group_requires_the_exact_selected_worker_and_every_peer_identity() {
+        let parse = |wire| {
+            parse_worker_reports(
+                wire,
+                super::super::GATEWAY_GROUP_ATTESTATION_PROTOCOL,
+                &[0x11; 32],
+                "model/a",
+            )
+        };
+        let reports = parse(group_wire()).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_ne!(reports[0].tls_fingerprint(), reports[1].tls_fingerprint());
+        assert_eq!(reports[1].workload_manifest().unwrap(), "peer");
+        for (field, value) in [
+            ("nonce", "12".repeat(32)),
+            ("request_nonce", "12".repeat(32)),
+            ("model_name", "other".into()),
+            ("signing_algo", "ecdsa".into()),
+            ("signing_public_key", "44".repeat(32)),
+            ("signing_address", "44".repeat(32)),
+        ] {
+            let mut changed = group_wire();
+            changed["worker_attestations"][1][field] = Value::String(value);
+            assert!(parse(changed).is_err(), "{field}");
+        }
+        let mut changed = group_wire();
+        changed["worker_attestations"][1]["signing_public_key"] = Value::String("44".repeat(32));
+        changed["worker_attestations"][1]["signing_address"] = Value::String("44".repeat(32));
+        assert!(parse(changed).is_err());
+        let mut changed = group_wire();
+        changed["app_compose"] = Value::String("substituted".into());
+        assert!(parse(changed).is_err());
+        for group in [
+            Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({}),
+            Value::Array(vec![
+                group_wire()["worker_attestations"][0].clone();
+                MAX_WORKER_ATTESTATIONS + 1
+            ]),
+        ] {
+            let mut changed = group_wire();
+            changed["worker_attestations"] = group;
+            assert!(parse(changed).is_err());
+        }
+        let mut legacy = group_wire();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("worker_attestations");
+        assert!(parse(legacy.clone()).is_err());
+        assert!(
+            parse_worker_reports(
+                legacy,
+                super::super::GATEWAY_ATTESTATION_PROTOCOL,
+                &[0x11; 32],
+                "model/a"
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_worker_reports(
+                group_wire(),
+                super::super::GATEWAY_ATTESTATION_PROTOCOL,
+                &[0x11; 32],
+                "model/a"
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_peer_quote_cannot_be_accepted_as_a_group_member() {
+        let config = SecureClientConfig::new("https://relay.example").unwrap();
+        let policy = TrustPolicy::default();
+        let reports = parse_worker_reports(
+            group_wire(),
+            super::super::GATEWAY_GROUP_ATTESTATION_PROTOCOL,
+            &[0x11; 32],
+            "model/a",
+        )
+        .unwrap();
+        let error = verify_worker(
+            &reports[1],
+            &[0x11; 32],
+            &policy,
+            &config,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            axiom_inference::ProviderFailureKind::AttestationRejected
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "read-only live NEAR, Intel and NVIDIA verification; no inference or credentials"]
+    async fn live_near_gateway_group_verifies_all_worker_environments() {
+        let config = SecureClientConfig::new("https://relay.example").unwrap();
+        let policy = TrustPolicy::production().unwrap();
+        let mut nonce = [0_u8; 32];
+        OsRng.fill_bytes(&mut nonce);
+        let model = "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated";
+        let url = Url::parse("https://cloud-api.near.ai/v1/attestation/report").unwrap();
+        let client = pinned_client(
+            &url,
+            &config.endpoint_policy,
+            config.attestation_timeout,
+            false,
+        )
+        .await
+        .unwrap();
+        let response = client
+            .get(url)
+            .query(&[
+                ("model", model),
+                ("nonce", &hex::encode(nonce)),
+                ("signing_algo", "ed25519"),
+                ("include_tls_fingerprint", "true"),
+            ])
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let raw: Value = serde_json::from_slice(
+            &bounded_body(response, config.limits.attestation_report_bytes)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let entries = raw["model_attestations"].as_array().unwrap();
+        assert!(!entries.is_empty() && entries.len() <= MAX_WORKER_ATTESTATIONS);
+        let primary: AttestationReport = serde_json::from_value(entries[0].clone()).unwrap();
+        let key = primary.model_key().unwrap();
+        let mut verified_count = 0;
+        for entry in entries {
+            let report: AttestationReport = serde_json::from_value(entry.clone()).unwrap();
+            if report.model_key().unwrap() != key {
+                continue;
+            }
+            validate_report_identity(&report, &nonce, model, "ed25519").unwrap();
+            let worker =
+                verify_worker(&report, &nonce, &policy, &config, &CancellationToken::new())
+                    .await
+                    .unwrap();
+            assert!(!worker.outdated_accepted);
+            println!(
+                "worker {}: Intel {}, NVIDIA verified, manifest {}",
+                verified_count + 1,
+                worker.intel.status,
+                worker.intel.compose_hash
+            );
+            if verified_count == 1 {
+                let mut substituted = report.clone();
+                substituted.app_compose = Some(format!("{} ", worker.manifest));
+                let error = verify_worker(
+                    &substituted,
+                    &nonce,
+                    &policy,
+                    &config,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+                assert!(error.to_string().contains("workload manifest"), "{error}");
+                println!("worker 2: substituted manifest rejected by native quote verification");
+            }
+            verified_count += 1;
+        }
+        let gateway: AttestationReport =
+            serde_json::from_value(raw["gateway_attestation"].clone()).unwrap();
+        assert_eq!(gateway.echoed_nonce(), Some(hex::encode(nonce).as_str()));
+        let intel = verify_intel(
+            &decode_quote(
+                gateway.intel_quote.as_deref().unwrap(),
+                config.limits.attestation_quote_bytes,
+            )
+            .unwrap(),
+            gateway.model_key().unwrap().as_bytes(),
+            &decode_hex_32(gateway.tls_fingerprint().unwrap(), "gateway TLS").unwrap(),
+            &nonce,
+            &gateway.workload_manifest().unwrap(),
+            &config,
+        )
+        .await
+        .unwrap();
+        assert!(!accept_intel_status(&intel.status, &policy, &config).unwrap());
+        println!(
+            "gateway: Intel {}; all {verified_count} selected-key environments verified",
+            intel.status
+        );
     }
 
     #[test]

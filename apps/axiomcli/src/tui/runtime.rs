@@ -194,9 +194,13 @@ pub(super) enum UiMessage {
         applied: bool,
     },
     Event(AppEvent),
+    TurnEvent(TurnId, AppEvent),
     Done(TurnId, Result<()>),
     SecurityPreflightDone(u64, Result<SecurityVerification>),
-    CompactionDone(Result<CompactionResult>),
+    CompactionDone(
+        Result<CompactionResult>,
+        Option<crate::session::ContextOperationGuard>,
+    ),
     ModelsLoaded(Result<Vec<axiom_inference::ModelInfo>>),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalResponse>),
     Questions(
@@ -561,6 +565,7 @@ pub(super) async fn restore_tui_session(
         )));
     }
     let loaded = store.load_recovering(session_id)?;
+    let presentation = store.load_presentation(session_id)?;
     let resumed_model = model_for_resume(&loaded.events, &state.model);
     let resumed_thinking = thinking_for_resume(&loaded.events, state.thinking);
     let models = runner
@@ -594,7 +599,7 @@ pub(super) async fn restore_tui_session(
             .await?;
     }
     state.profile = PermissionProfile::from_str(&summary.profile).unwrap_or(state.profile);
-    for envelope in &loaded.events {
+    for envelope in &presentation.events {
         // Older versions persisted this routine edit summary as a warning on
         // every resume. Keep the journal and WorkspaceChanged events intact,
         // but do not replay the retired synthetic notice into the transcript.
@@ -1998,6 +2003,10 @@ pub async fn run(
                                                 }
                                             }
                                             Ok(SlashCommand::Compact { focus }) => {
+                                                let context_operation = match store.as_ref().filter(|store| store.is_active()).map(|store| store.claim_context_operation(&session_id)).transpose() {
+                                                    Ok(guard) => guard,
+                                                    Err(error) => { state.status = error.to_string(); state.status_tone = StatusTone::Waiting; continue; }
+                                                };
                                                 state.running = true;
                                                 state.compacting = true;
                                                 state.status = "Compacting conversation context…".into();
@@ -2028,7 +2037,7 @@ pub async fn run(
                                                         .await;
                                                     let _ = forward.await;
                                                     let _ = task_tx
-                                                        .send(UiMessage::CompactionDone(result))
+                                                        .send(UiMessage::CompactionDone(result, context_operation))
                                                         .await;
                                                 });
                                             }
@@ -2121,9 +2130,10 @@ pub async fn run(
                                         let _preflight_guard = preflight_guard;
                                         let (event_tx, mut event_rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
                                         let forwarding = task_tx.clone();
+                                        let event_turn = turn_id.clone();
                                         let forward = tokio::spawn(async move {
                                             while let Some(event) = event_rx.recv().await {
-                                                let _ = forwarding.send(UiMessage::Event(event)).await;
+                                                let _ = forwarding.send(UiMessage::TurnEvent(event_turn.clone(), event)).await;
                                             }
                                         });
                                         let result = task_runner.run(context, prompt, event_tx, token).await;
@@ -2286,6 +2296,21 @@ pub async fn run(
                             state.status_tone = StatusTone::Waiting;
                         }
                     }
+                    UiMessage::TurnEvent(turn, event) => {
+                        let Ok(envelope) = runtime.emit_for_turn(session_id.clone(), &turn, event.clone()).await else {
+                            // A cancelled task can finish after another turn.
+                            // Its stale output has no authority over this UI.
+                            continue;
+                        };
+                        if matches!(event, AppEvent::SecurityStatusChanged { .. } | AppEvent::SecurityEvidenceUpdated { .. }) {
+                            state.apply(&event);
+                            continue;
+                        }
+                        if let Some(store) = store.as_ref().filter(|store| store.is_active()) { store.append(&envelope)?; }
+                        if let AppEvent::SteeringApplied { client_item_id, .. } = &event
+                            && let Some(inbox) = &active_steering { inbox.acknowledge(client_item_id); }
+                        state.apply(&event);
+                    }
                     UiMessage::Event(event) => {
                         if matches!(event, AppEvent::SecurityStatusChanged { .. }) {
                             // Security is live process state, not resumable
@@ -2389,7 +2414,7 @@ pub async fn run(
                             state.apply(&event.event);
                         }
                     }
-                    UiMessage::CompactionDone(result) => {
+                    UiMessage::CompactionDone(result, _context_operation) => {
                         state.running = false;
                         state.compacting = false;
                         cancellation = None;

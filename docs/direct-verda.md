@@ -21,11 +21,12 @@ selecting another provider does not route that request through AstreaAI. If the
 remote catalog is unavailable, the locally pinned AstreaAI offering remains
 discoverable and still requires fresh worker admission before inference.
 
-Build the frozen verifier from a clean committed checkout with
+Build the native Rust verifier from a clean committed checkout with
 `node scripts/build-direct-bundle.mjs --output .local/direct/bundle`. The builder
-checks the vendored source inventory and installs hash-locked dependencies.
-Intel macOS compiles the locked cryptography source using locked build tools,
-Rust and static Homebrew OpenSSL; the other platforms use upstream wheels.
+checks the vendored source inventory, compiles the locked Cargo dependency graph
+and verifies the executable in a clean environment. Node, Rust and the native
+platform linker are required; the verifier has no Python or OpenSSL runtime.
+Native Windows ARM64 is supported alongside x64 and both Mac architectures.
 Set `AXIOM_DIRECT_BUNDLE` to that output root when packaging. Signed production
 installers require the bundle; private issuer keys are rejected from it.
 Relative bundle paths resolve from the workspace root even when Electron's
@@ -44,6 +45,14 @@ spending ceiling. `issuer_key_file` must be empty in this mode. The client obtai
 an account-owned reservation and one-use grant, then sends encrypted inference
 directly to the same independently verified worker. There is no operator-signing
 fallback when account authorization, credit or price acceptance fails.
+
+Chat, vision and image requests reserve an input-byte budget sized for their
+serialized input, nested JSON escaping and signed-envelope headroom, rounded to
+whole MiB. Small requests reserve 1 MiB rather than the protocol's 144 MiB
+ceiling, keeping them compatible with older account APIs capped at 36 MiB.
+Larger inputs still require a matching account API limit. The worker enforces
+the signed byte budget after decryption; key, workload, grant and completion
+verification remain required.
 
 The approved guest loads `munekazu/Huihui-Qwen3.8-27B-abliterated-FP8`, pinned by
 the signed model inventory. Its exact native model ID adds the Qwen3.8
@@ -112,9 +121,10 @@ come from attachments or generated images in the same conversation. Reference
 bytes stay in the encrypted request; signed usage binds their normalized pixel
 count. The adapter preserves source IDs for preview, saving and regeneration.
 Regenerate retains the original request's chosen dimensions and reference order.
-The requesting chat may use any supported vision-capable provider, including
-NEAR or Tinfoil. Its model ID is image provenance, not a selector for the image
-worker. AstreaAI still verifies its own worker, keys, signed image result and
+The requesting chat may use a supported tool-capable model from any provider,
+including NEAR or Tinfoil. Chat vision is required for image uploads and
+`view_image`, not generation. Its model ID is image provenance, not a selector
+for the image worker. AstreaAI still verifies its own worker, keys, signed image result and
 account-owned usage; image evidence and billing remain attributed to AstreaAI.
 The uncensored model selects its pinned image LoRA. Document uploads remain
 unavailable.
@@ -257,6 +267,11 @@ inference. Both cached proof and admission must cover the entire new request
 deadline; request keys, nonces and grants are never reused. Explicit Refresh
 invalidates the cache and any failed exchange drops it without inference replay.
 The proof's original local verification time is retained in the privacy report.
+Desktop's automatic report renewal reads this reusable native cache rather than
+invalidating it; only an explicit Refresh forces a new appraisal. The worker
+proof remains bounded to at most 240 seconds, and a new 180-second request still
+requires coverage through its deadline. Near-expiry material therefore cannot
+authorize a new full-length image request, even when its report is still valid.
 
 The account-owned provider checks every 20 seconds and prepares 210 seconds of
 proof and admission coverage, providing 30 seconds of headroom above a normal

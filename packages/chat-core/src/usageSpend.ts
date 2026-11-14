@@ -1,4 +1,4 @@
-import type { UsageSummaryRequest, UsageSummary } from "./viewTypes";
+import type { UsageSummaryRequest, UsageSummary } from "./viewTypes.js";
 
 export type UsagePeriod = NonNullable<UsageSummaryRequest["period"]>;
 

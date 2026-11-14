@@ -495,6 +495,7 @@ async fn resume_restores_context_and_authenticated_finish_without_restoring_live
             store
                 .append(&EventEnvelope {
                     schema_version: 1,
+                    turn_id: None,
                     sequence: u64::try_from(index + 1).unwrap(),
                     occurred_at: chrono::Utc::now(),
                     correlation_id: CorrelationId::new(),

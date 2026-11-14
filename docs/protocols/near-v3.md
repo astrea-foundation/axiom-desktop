@@ -8,6 +8,8 @@ conversion and response signatures. It replaces NEAR v2's independently fetched
 Ed25519/ECDSA reports. The `near-tdx-nvidia-v2` attestation contract covers
 direct model workers; `near-tdx-nvidia-gateway-v1` covers the same workers reached
 through NEAR's attested cloud gateway (see [Gateway route](#gateway-route)).
+`near-tdx-nvidia-gateway-v2` verifies multiple supplied environments sharing the
+selected recipient key, while retaining the same E2EE and response authentication.
 
 ## Establishment
 
@@ -55,8 +57,14 @@ snapshot, and expiry (at most five minutes). The client bounds its verified cach
 to its own policy and cache lifetime too. Different sessions for one model coexist;
 a new worker never overwrites another client's accepted recipient.
 
-The relay context contains exactly `request_body_hash`, `response_signing_address`,
-and `worker_session_id`. The backend looks up the account-owned session rather than
+The relay context binds `request_body_hash`, `response_signing_address`,
+and `worker_session_id`. New clients also send `request_body_base64` and
+`response_wire_version: 1`. The backend decodes and structurally compares the
+exact JSON to the admitted encrypted fields, model, stream mode and token cap,
+rejects duplicate keys and type substitutions, then forwards those bytes without
+reserializing. Number spelling, whitespace and Unicode escaping do not affect
+admission or change the client-authenticated hash. Legacy clients retain the
+previous reconstruction contract. The backend looks up the account-owned session rather than
 the model's latest lease. Expired/mismatched sessions fail before provider dispatch.
 
 A bounded in-process connection cache is only an optimization. Another API process
@@ -69,6 +77,10 @@ The durable dispatch record is written after the TLS pin check, immediately befo
 the POST headers. A rejected connection releases its unused billing hold and request
 ID, so the existing one-time retry can reuse that ID. Once dispatch is recorded,
 an ambiguous send or response failure retains the ID and cannot replay inference.
+A separate generation-recovery authorization can issue a new ID only after a
+confirmed terminal transport failure and charge reconciliation. It never reuses
+the dispatch ID, bypasses verification or treats a partial response as complete.
+See [generation recovery](../cli.md#generation-recovery).
 
 ## Inference and completion
 
@@ -83,6 +95,16 @@ using the accepted worker connection. Both backend and native client verify the
 Ed25519 signature against the attested model key. Signed text must be exactly
 `model_id:sha256(exact_request_bytes):sha256(exact_response_bytes)`.
 ECDSA records and gateway-only hash pairs are rejected under this contract.
+
+For streaming, raw wire version 1 relays bounded `message.provider_chunk` events
+with a run ID, contiguous zero-based index and base64 of the original provider
+bytes. The native client parses and decrypts these bytes for provisional output;
+the backend parses the same encrypted stream for independent billing and usage
+checks. The terminal proof carries `response_wire_version: 1` and the exact
+`response_chunk_count` instead of repeating the transcript. Missing, duplicate,
+mixed or reordered chunks fail closed. Legacy clients retain terminal transcript
+chunks. Non-streaming retains its signed raw response because the receipt must
+authenticate provider JSON metadata as well as encrypted fields.
 
 For streaming, the signature covers the complete ordered raw SSE transcript,
 including its terminal marker and usage. Deltas remain provisional until the native
@@ -140,6 +162,27 @@ and timing but no message content.
 
 Native and backend releases must implement the same registered `near-v3`
 contract. Unsupported protocol offers fail closed.
+
+Updated clients prefer advertised `near-tdx-nvidia-gateway-v2` over v1. The server
+retains the v1 default for older clients; the native engine uses v1 if v2 is not
+advertised. V1 continues to require a single selected worker.
+
+V2 requires a `worker_attestations` array of one to sixteen normalized worker
+reports. Its first member must match the top-level selected worker. Every member
+must name the same recipient key, model and fresh challenge. The client verifies
+each Intel quote, exact measured workload manifest, TLS/key binding and NVIDIA
+evidence independently. A bad second entry rejects the whole group before any
+session is cached or inference encrypted. The gateway quote is also required and
+verified. The explicit, runtime-only `OutOfDate` exception applies separately to
+each TDX environment; other failures remain rejected.
+
+Evidence exposes additional worker checks, measurements, TLS fingerprints and
+manifest digests. For v2, the workload-manifest field is a JSON bundle containing
+the exact manifest strings for all verified workers and the gateway. Any accepted
+outdated environment produces degraded evidence. The gateway preflight accepts
+only the group's previously verified model/TLS/manifest bindings; a new same-key
+environment forces fresh establishment. Requests and signed response receipts
+remain bound to the selected key, not the array position.
 
 NEAR source confirms [Ed25519 receipts](https://github.com/nearai/inference-proxy/blob/85ff2c493f84c835e175be74a319a8ab583a7fd3/src/routes/signature.rs)
 and documents [worker-local signature records](https://docs.near.ai/cloud/verification/chat).

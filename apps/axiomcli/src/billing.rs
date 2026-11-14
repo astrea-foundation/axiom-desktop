@@ -14,6 +14,8 @@ use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result, auth::AuthManager};
+pub mod command;
+pub mod credits;
 
 const MAX_BILLING_RESPONSE_BYTES: usize = 64 * 1024;
 // Deposit provisioning/receipt display is optional once the ledger is loaded.
@@ -942,12 +944,13 @@ fn validate_billing_status(status: &BillingStatus) -> Result<()> {
         || status.available_microusd.unsigned_abs() > MAX_ACP_SAFE_INTEGER
         || status.ledger_sequence > MAX_ACP_SAFE_INTEGER
         || status.currency != "microUSD"
-        || status.available_microusd
-            != if status.payment_review_required {
-                0
-            } else {
-                status.posted_microusd
-            }
+        || if status.payment_review_required {
+            status.available_microusd != 0
+        } else if status.posted_microusd < 0 {
+            status.available_microusd != status.posted_microusd
+        } else {
+            !(0..=status.posted_microusd).contains(&status.available_microusd)
+        }
     {
         return Err(AxiomError::Protocol(
             "Axiom returned inconsistent billing status".into(),
@@ -1106,6 +1109,7 @@ mod tests {
         struct ServerState {
             billing: RwLock<Value>,
             payment: RwLock<Value>,
+            gift_calls: AtomicUsize,
             provision_status: AtomicUsize,
             provision_calls: AtomicUsize,
             block_provision: AtomicBool,
@@ -1190,6 +1194,25 @@ mod tests {
             Json(state.billing.read().expect("billing fixture").clone())
         }
 
+        async fn redeem_gift(
+            State(state): State<Arc<ServerState>>,
+            headers: HeaderMap,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            check_native_bearer(&headers);
+            assert_eq!(request["code"], format!("AXG{}", "A".repeat(32)));
+            state.gift_calls.fetch_add(1, Ordering::AcqRel);
+            let mut status = state.billing.write().expect("billing fixture");
+            for field in ["posted_microusd", "available_microusd", "paid_microusd"] {
+                status[field] = json!(status[field].as_i64().expect("balance") + 1_000_000);
+            }
+            status["ledger_sequence"] = json!(3);
+            Json(
+                json!({"credited_microusd": 1_000_000, "already_redeemed": false,
+                "status": status.clone()}),
+            )
+        }
+
         async fn provision(
             State(state): State<Arc<ServerState>>,
             headers: HeaderMap,
@@ -1227,6 +1250,7 @@ mod tests {
                     "zec_usd_quote": null, "trial_capacity": null
                 })),
                 payment: RwLock::new(payment(true)),
+                gift_calls: AtomicUsize::new(0),
                 provision_status: AtomicUsize::new(200),
                 provision_calls: AtomicUsize::new(0),
                 block_provision: AtomicBool::new(false),
@@ -1241,6 +1265,7 @@ mod tests {
                     delete(|| async { HttpStatus::NO_CONTENT }),
                 )
                 .route("/api/v1/billing/status", get(get_status))
+                .route("/api/v1/billing/gift-codes/redeem", post(redeem_gift))
                 .route("/api/v1/billing/deposit-address", post(provision))
                 .with_state(Arc::clone(&state));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1273,6 +1298,29 @@ mod tests {
                 server,
                 _directory: directory,
             }
+        }
+
+        #[tokio::test]
+        async fn balance_reads_and_gift_redemption_succeed_with_active_credit_holds() {
+            let fixture = fixture(true).await;
+            fixture.state.billing.write().expect("billing fixture")["available_microusd"] =
+                json!(3_000_000);
+            let status = fixture
+                .client
+                .status(&CancellationToken::new())
+                .await
+                .expect("held balance");
+            assert_eq!(status.posted_microusd, 3_500_000);
+            assert_eq!(status.available_microusd, 3_000_000);
+            let receipt = fixture
+                .client
+                .redeem_gift_code(&format!("AXG{}", "A".repeat(32)), &CancellationToken::new())
+                .await
+                .expect("gift receipt after the code was consumed");
+            assert_eq!(receipt.credited_microusd, 1_000_000);
+            assert_eq!(receipt.status.posted_microusd, 4_500_000);
+            assert_eq!(receipt.status.available_microusd, 4_000_000);
+            assert_eq!(fixture.state.gift_calls.load(Ordering::Acquire), 1);
         }
 
         #[tokio::test]
@@ -1675,6 +1723,34 @@ mod tests {
         let mut fabricated = payment;
         fabricated.deposits[0].price_source = Some("invented".into());
         assert!(validate_payment_account(&fabricated).is_err());
+    }
+
+    #[test]
+    fn billing_balances_allow_active_holds_without_accepting_inconsistent_credit() {
+        let mut status = BillingStatus {
+            posted_microusd: 25_000_000,
+            available_microusd: 20_000_000,
+            ledger_sequence: 4,
+            trial_microusd: 1_000_000,
+            paid_microusd: 24_000_000,
+            payment_review_required: false,
+            currency: "microUSD".into(),
+            payment_account: None,
+            zec_usd_quote: None,
+            trial_capacity: None,
+        };
+        assert!(validate_billing_status(&status).is_ok());
+        status.available_microusd = 0;
+        assert!(validate_billing_status(&status).is_ok());
+        for invalid in [-1, 25_000_001] {
+            status.available_microusd = invalid;
+            assert!(validate_billing_status(&status).is_err());
+        }
+        status.available_microusd = 20_000_000;
+        status.payment_review_required = true;
+        assert!(validate_billing_status(&status).is_err());
+        status.available_microusd = 0;
+        assert!(validate_billing_status(&status).is_ok());
     }
 
     #[test]

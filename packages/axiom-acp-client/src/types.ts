@@ -68,3 +68,6 @@ export interface SessionStartResult {
 export interface PromptResult {
   stopReason: "end_turn" | "cancelled" | "max_tokens" | "refusal" | string;
 }
+
+/** Public authentication choice; token values are write-only connection inputs. */
+export type McpAuthentication = NonNullable<import("./generated/protocol.js").McpRemoteConnection["auth"]>;

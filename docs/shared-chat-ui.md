@@ -18,6 +18,20 @@ ACP remains a native adapter: no Node transport or Electron implementation is
 included in either package. `ChatHostProvider` injects native attachment reads,
 usage, interaction resolution and window chrome; the browser supplies its own
 ports. Agent/MCP presentation is enabled only when a host supplies that control.
+Per-conversation MCP selection lives inside the Agent dialog and remains usable
+with Agent mode off; the composer has no separate Tools control. Connection
+management stays in Settings.
+The Agent dialog uses one three-level choice: Off, Ask for permission, or Full
+access. Access, folder and MCP changes save on an intentional close, including
+Escape and the backdrop; save failures retain the draft for retry or explicit
+discard. Unchanged closes do not write, and context replacement does not save
+the previous dialog's draft.
+
+`WelcomeView` replaces the greeting and composer with `ChatPreparationScreen`
+while native account preparation is active. The host supplies observed phases;
+the screen never simulates stages or percentages. The native decryption stage
+is distinct from key retrieval. Storage failures keep recovery in that same
+surface, and the host retains drafts and focus outside it until ready.
 
 `VaultScreen` supplies callback-driven first-use password confirmation, recovery
 code download/copy and saved-code acknowledgment, password unlock, recovery with
@@ -45,6 +59,10 @@ keyboard/focus, Markdown/code/math, provider logos and privacy states retain
 Desktop behavior. The provider proof dialog distinguishes gateway evidence from
 upstream verification when a gateway adapter supplies that scope.
 
+Sidebar hosts may supply `aboveAccount` content immediately above the account
+menu. Its rendering, media and dismissal lifecycle belong to the host; the
+shared sidebar provides only the optional layout slot.
+
 Desktop's Electron main build must bundle both `@axiom/axiom-acp-client` and
 its transitive `@axiom/chat-core` imports into JavaScript. These packages export
 TypeScript source for bundlers; packaged Node cannot load their `.ts` exports
@@ -57,6 +75,15 @@ available categories and account/storage actions. Web hides Agent, MCP, Proxy,
 native updates and local API-key controls. Unsupported uploads are disabled with
 provider/model-specific hover text. Composer relocation animates on immediate
 thread creation and respects reduced motion.
+The composer disables model selection during preparation and streaming, dismisses
+an open model picker when either starts, and restores selection when the turn
+ends. Hosts must keep `isStreaming` true through tool calls and cancellation
+cleanup and reject model changes against an active run in their settings handler.
+Hosts may supply `onEnsureSecurity` for automatic, cache-aware report renewal;
+`onVerifySecurity` remains the explicit Refresh action. Without that optional
+callback, automatic renewal retains the existing verification callback. An
+already valid report stays visible during automatic renewal until its true
+hard expiry. Running image/tool turns finish before either refresh can start.
 
 Queue hosts may provide `persistQueue` to require an encrypted durable commit
 before dispatch. Native hosts retain their existing synchronous admission timing.

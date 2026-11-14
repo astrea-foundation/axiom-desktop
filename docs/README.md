@@ -9,17 +9,20 @@ must be recorded against the actual source revision and signed installers.
 |---|---|
 | [Install and update](installing-desktop.md) | Packages, bundled CLI and installation |
 | [Desktop](desktop.md) | Conversations, Agent/Web controls, evidence, credit and usage |
+| [Credits and subscriptions](billing.md) | Weekly allowance, purchased credits, card/crypto, auto top-up and CLI controls |
 | [CLI and TUI](cli.md) | Commands, terminal interaction, funding, plans and sessions |
 | [Local proxy](proxy.md) | Loopback integration and OpenAI compatibility |
-| [Local MCP connections](mcp.md) | Desktop connections, thread tools and approvals |
+| [MCP connections](mcp.md) | Remote/local connections, conversation tools and approvals |
 | [Configuration](configuration.md) | Configuration precedence, paths and limits |
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
-| [Troubleshooting](troubleshooting.md) | Diagnosis and recovery |
+| [Encrypted local storage](local-storage.md) | Binary assets, forward migration, OS-protected keys and recovery |
+| [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
 | [0.1.17 release notes](releases/0.1.17.md) | Account-authorized AstreaAI, bundled verifiers and installer path handling |
 | [0.1.18 release notes](releases/0.1.18.md) | Restore NEAR AI and Tinfoil alongside AstreaAI |
 | [0.1.20 release notes](releases/0.1.20.md) | Cross-provider images and installed image-tool discovery |
 | [0.1.21 release notes](releases/0.1.21.md) | Chat recovery, image context accounting, clipboard images and macOS credentials |
+| [0.1.22 release notes](releases/0.1.22.md) | Interrupted generation recovery, verified provider compatibility, billing and account fixes |
 | [0.1.16 candidate notes](releases/0.1.16.md) | Unpublished candidate; included in 0.1.17 |
 | [0.1.14 candidate notes](releases/0.1.14.md) | Unpublished candidate; included in 0.1.15 |
 | [0.1.10 release notes](releases/0.1.10.md) | Windows setup and first-launch updates |

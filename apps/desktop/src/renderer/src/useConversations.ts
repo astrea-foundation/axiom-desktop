@@ -1,3 +1,5 @@
+import { localPayloads } from "./localPayloads";
+import { flushLocalState, registerUpdateFlush, releaseLocalStateFlush } from "./updateFlush";
 import { acceptsAttachment } from "./attachments";
 import { AttachmentPreviews } from "./attachmentPreviews";
 import type { ClientState } from "@axiom/axiom-acp-client";
@@ -11,7 +13,6 @@ import type { PendingUserMessage, Thread } from "./types";
 import { useAttachmentDraft } from "./useAttachmentDraft";
 import { useAccountDraft } from "./useAccountDraft";
 import { useWebAccess } from "./useWebAccess";
-import { browserConsentStorage } from "./webConsent";
 
 import { type useConversationNavigation } from "./useConversationNavigation";
 import { type useModelCatalog } from "./useModelCatalog";
@@ -31,8 +32,11 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   const { surface, setSurface, activeThreadId, setActiveThreadId, activeThreadIdRef,
     navigationRevision, threadPreparation, setThreadPreparation, cancelThreadPreparation } = navigation;
   const { desktopReady, selectedModel, effectiveReasoningEffort, rememberSelection, restorePreferredSelection } = catalog;
-  const [draft, setDraft, writeDraft, writeDraftDurable] = useAccountDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null);
-  const attachmentDraft = useAttachmentDraft(agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null, surface === "thread" ? activeThreadId : null, setUiError);
+  const draftAccount = agentState.connected && agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null;
+  localPayloads.setContext(draftAccount, agentState.runtimeInstanceId, connection.revision);
+  const [draft, setDraft, writeDraft, writeDraftDurable] = useAccountDraft(draftAccount, surface === "thread" ? activeThreadId : null, setUiError, connection.revision);
+  const attachmentDraft = useAttachmentDraft(draftAccount, surface === "thread" ? activeThreadId : null, setUiError, connection.revision);
+  useEffect(() => window.axiomDesktop?.onBeforeLocalStateChange?.(flushLocalState, releaseLocalStateFlush), []);
   const savingDraft = useRef(false);
   const [queueRevision, setQueueRevision] = useState(0);
   const [newAgentDraft, setNewAgentDraft] = useState<{ scope: string; selection: AgentSelection; } | null>(null);
@@ -41,7 +45,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   const submittingDraft = useRef(new Map<string, string>());
   const queueConnectionRevision = useRef(connection.revision);
 
-  if (!messageQueue.current) messageQueue.current = new MessageQueueController(browserConsentStorage(), () => setQueueRevision((value) => value + 1), setUiError);
+  if (!messageQueue.current) messageQueue.current = new MessageQueueController(null, () => setQueueRevision((value) => value + 1), setUiError, localPayloads, localPayloads);
 
   const threadLoads = useRef(new ThreadLoadTracker());
   const [threadLoadError, setThreadLoadError] = useState<{ id: string; detail: string; } | null>(null);
@@ -72,6 +76,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   }, [agentState, queueRevision, connection.revision]);
 
   useEffect(() => () => messageQueue.current?.dispose(), []);
+  useEffect(() => registerUpdateFlush(() => messageQueue.current!.flush()), []);
 
   const unsortedFolders = useMemo(() => agentState.collections.collections.map((collection) => ({
     id: collection.id,
@@ -167,11 +172,11 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     defaultDirectory: currentAgent?.defaultWorkingDirectory,
     mcpServers: agentState.mcp?.servers,
     mcpError,
-    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure Agent mode."
+    disabledReason: !billingAccountId || !agentState.connected ? "Sign in and connect to configure tools and Agent mode."
       : typeof window.axiomDesktop?.agent.configureDesktopAgent !== "function" ? "Restart Axiom to enable the Agent controls."
         : surface === "thread" && !currentAgent ? "Agent settings are unavailable. Restart Axiom to load the updated native app."
           : agentSettingsBusy ? "Saving Agent settings…"
-            : activeSession?.running || messageQueue.current!.list(activeThreadId, billingAccountId).length > 0 ? "Finish the current reply and send or remove queued messages before changing Agent settings."
+            : activeSession?.running || messageQueue.current!.list(activeThreadId, billingAccountId).length > 0 ? "Finish the current reply and send or remove queued messages before changing tools or Agent settings."
               : undefined,
     onChooseDirectory: async (current) => {
       const api = window.axiomDesktop?.agent;
@@ -447,7 +452,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
       const current = await api.getState().catch(() => null);
       if (!submissionCurrent() || !stillSelected() || current?.account?.account?.id !== billingAccountId || current?.runtimeInstanceId !== agentState.runtimeInstanceId) return;
       try {
-        if (!files.length && writeDraft(creatingThread ? null : activeThreadId, (previous) => previous ? `${previous}\n\n${text}` : text, true)) {
+        if (!files.length && await writeDraftDurable(creatingThread ? null : activeThreadId, (previous) => previous ? `${previous}\n\n${text}` : text)) {
           messageQueue.current!.remove(submissionId);
         }
       } catch { /* Keep the durable outbox entry available for review. */ }

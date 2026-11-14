@@ -16,7 +16,7 @@ function Fixture() {
   const address = `u1${"a".repeat(180)}`;
   return <main className="mx-auto max-w-2xl p-6">
     <button onClick={() => setAccount("account-b")}>Switch account</button>
-    <FundingPanel key={`${account}-${mount}`} accountId={account} connected payment={{network: "mainnet", asset: "ZEC", conversion_status: "none",
+    <FundingPanel key={`${account}-${mount}`} accountId={account} connected collapseDirect payment={{network: "mainnet", asset: "ZEC", conversion_status: "none",
       state: "ready", valuation_enabled: true, address, payment_uri: `zcash:${address}`, monitoring_status: "ready",
       required_confirmations: "10", confirmed_zatoshis: "0", confirming_zatoshis: "0", review_required: false, deposits: []}}
       onRefreshBilling={async () => {}} />

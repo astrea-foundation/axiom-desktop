@@ -97,6 +97,14 @@ pub async fn serve_stdio(
         protocol::InitializeResponse
     );
     let builder = request_handler!(
+        async,
+        builder,
+        context,
+        local_payload::handle,
+        extension::LocalPayloadRequest,
+        extension::LocalPayloadResponse
+    );
+    let builder = request_handler!(
         sync,
         builder,
         context,
@@ -126,6 +134,14 @@ pub async fn serve_stdio(
         context,
         prompts::prompt,
         protocol::PromptRequest,
+        protocol::PromptResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
+        prompts::invoke_command,
+        extension::SessionCommandRequest,
         protocol::PromptResponse
     );
     let builder = request_handler!(
@@ -167,6 +183,22 @@ pub async fn serve_stdio(
         images::regenerate,
         extension::RegenerateImageRequest,
         extension::RegenerateImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
+        images::read,
+        extension::ReadImageRequest,
+        extension::ReadImageResponse
+    );
+    let builder = request_handler!(
+        async,
+        builder,
+        context,
+        images::resolve,
+        extension::ResolveImageRequest,
+        extension::ResolveImageResponse
     );
     let builder = request_handler!(
         async,
@@ -351,6 +383,14 @@ pub async fn serve_stdio(
         account::crypto_options,
         extension::CryptoOptionsRequest,
         extension::CryptoOptionsResponse
+    );
+    let builder = request_handler!(
+        sync,
+        builder,
+        context,
+        account::credit_billing,
+        extension::CreditBillingRequest,
+        extension::CreditBillingResponse
     );
     let builder = request_handler!(
         sync,

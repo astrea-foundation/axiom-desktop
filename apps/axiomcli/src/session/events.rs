@@ -13,8 +13,8 @@ use crate::{
 
 use super::SessionStore;
 use super::codec::{
-    checked_i64, encode_metadata, encode_path, origin_name, redact_text, redacted_json,
-    storage_error, validate_client_item_id, validate_model,
+    checked_i64, content_json, encode_metadata, encode_path, origin_name, storage_error,
+    validate_client_item_id, validate_model,
 };
 use super::preferences::query_profile_preferences;
 use super::records::{
@@ -22,10 +22,10 @@ use super::records::{
     TurnStatus,
 };
 use super::timeline::{
-    NoticeWrite, TimelineItemWrite, active_turn_id, append_turn_content, ensure_external_item,
-    ensure_thread, find_external_item, finish_turn, insert_notice, insert_timeline_item,
-    item_metadata, mark_response_verified, persist_question, query_thread_revision,
-    set_thread_lifecycle, truncate_for_revision, update_notice_resolution, upsert_timeline_item,
+    NoticeWrite, TimelineItemWrite, append_turn_content, ensure_external_item, ensure_thread,
+    find_external_item, finish_turn, insert_notice, insert_timeline_item, item_metadata,
+    mark_response_verified, persist_question, query_thread_revision, set_thread_lifecycle,
+    truncate_for_revision, update_notice_resolution, upsert_timeline_item,
 };
 
 impl SessionStore {
@@ -115,8 +115,75 @@ impl SessionStore {
             || Utc::now().to_rfc3339(),
             |event| event.occurred_at.to_rfc3339(),
         );
+        if envelopes.iter().any(|e| {
+            matches!(
+                e.event,
+                AppEvent::PromptAccepted { .. } | AppEvent::TurnStarted { .. }
+            )
+        }) && self.lock()?.guard.path.is_some()
+        {
+            self.interrupt_incomplete_turns()?;
+        }
+        let legacy = if !envelopes
+            .iter()
+            .any(|e| matches!(e.event, AppEvent::SessionCreated { .. }))
+            && !super::model_history::exists(&*self.lock()?, &first.session_id)?
+        {
+            let loaded = self.load_recovering(&first.session_id)?;
+            if loaded
+                .warnings
+                .iter()
+                .any(|warning| warning != super::asset_codec::MEDIA_OMITTED)
+            {
+                return Err(AxiomError::Storage(format!(
+                    "legacy conversation could not be migrated completely; original records were retained: {}",
+                    loaded.warnings.join("; ")
+                )));
+            }
+            Some(loaded.events)
+        } else {
+            None
+        };
         let mut connection = self.lock()?;
-        let transaction = connection.transaction().map_err(storage_error)?;
+        let begins = envelopes.iter().any(|e| {
+            matches!(
+                e.event,
+                AppEvent::PromptAccepted { .. } | AppEvent::TurnStarted { .. }
+            )
+        });
+        if begins && connection.guard.context_operations.contains(&thread_id) {
+            return Err(super::execution::conflict());
+        }
+        let lease = if begins && !connection.guard.executions.contains_key(&thread_id) {
+            connection
+                .guard
+                .path
+                .as_ref()
+                .map(|path| {
+                    super::execution::try_execution_lock(path, &thread_id)
+                        .and_then(|lease| lease.ok_or_else(super::execution::conflict))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let owner = connection.guard.owner_id.clone();
+        let assets = connection.assets().clone();
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        if let Some(legacy) = legacy
+            && !super::model_history::exists(&transaction, &first.session_id)?
+        {
+            for event in legacy {
+                super::model_history::append(
+                    &transaction,
+                    &assets,
+                    &event,
+                    event.event.turn_id().map(ToString::to_string).as_deref(),
+                )?;
+            }
+        }
         if let Some(replacement) = replacement {
             if !envelopes
                 .iter()
@@ -135,7 +202,26 @@ impl SessionStore {
         }
         let mut client_item_id = client_item_id.as_deref();
         for envelope in envelopes {
-            persist_event(&transaction, envelope, client_item_id)?;
+            let turn = super::execution::check_execution(&transaction, envelope, &owner)?;
+            persist_event(
+                &transaction,
+                &assets,
+                envelope,
+                client_item_id,
+                turn.as_deref(),
+            )?;
+            super::model_history::append(&transaction, &assets, envelope, turn.as_deref())?;
+            if matches!(
+                envelope.event,
+                AppEvent::PromptAccepted { .. } | AppEvent::TurnStarted { .. }
+            ) {
+                transaction
+                    .execute(
+                        "UPDATE turns SET owner_id=?3 WHERE thread_id=?1 AND id=?2",
+                        params![thread_id, turn, owner],
+                    )
+                    .map_err(storage_error)?;
+            }
             let has_attachments = matches!(&envelope.event, AppEvent::PromptAccepted { attachments, .. } if !attachments.is_empty());
             if has_attachments
                 || matches!(&envelope.event,
@@ -212,7 +298,15 @@ impl SessionStore {
                     .map_err(storage_error)?;
             }
         }
+        let still_running: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND status='running' AND owner_id=?2)", params![thread_id, owner], |row| row.get(0)).map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
+        if still_running {
+            if let Some(lease) = lease {
+                connection.guard.executions.insert(thread_id, lease);
+            }
+        } else {
+            connection.guard.executions.remove(&thread_id);
+        }
         Ok((revision, updated_preferences))
     }
 
@@ -223,8 +317,10 @@ impl SessionStore {
 
 pub(super) fn persist_event(
     transaction: &Transaction<'_>,
+    assets: &super::assets::AssetManager,
     envelope: &EventEnvelope,
     client_item_id: Option<&str>,
+    execution_turn: Option<&str>,
 ) -> Result<()> {
     let thread_id = envelope.session_id.to_string();
     let now = envelope.occurred_at.to_rfc3339();
@@ -262,7 +358,7 @@ pub(super) fn persist_event(
             transaction
                 .execute(
                     "UPDATE threads SET cwd=?2, cwd_encoding=?3, origin=?4, profile=?5,
-                       lifecycle='ready' WHERE id=?1",
+                       lifecycle=CASE WHEN EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND status='running') THEN lifecycle ELSE 'ready' END WHERE id=?1",
                     params![
                         thread_id,
                         cwd,
@@ -288,7 +384,7 @@ pub(super) fn persist_event(
                     status: TimelineItemStatus::Completed,
                     client_item_id: Some(&client_id),
                     external_id: None,
-                    content: &redact_text(text),
+                    content: text,
                     metadata: json!({"steering": true}),
                     now: &now,
                 },
@@ -300,7 +396,6 @@ pub(super) fn persist_event(
             attachments,
         } => {
             let turn_id = turn_id.to_string();
-            let user_content = redact_text(text);
             let (user_item_id, _) = insert_timeline_item(
                 transaction,
                 &thread_id,
@@ -310,7 +405,7 @@ pub(super) fn persist_event(
                     status: TimelineItemStatus::Completed,
                     client_item_id,
                     external_id: None,
-                    content: &user_content,
+                    content: text,
                     metadata: if attachments.is_empty() {
                         json!({})
                     } else {
@@ -322,10 +417,18 @@ pub(super) fn persist_event(
             if !attachments.is_empty() {
                 axiom_inference::validate_prompt(text, attachments)
                     .map_err(|error| AxiomError::Storage(error.to_string()))?;
+                let mut stored = serde_json::to_value(attachments)?;
+                super::asset_codec::MediaCodec {
+                    assets,
+                    connection: transaction,
+                    owner: &super::assets::thread_owner(&thread_id),
+                    direction: super::asset_codec::Direction::Store,
+                }
+                .attachments(&mut stored)?;
                 transaction
                     .execute(
                         "INSERT INTO prompt_attachments(user_item_id,payload) VALUES (?1,?2)",
-                        params![user_item_id, serde_json::to_string(attachments)?],
+                        params![user_item_id, serde_json::to_string(&stored)?],
                     )
                     .map_err(storage_error)?;
             }
@@ -381,7 +484,7 @@ pub(super) fn persist_event(
                 &thread_id,
                 &turn_id.to_string(),
                 TimelineItemKind::AssistantMessage,
-                &redact_text(text),
+                text,
                 &now,
             )?;
         }
@@ -391,7 +494,7 @@ pub(super) fn persist_event(
                 &thread_id,
                 &turn_id.to_string(),
                 TimelineItemKind::Reasoning,
-                &redact_text(text),
+                text,
                 &now,
             )?;
         }
@@ -435,6 +538,19 @@ pub(super) fn persist_event(
                        AND kind IN ('assistant_message','reasoning')",
                     params![thread_id, usage.request_id, now, usage.finish_reason],
                 ).map_err(storage_error)?;
+            } else if matches!(
+                usage.state,
+                axiom_inference::InvocationState::Failed
+                    | axiom_inference::InvocationState::Cancelled
+            ) {
+                transaction.execute(
+                    "UPDATE timeline_items SET status='interrupted',
+                      metadata=json_set(metadata, '$.terminal_verified', json('false')), updated_at=?3
+                     WHERE thread_id=?1 AND json_extract(metadata, '$.request_id')=?2
+                       AND kind IN ('assistant_message','reasoning')
+                       AND status IN ('pending','in_progress')",
+                    params![thread_id, usage.request_id, now],
+                ).map_err(storage_error)?;
             }
         }
         AppEvent::ContextUsageUpdated { usage } => {
@@ -449,7 +565,7 @@ pub(super) fn persist_event(
             input_tokens,
             output_tokens,
         } => {
-            if let Some(turn_id) = active_turn_id(transaction, &thread_id)? {
+            if let Some(turn_id) = execution_turn {
                 transaction
                     .execute(
                         "UPDATE turns SET input_tokens=?3, output_tokens=?4
@@ -469,7 +585,7 @@ pub(super) fn persist_event(
             completed,
             total,
         } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             upsert_timeline_item(
                 transaction,
                 &thread_id,
@@ -482,14 +598,14 @@ pub(super) fn persist_event(
                         "progress:{}",
                         turn_id.as_deref().unwrap_or("thread")
                     )),
-                    content: &redact_text(message),
+                    content: message,
                     metadata: json!({"code":"progress","completed":completed,"total":total}),
                     now: &now,
                 },
             )?;
         }
         AppEvent::TaskListUpdated { items } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             upsert_timeline_item(
                 transaction,
                 &thread_id,
@@ -503,7 +619,7 @@ pub(super) fn persist_event(
                         turn_id.as_deref().unwrap_or("thread")
                     )),
                     content: "",
-                    metadata: json!({"code":"task_list","items":redacted_json(items)?}),
+                    metadata: json!({"code":"task_list","items":content_json(items)?}),
                     now: &now,
                 },
             )?;
@@ -513,6 +629,7 @@ pub(super) fn persist_event(
             call_id,
             name,
             arguments,
+            mcp_source,
         } => {
             upsert_timeline_item(
                 transaction,
@@ -526,7 +643,9 @@ pub(super) fn persist_event(
                     content: "",
                     metadata: json!({
                         "name": name,
-                        "arguments": redacted_json(arguments)?,
+                        "arguments": content_json(arguments)?,
+                        "mcp_source": mcp_source,
+                        "started": false,
                         "output_truncated": false,
                         "success": Value::Null,
                         "diff": Value::Null,
@@ -537,7 +656,7 @@ pub(super) fn persist_event(
             )?;
         }
         AppEvent::ToolStarted { call_id, name } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             let item_id = ensure_external_item(
                 transaction,
                 &thread_id,
@@ -556,7 +675,7 @@ pub(super) fn persist_event(
             )?;
             transaction
                 .execute(
-                    "UPDATE timeline_items SET status='in_progress', updated_at=?2 WHERE id=?1",
+                    "UPDATE timeline_items SET status='in_progress', metadata=json_set(metadata, '$.started', json('true')), updated_at=?2 WHERE id=?1",
                     params![item_id, now],
                 )
                 .map_err(storage_error)?;
@@ -566,7 +685,7 @@ pub(super) fn persist_event(
             content,
             truncated,
         } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             let item_id = ensure_external_item(
                 transaction,
                 &thread_id,
@@ -589,21 +708,19 @@ pub(super) fn persist_event(
                 .execute(
                     "UPDATE timeline_items SET content=content || ?2, metadata=?3,
                        status='in_progress', updated_at=?4 WHERE id=?1",
-                    params![
-                        item_id,
-                        redact_text(content),
-                        encode_metadata(metadata)?,
-                        now
-                    ],
+                    params![item_id, content, encode_metadata(metadata)?, now],
                 )
                 .map_err(storage_error)?;
         }
         AppEvent::ImageGenerationProgress { call_id, progress } => {
-            let item_id =
-                find_external_item(transaction, &thread_id, TimelineItemKind::ToolCall, call_id)?
-                    .ok_or_else(|| {
-                    AxiomError::Storage("image progress requires its owning tool".into())
-                })?;
+            let item_id = find_external_item(
+                transaction,
+                &thread_id,
+                TimelineItemKind::ToolCall,
+                call_id,
+                execution_turn,
+            )?
+            .ok_or_else(|| AxiomError::Storage("image progress requires its owning tool".into()))?;
             let mut metadata = item_metadata(transaction, &item_id)?;
             let previous = metadata
                 .get("image_progress")
@@ -634,6 +751,7 @@ pub(super) fn persist_event(
                 &thread_id,
                 TimelineItemKind::ToolCall,
                 call_id,
+                execution_turn,
             )?
             .ok_or_else(|| AxiomError::Storage("image requires its owning tool call".into()))?;
             let mut metadata = item_metadata(transaction, &item_id)?;
@@ -653,6 +771,13 @@ pub(super) fn persist_event(
                 .remove("data");
             metadata["generated_image"] = proof;
             metadata["content"] = json!([{"type":"content", "content":{"type":"image", "data":image.data,"mimeType":image.mime_type}}]);
+            super::asset_codec::MediaCodec {
+                assets,
+                connection: transaction,
+                owner: &super::assets::thread_owner(&thread_id),
+                direction: super::asset_codec::Direction::Store,
+            }
+            .timeline(&mut metadata)?;
             transaction
                 .execute(
                     "UPDATE timeline_items SET metadata=?2, updated_at=?3 WHERE id=?1",
@@ -661,9 +786,13 @@ pub(super) fn persist_event(
                 .map_err(storage_error)?;
         }
         AppEvent::ToolCompleted { call_id, success } => {
-            if let Some(item_id) =
-                find_external_item(transaction, &thread_id, TimelineItemKind::ToolCall, call_id)?
-            {
+            if let Some(item_id) = find_external_item(
+                transaction,
+                &thread_id,
+                TimelineItemKind::ToolCall,
+                call_id,
+                execution_turn,
+            )? {
                 let mut metadata = item_metadata(transaction, &item_id)?;
                 metadata["success"] = Value::Bool(*success);
                 let status = if *success { "completed" } else { "failed" };
@@ -681,7 +810,7 @@ pub(super) fn persist_event(
             truncated,
             files,
         } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             let item_id = ensure_external_item(
                 transaction,
                 &thread_id,
@@ -692,9 +821,9 @@ pub(super) fn persist_event(
                 &now,
             )?;
             let mut metadata = item_metadata(transaction, &item_id)?;
-            metadata["diff"] = Value::String(redact_text(diff));
+            metadata["diff"] = Value::String(diff.clone());
             metadata["diff_truncated"] = Value::Bool(*truncated);
-            metadata["files"] = redacted_json(files)?;
+            metadata["files"] = content_json(files)?;
             transaction
                 .execute(
                     "UPDATE timeline_items SET metadata=?2, updated_at=?3 WHERE id=?1",
@@ -708,7 +837,7 @@ pub(super) fn persist_event(
             effect,
             choices,
         } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             upsert_timeline_item(
                 transaction,
                 &thread_id,
@@ -718,8 +847,8 @@ pub(super) fn persist_event(
                     status: TimelineItemStatus::Pending,
                     client_item_id: None,
                     external_id: Some(request_id),
-                    content: &redact_text(explanation),
-                    metadata: json!({"code":"permission","effect":redacted_json(effect)?,"choices":choices,"allowed":Value::Null}),
+                    content: explanation,
+                    metadata: json!({"code":"permission","effect":content_json(effect)?,"choices":choices,"allowed":Value::Null}),
                     now: &now,
                 },
             )?;
@@ -752,8 +881,9 @@ pub(super) fn persist_event(
             persist_question(
                 transaction,
                 &thread_id,
+                execution_turn,
                 question_id,
-                &redact_text(prompt),
+                prompt,
                 json!({"code":"question","options":options}),
                 &now,
             )?;
@@ -766,7 +896,7 @@ pub(super) fn persist_event(
                 transaction,
                 &thread_id,
                 question_id,
-                json!({"answers":redacted_json(answers)?}),
+                json!({"answers":content_json(answers)?}),
                 TimelineItemStatus::Completed,
                 &now,
             )?;
@@ -776,9 +906,10 @@ pub(super) fn persist_event(
             persist_question(
                 transaction,
                 &thread_id,
+                execution_turn,
                 &request.request_id,
                 "",
-                json!({"code":"questions","request":redacted_json(request)?}),
+                json!({"code":"questions","request":content_json(request)?}),
                 &now,
             )?;
         }
@@ -790,7 +921,7 @@ pub(super) fn persist_event(
                 transaction,
                 &thread_id,
                 request_id,
-                json!({"answers":redacted_json(answers)?}),
+                json!({"answers":content_json(answers)?}),
                 TimelineItemStatus::Completed,
                 &now,
             )?;
@@ -801,7 +932,7 @@ pub(super) fn persist_event(
                 transaction,
                 &thread_id,
                 request_id,
-                json!({"reason":redact_text(reason)}),
+                json!({"reason":reason}),
                 TimelineItemStatus::Failed,
                 &now,
             )?;
@@ -812,7 +943,7 @@ pub(super) fn persist_event(
             revision,
             markdown,
         } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             upsert_timeline_item(
                 transaction,
                 &thread_id,
@@ -822,7 +953,7 @@ pub(super) fn persist_event(
                     status: TimelineItemStatus::Pending,
                     client_item_id: None,
                     external_id: Some(plan_id),
-                    content: &redact_text(markdown),
+                    content: markdown,
                     metadata: json!({"code":"plan","revision":revision,"decision":Value::Null}),
                     now: &now,
                 },
@@ -843,7 +974,7 @@ pub(super) fn persist_event(
             )?;
         }
         AppEvent::BackgroundTaskChanged { task_id, state } => {
-            let turn_id = active_turn_id(transaction, &thread_id)?;
+            let turn_id = execution_turn.map(str::to_owned);
             let status = if state == "completed" {
                 TimelineItemStatus::Completed
             } else if state == "cancelled" {
@@ -863,7 +994,7 @@ pub(super) fn persist_event(
                     client_item_id: None,
                     external_id: Some(task_id),
                     content: "",
-                    metadata: json!({"name":"background_process","state":redact_text(state),"arguments":{},"success":status == TimelineItemStatus::Completed}),
+                    metadata: json!({"name":"background_process","state":state,"arguments":{},"success":status == TimelineItemStatus::Completed}),
                     now: &now,
                 },
             )?;
@@ -873,12 +1004,12 @@ pub(super) fn persist_event(
                 transaction,
                 &thread_id,
                 &NoticeWrite {
-                    turn_id: active_turn_id(transaction, &thread_id)?.as_deref(),
+                    turn_id: execution_turn,
                     status: TimelineItemStatus::Completed,
                     external_id: None,
                     code: "workspace_changed",
                     content: "",
-                    details: json!({"paths":redacted_json(paths)?}),
+                    details: json!({"paths":content_json(paths)?}),
                     now: &now,
                 },
             )?;
@@ -933,7 +1064,7 @@ pub(super) fn persist_event(
                     status: TimelineItemStatus::Completed,
                     external_id: None,
                     code: "context_compacted",
-                    content: &redact_text(summary),
+                    content: summary,
                     details: json!({"messages_before":messages_before}),
                     now: &now,
                 },
@@ -953,8 +1084,8 @@ pub(super) fn persist_event(
                     },
                     client_item_id: None,
                     external_id: Some("provider-status"),
-                    content: &redact_text(detail),
-                    metadata: json!({"code":"provider_status","connected":connected}),
+                    content: detail,
+                    metadata: json!({"code":if detail.starts_with("Connection interrupted. Retrying") || detail == "Continuing…" { "generation_recovery" } else { "provider_status" },"connected":connected}),
                     now: &now,
                 },
             )?;
@@ -977,7 +1108,12 @@ pub(super) fn persist_event(
         }
         // Attestation reports are public but ephemeral; persist terminal receipt
         // verification separately and never restore a live lease from history.
-        AppEvent::SecurityEvidenceUpdated { .. } => {}
+        // Live compaction counters and drafting progress are display-only; the
+        // validated tool call that follows is the durable timeline item.
+        AppEvent::SecurityEvidenceUpdated { .. }
+        | AppEvent::ModelHistoryCheckpoint { .. }
+        | AppEvent::CompactionProgressUpdated { .. }
+        | AppEvent::ToolCallDrafting { .. } => {}
         AppEvent::ResponseVerified { turn_id } => {
             mark_response_verified(transaction, &thread_id, &turn_id.to_string(), &now)?;
         }
@@ -986,11 +1122,11 @@ pub(super) fn persist_event(
                 transaction,
                 &thread_id,
                 &NoticeWrite {
-                    turn_id: active_turn_id(transaction, &thread_id)?.as_deref(),
+                    turn_id: execution_turn,
                     status: TimelineItemStatus::Completed,
                     external_id: None,
                     code: "warning",
-                    content: &redact_text(message),
+                    content: message,
                     details: json!({}),
                     now: &now,
                 },
@@ -1023,7 +1159,7 @@ pub(super) fn persist_event(
                     &thread_id,
                     &turn_id.to_string(),
                     TurnStatus::Failed,
-                    Some(&redact_text(message)),
+                    Some(message),
                     &now,
                 )?;
             }
@@ -1035,7 +1171,7 @@ pub(super) fn persist_event(
                     status: TimelineItemStatus::Failed,
                     external_id: None,
                     code: "error",
-                    content: &redact_text(message),
+                    content: message,
                     details: json!({"terminal":turn_id.is_some()}),
                     now: &now,
                 },

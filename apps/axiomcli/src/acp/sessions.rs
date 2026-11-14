@@ -359,6 +359,15 @@ pub(super) async fn load_session(
     let ctx_runtime = context.runtime.clone();
     let ctx_sessions = context.sessions.clone();
     let ctx_store = context.store.clone();
+    let replay_history = !(ctx_frontend == FrontendKind::DesktopChat
+        && extension_enabled(&ctx_extension_state, ExtensionFeature::Timeline)
+        && request
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get(extension::META_KEY))
+            .and_then(|meta| meta.get("skipHistoryReplay"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true));
     let Some(store) = ctx_store else {
         return responder.respond_with_internal_error("durable session loading is unavailable");
     };
@@ -409,9 +418,12 @@ pub(super) async fn load_session(
             let durable_load = tokio::task::spawn_blocking(move || {
                 let summary = durable_store.summary(&durable_internal_id)?;
                 let loaded = durable_store.load_recovering(&durable_internal_id)?;
-                Ok::<_, crate::AxiomError>((summary, loaded))
+                let presentation = if replay_history {
+                    Some(durable_store.load_presentation(&durable_internal_id)?)
+                } else { None };
+                Ok::<_, crate::AxiomError>((summary, loaded, presentation))
             });
-            let (summary, loaded) =
+            let (summary, loaded, presentation) =
                 await_session_future(&request_cancellation, &work, durable_load)
                     .await?
                     .map_err(|error| {
@@ -519,21 +531,26 @@ pub(super) async fn load_session(
                 .restore(&loaded.events)
                 .await
                 .map_err(agent_error)?;
-            for (index, envelope) in loaded.events.iter().enumerate() {
-                send_event(
-                    &connection,
-                    &external_id,
-                    envelope.event.clone(),
-                    EventDelivery {
-                        cwd: Some(&saved_cwd),
-                        extension_state: None,
-                        correlation_id: Some(envelope.correlation_id.to_string()),
-                        revision: None,
-                        client_item_id: None,
-                    },
-                )?;
-                if (index + 1) % 128 == 0 {
-                    tokio::task::yield_now().await;
+            // Desktop can opt into fetching the authoritative timeline after
+            // load. The runner uses selective canonical model events, while
+            // standard ACP clients receive the complete public transcript.
+            if let Some(presentation) = presentation {
+                for (index, envelope) in presentation.events.iter().enumerate() {
+                    send_event(
+                        &connection,
+                        &external_id,
+                        envelope.event.clone(),
+                        EventDelivery {
+                            cwd: Some(&saved_cwd),
+                            extension_state: None,
+                            correlation_id: Some(envelope.correlation_id.to_string()),
+                            revision: None,
+                            client_item_id: None,
+                        },
+                    )?;
+                    if (index + 1) % 128 == 0 {
+                        tokio::task::yield_now().await;
+                    }
                 }
             }
             let resumed = ctx_runtime

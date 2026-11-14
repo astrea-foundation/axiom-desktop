@@ -180,6 +180,11 @@ verification is distinct from the terminal authentication of each reply.
 
 ## Credit and funding
 
+The `axiomcli billing` command family adds exact credit status/usage, plans,
+card Checkout, saved cards, next-renewal plan changes and explicitly consented
+automatic top-up. See [billing commands and behavior](billing.md#cli-and-tui).
+The TUI shows weekly and purchased balances separately for enrolled accounts.
+
 Use `/login` for native interactive sign-in before managing credit. An
 `AXIOM_API_KEY` automation credential does not authorize billing operations.
 `/balance` and `/topup` open the credit screen: **R** refreshes, **G** opens gift
@@ -215,6 +220,33 @@ still appended. The file is not persisted in session journals. Resuming uses
 the prompt supplied to that launch; Desktop's product prompt cannot be replaced
 through this option.
 
+## Generation recovery
+
+A temporary transport failure can restart only the current model request, up to
+twice per user turn, after roughly one and three seconds plus jitter. Completed
+tool actions and verified history stay outside the retry loop. Each successor
+has a fresh request identity and performs normal attestation and E2EE again.
+The backend must confirm a terminal failure and reconcile or waive its charge
+before authorizing a successor. An unresolved execution, invalid response proof,
+insufficient balance, invalid request or user cancellation cannot trigger a new
+automatic generation. Providers without this recovery contract retain their
+explicit Retry path; an ambiguous AstreaAI/pool exchange is never replayed.
+
+Interrupted output remains available in the local timeline, unverified and
+separate from the replacement. It is excluded from later model input and the
+successful answer's combined Copy action. Desktop offers Retry after a failed
+reply; the TUI displays the partial attempt separately. Stop cancels pending
+backoff as well as the active request. Resuming the app never dispatches a saved
+retry timer. Checkpoint-based restore also keeps interrupted display text out of
+the next model request while retaining the last committed history and tool work.
+
+A verified text answer that ends at its output limit continues automatically
+once, within the usual context, time and billing limits. It preserves earlier
+tool outcomes. Desktop offers Continue after a further output limit. Compaction
+and title generation do not use this continuation or restart policy. Progressing
+reasoning remains model activity; response authentication still requires the
+terminal proof.
+
 ## Saved sessions and plans
 
 ```sh
@@ -232,7 +264,11 @@ axiomcli plans --cwd /absolute/path/to/project list
 The implemented session subcommands are list, show, export, rename, archive and
 unarchive. Interactive deletion uses `/delete`; ACP uses preview/confirm.
 There is no `sessions prune` command. Export supports omitting prompts/tool
-output and a bounded `--max-items` count. Local recovery never replays interrupted
+output and a bounded `--max-items` count. Omission removes associated metadata,
+including tool images, diffs and arguments, prompt attachment summaries, and
+mixed summaries/notices. Prompt omission also removes generated titles. Exports
+apply credential redaction; the local authoritative conversation retains exact
+content. Local recovery never replays interrupted
 tool side effects. The TUI warns about interrupted operations and recovery
 problems, not ordinary file edits. Recorded edits remain in the task history;
 resume neither adds nor displays the legacy workspace-change summary warning.

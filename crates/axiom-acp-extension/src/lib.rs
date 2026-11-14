@@ -12,6 +12,8 @@ pub use axiom_inference::RequestUsage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+mod credit_billing;
+pub use credit_billing::*;
 
 pub const PROTOCOL_VERSION: &str = "0.2";
 const PROTOCOL_FAMILY: &str = "0";
@@ -69,6 +71,9 @@ pub struct FeatureVersions {
     pub desktop_chat: u16,
     pub desktop_agent: u16,
     pub desktop_mcp: u16,
+    /// Account-bound encrypted local drafts and outbox data. Version 2 adds
+    /// transactional, omission-tolerant legacy browser import.
+    pub local_payload: u16,
     pub thread_catalog: u16,
     pub timeline: u16,
     pub model_catalog: u16,
@@ -81,11 +86,17 @@ pub struct FeatureVersions {
     pub web_consent: u16,
     /// Version 2 exposes one image tool automatically for vision models.
     pub image_generation: u16,
+    /// Metadata-only image presentation with account-scoped on-demand reads.
+    /// Version 2 adds conversation-local image ID resolution.
+    pub image_resources: u16,
     pub steering: u16,
     pub message_revision: u16,
     pub attachments: u16,
     pub compaction: u16,
+    /// Version 2 adds display-only tool-call drafting activity.
     pub activity: u16,
+    /// Explicit application command invocation; prompt text stays literal.
+    pub command_invocation: u16,
 }
 
 impl FeatureVersions {
@@ -94,23 +105,26 @@ impl FeatureVersions {
         Self {
             desktop_chat: 1,
             desktop_agent: 1,
-            desktop_mcp: 1,
+            desktop_mcp: 2,
+            local_payload: 2,
             thread_catalog: 1,
             timeline: 2,
             model_catalog: 1,
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 5,
+            billing: 7,
             usage: 1,
             security_evidence: 4,
             web_consent: 1,
             image_generation: 4,
+            image_resources: 2,
             steering: 1,
             message_revision: 1,
             attachments: 2,
             compaction: 1,
-            activity: 1,
+            activity: 2,
+            command_invocation: 1,
         }
     }
 }
@@ -135,6 +149,70 @@ pub struct DesktopBootstrapResponse {
     /// thinking level is `medium`; afterward these are the last-used values.
     pub new_thread_settings: ProfilePreferences,
 }
+
+/// Native-only local persistence. The renderer never receives encryption keys.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[request(method = "_axiom/desktop/local-payload", response = LocalPayloadResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalPayloadRequest {
+    pub account_id: String,
+    pub id: String,
+    pub action: LocalPayloadAction,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LocalPayloadAction {
+    Get,
+    Put {
+        value: serde_json::Value,
+    },
+    /// Normalize and archive legacy media; create only a missing destination.
+    /// The response value is the normalized source, even if the ID was occupied.
+    ImportLegacy {
+        value: serde_json::Value,
+        /// Normalize/archive without creating the destination (composer merge).
+        #[serde(default)]
+        preview: bool,
+    },
+    Remove,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, JsonRpcResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalPayloadResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+    /// Media omitted during an explicit legacy import; authored text is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_media: Option<usize>,
+}
+
+impl std::fmt::Debug for LocalPayloadRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPayloadRequest")
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for LocalPayloadResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPayloadResponse")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Application controls selected explicitly by the client. Never infer this
+/// request from ordinary pasted or submitted prompt text.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/session/command", response = SessionCommandResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionCommandRequest {
+    pub session_id: String,
+    /// A slash command selected intentionally, such as `/thinking high`.
+    pub command: String,
+}
+
+pub type SessionCommandResponse = agent_client_protocol::schema::v1::PromptResponse;
 
 /// Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`
 /// namespace when submitting a user message.
@@ -206,11 +284,46 @@ pub struct ConfigureDesktopAgentResponse {
     pub agent: DesktopAgentSettings,
 }
 
-/// Local stdio configuration. Environment values are write-only secrets.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthentication {
+    #[default]
+    None,
+    Bearer,
+    Oauth,
+}
+
+/// Public remote connection identity. Secrets never appear in snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpRemoteConnection {
+    pub url: String,
+    #[serde(default)]
+    pub auth: McpAuthentication,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_metadata_url: Option<String>,
+}
+
+/// Connection provenance captured by the native client at call time.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolSource {
+    pub server: String,
+    /// None identifies a local process, never an attestation claim.
+    pub destination: Option<String>,
+}
+
+/// Missing remote configuration preserves existing local stdio connections.
+/// Environment values and bearer tokens are write-only secrets.
 #[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopMcpServerInput {
     pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -218,16 +331,24 @@ pub struct DesktopMcpServerInput {
     /// None preserves existing credentials; an empty map clears them.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub remote: Option<McpRemoteConnection>,
+    /// None preserves the saved token; an empty string clears it.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
 
 impl std::fmt::Debug for DesktopMcpServerInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopMcpServerInput")
             .field("name", &self.name)
+            .field("display_name", &self.display_name)
             .field("command", &self.command)
             .field("args", &self.args)
             .field("enabled", &self.enabled)
             .field("has_environment", &self.env.is_some())
+            .field("has_remote", &self.remote.is_some())
+            .field("has_bearer_token", &self.bearer_token.is_some())
             .finish()
     }
 }
@@ -236,9 +357,12 @@ impl std::fmt::Debug for DesktopMcpServerInput {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DesktopMcpAction {
     List,
-    Save { server: DesktopMcpServerInput },
+    Save { server: Box<DesktopMcpServerInput> },
     Delete { name: String },
     Test { name: String },
+    Connect { name: String },
+    CancelConnect { name: String },
+    Disconnect { name: String },
     Select { tools: Vec<String> },
     Import { servers: Vec<DesktopMcpServerInput> },
 }
@@ -266,8 +390,12 @@ pub struct DesktopMcpTool {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopMcpServer {
     pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub command: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub remote: Option<McpRemoteConnection>,
     pub enabled: bool,
     pub environment_keys: Vec<String>,
     pub credential_id: Option<String>,
@@ -279,6 +407,8 @@ pub struct DesktopMcpServer {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopMcpResponse {
+    #[serde(default)]
+    pub remote_supported: bool,
     pub revision: u64,
     pub servers: Vec<DesktopMcpServer>,
     pub selected_tools: Vec<String>,
@@ -610,6 +740,42 @@ pub struct AccountStatus {
     pub session: Option<NativeSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Current native preparation work; never inferred from an error string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_phase: Option<AccountPreparationPhase>,
+    /// Local storage work must finish before this account becomes usable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_migration: Option<StorageMigrationProgress>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountPreparationPhase {
+    CheckingSignIn,
+    OpeningChats,
+    DecryptingChats,
+    SwitchingAccount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageMigrationProgress {
+    pub phase: StorageMigrationPhase,
+    /// Counts describe this phase only; omitted for indivisible database work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageMigrationPhase {
+    Encrypting,
+    MovingMedia,
+    Checking,
+    Finalizing,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -821,12 +987,21 @@ pub enum ActivityEvent {
     Compaction {
         phase: CompactionPhase,
         detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<CompactionProgress>,
     },
     CollectionsChanged {
         state: CollectionState,
     },
     ProfilePreferencesChanged {
         preferences: ProfilePreferences,
+    },
+    /// The model began emitting tool-call arguments in this turn. Display-only:
+    /// no name or arguments are exposed, and the call itself arrives later as
+    /// an ordinary validated ACP tool call.
+    ToolCallDrafting {
+        #[serde(rename = "turnId")]
+        turn_id: String,
     },
 }
 
@@ -839,6 +1014,17 @@ pub enum CompactionPhase {
     Completed,
     Cancelled,
     Failed,
+}
+
+/// Live work counters, independent of billable request usage. Streamed text and
+/// reasoning are estimates until the provider supplies an output-token count.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionProgress {
+    pub completed: u64,
+    pub total: u64,
+    pub generated_tokens: u64,
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, JsonRpcNotification)]
@@ -958,6 +1144,47 @@ pub struct RegenerateImageRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RegenerateImageResponse {
     pub call_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/read", response = ReadImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadImageRequest {
+    pub thread_id: String,
+    pub call_id: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadImageResponse {
+    pub data: String,
+    pub mime_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub sha256: String,
+}
+
+/// Read one conversation-local image by the exact `img_…` ID that image tools
+/// accept, so a client can show what `view_image` inspected or which references
+/// an image request used. IDs never resolve across threads or accounts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/image/resolve", response = ResolveImageResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveImageRequest {
+    pub thread_id: String,
+    pub image_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveImageResponse {
+    pub image_id: String,
+    /// `uploaded`, `generated` or `edited`.
+    pub origin: String,
+    pub name: String,
+    pub data: String,
+    pub mime_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
@@ -1421,6 +1648,8 @@ pub struct SteerTurnResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolSchema {
+    pub local_payload_request: LocalPayloadRequest,
+    pub local_payload_response: LocalPayloadResponse,
     pub desktop_mcp_request: DesktopMcpRequest,
     pub desktop_mcp_response: DesktopMcpResponse,
     pub configure_desktop_agent_request: ConfigureDesktopAgentRequest,
@@ -1429,10 +1658,15 @@ pub struct ProtocolSchema {
     pub desktop_bootstrap_request: DesktopBootstrapRequest,
     pub desktop_bootstrap_response: DesktopBootstrapResponse,
     pub prompt_metadata: PromptMetadata,
+    pub session_command_request: SessionCommandRequest,
     pub get_attachments_request: GetAttachmentsRequest,
     pub get_attachments_response: GetAttachmentsResponse,
     pub regenerate_image_request: RegenerateImageRequest,
     pub regenerate_image_response: RegenerateImageResponse,
+    pub read_image_request: ReadImageRequest,
+    pub read_image_response: ReadImageResponse,
+    pub resolve_image_request: ResolveImageRequest,
+    pub resolve_image_response: ResolveImageResponse,
     pub delivery_metadata: DeliveryMetadata,
     pub list_threads_request: ListThreadsRequest,
     pub list_threads_response: ListThreadsResponse,
@@ -1467,6 +1701,8 @@ pub struct ProtocolSchema {
     pub logout_request: LogoutRequest,
     pub billing_status_request: BillingStatusRequest,
     pub billing_status_response: BillingStatusResponse,
+    pub credit_billing_request: CreditBillingRequest,
+    pub credit_billing_response: CreditBillingResponse,
     pub crypto_options_request: CryptoOptionsRequest,
     pub crypto_options_response: CryptoOptionsResponse,
     pub create_crypto_payment_request: CreateCryptoPaymentRequest,

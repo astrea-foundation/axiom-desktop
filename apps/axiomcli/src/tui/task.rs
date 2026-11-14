@@ -113,6 +113,10 @@ impl ToolView {
 
 #[derive(Clone, Debug)]
 pub(super) enum TaskTimelineItem {
+    InterruptedResponse {
+        text: String,
+        markdown: Box<RefCell<StreamingMarkdownRenderer>>,
+    },
     Response {
         text: String,
         markdown: Box<RefCell<StreamingMarkdownRenderer>>,
@@ -130,6 +134,9 @@ pub(super) struct TaskRunView {
     pub(super) activity: TaskActivity,
     pub(super) reasoning: String,
     pub(super) response: String,
+    pub(super) request_id: Option<String>,
+    pub(super) request_response_start: usize,
+    pub(super) request_reasoning_start: usize,
     pub(super) tools: Vec<ToolView>,
     pub(super) timeline: Vec<TaskTimelineItem>,
     pub(super) tasks: Vec<TaskItem>,
@@ -149,6 +156,9 @@ impl TaskRunView {
             activity: TaskActivity::Starting,
             reasoning: String::new(),
             response: String::new(),
+            request_id: None,
+            request_response_start: 0,
+            request_reasoning_start: 0,
             tools: Vec::new(),
             timeline: Vec::new(),
             tasks: Vec::new(),

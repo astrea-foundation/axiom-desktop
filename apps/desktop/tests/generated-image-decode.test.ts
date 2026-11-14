@@ -27,6 +27,15 @@ test("cancelled decode and unsupported geometry produce no image", async () => {
   const work = decodeGeneratedPng(payload().toString("base64"), controller.signal);
   controller.abort();
   assert.equal(await work, null);
-  assert.equal(await decodeGeneratedPng(payload(2048, 2048, 1024).toString("base64")), null);
+  assert.equal(await decodeGeneratedPng(payload(2080, 2048, 1024).toString("base64")), null);
   assert.equal(await decodeGeneratedPng("invalid"), null);
+});
+
+
+test("2K PNGs above the former byte limit keep their original bytes", async () => {
+  const source = payload(2048, 2048, 11 * 1024 * 1024);
+  const decoded = await decodeGeneratedPng(source.toString("base64"));
+  assert.ok(decoded);
+  assert.deepEqual([decoded.width, decoded.height], [2048, 2048]);
+  assert.deepEqual(Buffer.from(await decoded.blob.arrayBuffer()), source);
 });

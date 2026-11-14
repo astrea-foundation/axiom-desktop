@@ -1,7 +1,56 @@
 # Release acceptance
 
-The 0.1.21 release audit updates rusqlite to 0.41.1 with libsqlite3-sys 0.39.1
-(SQLite 3.54.1), addressing RUSTSEC-2026-0459 in the bundled database engine.
+The 0.1.21 installed-image proof explicitly selected AstreaAI/Qwen and did not
+establish the normal fresh-profile default or NEAR catalog availability. During
+production catalog discovery failures, NEAR offerings can disappear and the
+runtime's existing preference order selects Tinfoil DeepSeek. Future signed
+qualification must require the exact abliterated NEAR offering and Uncensored
+tag, verify the actual Desktop/CLI default without a model environment override,
+then separately select the image-test model. Until this live gate passes, do not
+claim restored NEAR availability from the 0.1.21 image receipts.
+
+Encrypted storage pins `rusqlite =0.42.0` with `libsqlite3-sys 0.40.0` and
+`sqlcipher-src =420.0.0+sqlcipher-4.20.0-sqlite-3.54.1-libtomcrypt-1.18.2`.
+This supplies SQLCipher 4.20.0 on SQLite 3.54.1 with vendored static OpenSSL 4.0.3
+from registry `openssl-src =400.0.2+4.0.3`. The verified `openssl-sys 0.9.118`
+package has a manifest-only patch selecting that source; its bindings and build
+scripts are unchanged. The upstream vendoring range still selects unsupported
+OpenSSL 3.6.3, and no published source crate contains current OpenSSL 3.5.9 LTS.
+See the [exact patch and source provenance](../vendor/openssl-sys-0.9.118/AXIOM-PROVENANCE.md).
+OpenSSL 4.0 is [supported through May 14, 2027](https://openssl-library.org/source/);
+review bundled C security updates independently of Rust advisory results.
+The earlier `libsqlite3-sys 0.39.1` normal SQLite bundle was patched, but its
+SQLCipher bundle still used vulnerable SQLite 3.53.4; see
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html).
+The native opener rejects linked SQLite versions below 3.54.1 before opening
+any database/WAL path. A regression test checks the actual linked SQLite,
+SQLCipher and `cipher_provider_version` (`OpenSSL 4.0.3 29 Sep 2026`).
+No advisory exception or weaker WAL validation is used for this dependency fix.
+
+The [rusqlite 0.42.0 release](https://github.com/rusqlite/rusqlite/releases/tag/v0.42.0)
+and `libsqlite3-sys` crate originate at upstream commit
+`812d63147ebea21c9c3de4db9e556f2e4e9f8161`; the SQLCipher source package originates
+at [commit 617c0cc9673cadddd1beefda6db47aa732d5a7ab](https://github.com/LucaCappelletti94/sqlcipher-src/tree/617c0cc9673cadddd1beefda6db47aa732d5a7ab).
+`Cargo.lock` records the verified registry archive SHA-256 values:
+
+| Crate | Archive SHA-256 |
+| --- | --- |
+| rusqlite 0.42.0 | `a4edff0039f148731aee2fd80f76dbfeb12d204ab3d1c544838d34e02151049b` |
+| libsqlite3-sys 0.40.0 | `b06e69070b7e12262b0cd90832f0a7396f142a2b330181255562decf9f0c6215` |
+| sqlcipher-src 420.0.0 | `fd6b5280ed2593d07b2816ec531821c15c306903bcca224716f1fbcc2bbfedfe` |
+| openssl-src 400.0.2+4.0.3 | `d2093956673b8dbda85c87fa4fb78e70698ce6c5978a2837d1613f661d3bef76` |
+
+The original `openssl-sys 0.9.118` archive SHA-256 is
+`19c413d6ec9ebaf5e1c829d355cb3e9f783778d700f135be0921d52fce3c60ae`;
+the workspace resolves the documented local manifest patch instead of the
+unmodified registry package.
+
+The packaged `sqlcipher.c` amalgamation SHA-256 is
+`8cd2347d18886fee4651153fabeeeffb7cec008700987dab1c00261febc4220f`,
+matching its upstream `sqlcipher/SHA256SUMS`. The official
+[SQLCipher changelog](https://github.com/sqlcipher/sqlcipher/blob/v4.20.0/CHANGELOG.md)
+identifies the SQLite 3.54.1 baseline.
+
 The MCP SDK moves to rmcp 3.9.0, covering RUSTSEC-2026-0457, RUSTSEC-2026-0461
 and RUSTSEC-2026-0462. The dependency audit remains required without new advisory
 exceptions. Existing conversation storage and MCP behavior must pass native
@@ -176,9 +225,19 @@ requirements. See [the pool guide](inference-pool.md).
 
 ## Automated checks
 
+Subscription/credit controls use `billing@7`; new server enrollment and automatic
+charges default off. Local fixtures cover ledger allocations, reset boundaries,
+native account changes, explicit consent, payment recovery and admin job retries.
+Before release, qualify actual sandbox Checkout, saved-card/off-session/SCA,
+monthly renewal/refund/webhook flows and the installed client. No live deployment
+or signed-installer qualification is implied by these source checks. See
+[billing behavior](billing.md).
+
 Run the [development checks](development.md#checks), including Rust formatting,
 strict Clippy, functional tests, dependency policy, generated ACP contract checks,
-TypeScript checks, Desktop unit/browser tests and the production build. Use the
+TypeScript checks and Desktop unit/browser tests. Validate installer changes
+through the explicit [unsigned candidate workflow](releasing.md#development-previews)
+before production tags; retain its source SHA and candidate receipt. Use the
 [release procedure](releasing.md#ci-baseline) to reuse successful CI for the exact
 candidate instead of repeating unrelated jobs. The live release gate uses the
 registered provider's attested E2EE protocol; it does not replace interactive QA.
@@ -188,6 +247,48 @@ rejects runtime imports of workspace TypeScript packages. Native installer
 qualification must launch the installed app and reach its first window; a
 successful renderer build or source-mode launch does not establish that the
 packaged main process can start.
+
+## Encrypted local storage qualification
+
+The [encrypted local store](local-storage.md) uses SQLCipher and encrypted
+external assets at schema 7. Synthetic native fixtures cover plaintext stores
+with committed WAL data, exact message/checkpoint identity, interrupted format
+replacement, authenticated assets, ownership/cleanup, missing or incorrect keys,
+portable backups and interrupted restore activation. Desktop fixtures cover
+account-scoped browser import, acknowledgement before deletion and recovered
+preparations that require review. These checks never open real customer stores
+or real credential entries.
+The sign-in draft regression delays both native reads and adoption writes;
+model-picker readiness alone does not establish acknowledged draft hydration.
+Migration-progress fixtures cover real legacy database/media conversion with
+ordered phases and exact phase counters, no migration indicator for fresh/current
+stores, revision fencing against late updates, and a dedicated Desktop screen
+during browser completion or signed-in restoration. Chromium holds migration
+open, checks indeterminate database work and counted media work, failure/retry,
+draft restoration without sending, keyboard focus and a small dark window.
+Native activation runs outside the ACP executor; signed installer/OS-keystore
+qualification must still verify visible progress during the actual upgrade.
+
+Keep the SQLite security baseline in the SQLCipher-enabled build at 3.54.1 or
+newer. The regular `libsqlite3-sys` bundled version alone does not establish
+this: its SQLCipher source can select a different SQLite baseline. Retain the
+runtime version regression and dependency audit without an exception for
+RUSTSEC-2026-0459.
+The locked Hickory DNS crates use 0.26.2 for the current malformed-input fixes.
+The source package's permissive SQLite/LibTomCrypt licenses have a narrow
+`sqlcipher-src =420.0.0` allowance; the global license policy is unchanged.
+
+Before release, qualify native Windows and Linux builds with their actual
+credential stores, plus signed macOS Keychain approval persistence. Verify a
+data-preserving upgrade with existing attachments, generated originals/previews,
+drafts and pending/failed queue entries; locked or missing credentials must
+preserve the encrypted files. Check normal close/quit and account changes while
+draft writes are pending, failure recovery without plaintext fallback, portable
+restore into an empty profile and key-only recovery without changing chats.
+Keep another older native process open during migration to verify the maintenance
+fence. Test interrupted activation and OS restart with the complete database and
+asset directory. Local synthetic tests do not establish OS-keystore UX,
+power-loss durability or signed installer acceptance on another OS.
 
 ## Interactive qualification
 
@@ -209,24 +310,29 @@ generated-image viewer. Installed app checks, cross-platform release validation
 and broader load tests remain release requirements; source-mode qualification
 does not replace them.
 
-Generated-image presentation checks also cover one-time binary IPC payloads,
+Generated-image presentation checks cover metadata-only initial timelines,
+viewport-triggered reads, explicit retry, stable placeholder geometry, bounded
+read concurrency and cache eviction, delayed account/runtime/deletion responses,
+and opaque per-window resource handles. Compatibility checks cover binary IPC payloads,
 stable Blob URLs through streaming updates, account/runtime resource revocation,
 late bootstrap recovery, 1536-pixel viewing while typing, and cancellable inline
 decoding that yields to UI tasks. These local transport checks do not change
 provider attestation, authenticated completion, original image bytes or size caps.
 
 Chat recovery regressions cover missing attachment payloads, damaged image
-metadata, unavailable historical image views, interrupted tool replies, bounded
-image-reference expiration, incompatible historical files after a model switch,
+metadata, unavailable historical image views, interrupted tool replies,
+missing image references, incompatible historical files after a model switch,
 and failed automatic summarization before a new prompt. Client completion checks
 also delay an older running snapshot across send, edit and image regeneration,
 then require a fresh ready snapshot. These checks preserve normal provider
 verification and never replay an interrupted image job or local tool action.
 
 Before releasing cross-provider AstreaAI image support, qualify verified
-1536-square generation and ordered five-reference editing from vision-capable
-Tinfoil and NEAR chats. Check that image provenance and regeneration retain the
-originating chat model while image evidence and settled usage identify AstreaAI.
+1536-square generation and ordered five-reference editing from tool-capable
+Tinfoil and NEAR chats, including generation from models without vision. Check
+that only vision-capable chat models can inspect images or upload new images.
+Check that image provenance and regeneration retain the originating chat model
+while image evidence and settled usage identify AstreaAI.
 Hosted browser support also requires a newly measured gateway whose shared
 client pin includes the same routing fix; updating the browser alone does not
 update the image-provider implementation inside the gateway.
@@ -256,21 +362,42 @@ the physical executable; both must discover the same pinned local configuration.
 Optional `view_image` inspection has native regression coverage for uploaded,
 generated and edited images, generation followed by viewing before the final
 answer, tool-batch ordering, persisted restoration, malformed/foreign references,
-decode failures, cancellation, model/service gating and the ten-image context
-limit. Vision-copy checks include transparent images and generated PNGs larger
+decode failures, cancellation, model/service gating and successful views after
+ten uploads, including retaining more than ten images in a conversation.
+Vision-copy checks include transparent images and generated PNGs larger
 than the upload byte limit. The October 27 live record predates this viewing
 tool; live model selection of the new tool remains a separate qualification.
 
 Synthetic native context checks cover model-specific image allowances after
 restore and in the token guard, new views added to the last reported context count,
-new uploads that cross AstreaAI's eight-image context cap, view refusals at that
-cap, model switches from larger image histories, byte-triggered compaction below the
-token threshold, attachment order and Unicode text across bounded summary stages,
+ten uploads in each of two turns, 110 views across normal token-triggered
+compaction, retention beyond 256 images and 64 MiB without expiring older
+references, model switches from larger image histories,
+retaining encoded media below the token threshold regardless of payload size,
+provider report precedence over image estimates including reload, attachment
+order and Unicode text across bounded summary stages,
 encoded attachment and message bounds including summary overhead, and reasoning
 output space before the visible summary. Existing failure/cancellation checks
 retain original context until all summary stages succeed. These fixtures do not
 establish live-provider or packaged Desktop acceptance of the context-accounting
 changes.
+
+Single-request compaction fixtures cover a 1M-token model at its 85% threshold,
+fourteen interleaved image messages, historical system notes, and reasoning and
+refusal fields on a model without reasoning replay. A fitting history containing
+110 images uses one summary request. Fallback fixtures verify splitting a
+token-limited interleaved history into two requests, reserving summary output
+space, and splitting encoded payloads at the provider request byte ceiling.
+Request planning has no aggregate image-count cap; byte bounds do not trigger
+automatic compaction.
+
+Compaction progress checks cover cumulative streamed summary/reasoning estimates,
+replacement with provider token counts, pass totals, spinner rendering and cleanup
+on completion, failure and cancellation. An unresponsive provider cannot prevent
+local cancellation. Store regressions cover repeated observer opens during live
+turns and manual compaction, conflicting execution claims, and recovery only after
+a subprocess owner dies. Usage-meter checks scramble random request IDs and late
+deliveries to verify selection by request timestamps.
 
 Image-progress checks cover authenticated request/sequence binding, rounded
 sampling percentages, truncation and forged-update rejection, queue cancellation,
@@ -287,7 +414,7 @@ require live qualification; local encrypted fixtures do not establish it.
 | Provider security | Current catalog, fresh local attestation, authenticated encrypted completion, stream cancellation/truncation, proof expiry, and explicit degraded-TEE consent/reset |
 | Conversation state | Draft/queue/history retention, attachments, edit/regenerate, compaction, interrupted-turn recovery, restart and account isolation |
 | Tools | Approval, denial, cancellation and workspace boundaries on each supported OS; Web consent and search's distinct privacy boundary |
-| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, gift-code masking/redemption, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
+| Account credit | Address provisioning, deposit progress and USD valuation, posted usage, visible Desktop gift-code entry/redemption, masked TUI gift-code entry, trial-capacity retry/paid continuation, six-hour invoice timers, five-active-invoice enforcement, server cancellation and account-switch cleanup; coordinate real settlement/reorg checks with platform maintainers |
 | Automatic updates | Signed A-to-B upgrades from idle and busy Desktop/TUI; same-terminal workspace/session restoration, GUI reopen, matching CLI version and preserved drafts/history |
 | Update failure paths | Denied OS authorization, cancellation, locked-process waits, interruption/repair, corrupt or wrong-target artifacts, rollback rejection and duplicate updater attempts; staging cleanup, including Windows helpers still in use and abandoned downloads |
 | Publication | Matching source tag, signed inventory, complete installer matrix, verified mirrors, feed activation and safe publication retries |
@@ -310,6 +437,53 @@ compatible platform relay before release, including a reasoning-only response
 that ends at the output-token limit. Keep missing receipts, altered ciphertext,
 expired evidence and oversized key sets as rejecting cases. A successful
 attestation or posted usage charge does not establish authenticated completion.
+
+For `near-tdx-nvidia-gateway-v2`, qualify the matching backend and native client
+together. Require successful local verification of all supplied same-key worker
+environments and the gateway, visible manifests for each, and an authenticated
+encrypted completion. Confirm that a changed same-key environment forces fresh
+establishment and that legacy v1 retains its single-worker rule. Keep this release
+qualification open until the matching relay is deployed and completion is tested;
+read-only attestation checks alone do not close it.
+
+## Headless model canary
+
+The `axiom-secure-client` example `model_canary` sends one short synthetic request
+to every discovered chat model. It requires an explicit inference automation
+credential in `AXIOM_API_KEY`; it never opens the OS credential store, refreshes a
+Desktop sign-in, or opens conversation storage. Real provider usage is charged.
+
+Run `cargo run -p axiom-secure-client --example model_canary` with the credential
+already configured. `AXIOM_RELAY_URL` defaults to `https://api.axiom.stream`.
+`AXIOM_CANARY_LIST_ONLY=1` lists the catalog without inference;
+`AXIOM_CANARY_MODEL` or `AXIOM_CANARY_PROVIDER` selects a subset. Installed
+AstreaAI configuration must retain its original public trust pins and frozen
+verifier; the explicit development config override is also supported.
+
+The canary verifies fresh provider evidence under the signed production trust
+policy, requests up to 512 output tokens without tools, and requires the word
+`OK`, exactly one verified-response event and a successful authenticated stream
+return. NEAR's provider finish event remains provisional until its later signed
+receipt and transport completion. A failed or ambiguous request is recorded and
+is not automatically replayed. Results are JSON lines containing public model,
+protocol, timing, usage and synthetic response fields, never credentials.
+
+For an isolated matching development relay, compile with `--features test-fixture`
+and explicitly set `AXIOM_CANARY_LOCAL_RELAY=1` with an HTTP `127.0.0.1` relay URL
+and its separate test account key. Only the account relay uses the loopback
+exception; real provider attestation, E2EE and response verification still apply.
+
+Keep the AstreaAI release gate open until the installed production trust bundle
+completes account-authorized preparation and an authenticated synthetic reply.
+Worker attestation alone does not close this gate while account metadata or
+reservation requests are rejected.
+
+Qualify ordinary chat reservations against the existing 36 MiB account API limit
+as well as the expanded protocol ceiling. Chat, vision and image requests must
+reserve a bounded budget for their actual escaped input and signed envelope;
+a larger protocol maximum must not inflate every small reservation. Include
+escaped text and real signed/encrypted envelope checks, and reject inputs whose
+envelope budget exceeds the protocol ceiling before account preparation.
 
 ## Dependency maintenance
 
@@ -339,6 +513,16 @@ private keys or real conversation data. Publish a concise qualification summary
 with the release; retain raw operational captures privately.
 
 ## Windows setup and Store acceptance
+
+Factory reset requires Windows VM qualification before release: start with
+synthetic chats in multiple accounts, persisted Desktop/CLI settings, a native
+refresh token and an MCP credential. Confirm from signed-out/disconnected
+Settings, verify cleanup starts after Desktop exits, inspect both application
+folders and Credential Manager, and sign in again to an empty profile. Also
+exercise a locked/denied vault, another active CLI, and a file deletion failure;
+incomplete resets must reopen with a visible error. Native/controller and browser
+tests cover isolated files, mock credentials, exclusion, confirmation and retry;
+these do not replace Windows vault and installer qualification.
 
 The 0.1.12 offline package and website Setup were published after signed Windows
 installation qualification. The live older-to-current first-launch check then
@@ -422,3 +606,80 @@ cancel-and-restart flow, the saved sent-transfer hint, continued tracking beyond
 the quote deadline and small-window layout
 on Windows and macOS previews. Keep Desktop and its bundled `billing@4` sidecar
 together. Installer publishing remains separate release work.
+
+Before releasing the schema-6 conversation store, qualify execution ownership on
+Windows as well as macOS: keep one client running while another opens the store,
+reject concurrent prompt/manual compaction, kill the owner, and recover from the
+already-open observer. Run the canonical-history and export-omission regressions
+against migrated account data. No release build or version change is required
+for these development checks.
+
+Windows command containment requires native VM qualification before release.
+Run `cargo test -p axiomcli --lib windows_command_jobs_own_descendants` on the
+Windows development checkout and verify leader exit, timeout, cancellation and
+dropped-future cleanup while descendants hold output pipes. Confirm the nested
+command jobs coexist with the existing process-wide exit-cleanup job. Portable
+output-reader and POSIX process-tree tests do not qualify Windows behavior.
+If a Windows VM is unavailable, use the manual `ci.yml` portability workflow on
+a published non-production feature branch containing the exact reviewed change:
+`gh workflow run ci.yml --ref <feature-branch> -f target=windows-x64 -f extended=false`.
+Record the run's `headSha` and successful Windows portability job against the
+reviewed source revision. This workflow runs checks; release workflows and tags
+are not part of command-containment qualification.
+
+The managed development Rust verifier replacement passed 49 signed synthetic
+Python/Rust equivalence cases, hostile-input/clock/canonical-binding checks,
+strict Clippy, the Python operator adapter/reference suite and an independently
+locked standalone build. Its unsigned Darwin ARM64 native sidecar passed clean
+environment self-test/rejection, native architecture, inventory and executable
+digest checks. Packaging fixtures cover native Windows ARM64 and the retained
+x64 fallback. Other platform binaries, measured worker/gateway images and live
+hardware/provider acceptance remain release qualification work; no installer,
+production deployment or signed trust-policy change was performed by this batch.
+
+The A31 trust-review follow-up adds seven signed timing cases to the 49-case
+corpus. NVIDIA claims and certificates are checked at post-I/O time; reusable
+evidence expires no later than the earliest certificate in either token chain.
+The unchanged Python reference remains the timing-equivalence oracle, with the
+stricter certificate-lifetime cap recorded explicitly. VMPL, signer, TCB and
+missing alias-complete negatives carry valid synthetic VCEK signatures; signature
+corruption and padding remain separate rejection cases. All named valid corpus
+cases are required to stay positive.
+
+## Remote MCP release acceptance
+
+Before publishing remote MCP support, qualify the native credential store and
+browser OAuth callback on macOS, Windows and Linux with real public and
+registered-client OAuth services. Verify refresh, cancellation, account switches,
+locked credential stores, sign-out and factory reset. Confirm the Remote
+connection form, MCP selection under Agent, destination-aware approvals/activity and
+privacy proof disclosures in each supported platform/theme. Local HTTP fixture
+and browser harness results do not establish live-service or Windows qualification.
+
+
+The 2048² development image profile needs fresh attested GPU qualification before
+release: new and reference-based 2K generation, five full-resolution references,
+peak memory and latency with the chat model resident, base/LoRA switching, and
+Desktop/browser save and restoration of PNGs above 10 MiB. Offline checks do not
+establish the larger profile fits the production GPU. Coordinate the worker,
+account grant/storage migration, gateway and client updates.
+
+## Generation recovery qualification
+
+The development recovery batch adds server-authorized successors for typed relay
+transport failures, a two-recovery per-turn client budget, preserved partial
+output, one verified output-limit continuation, and shared Desktop/web Retry and
+Continue controls. Gateway reattachment uses the original execution and a
+bounded enclave-memory replay buffer, with prefix/order/transcript/EOF checks.
+Unit checks cover cancellation during backoff, replay-prefix substitution,
+completed-tool preservation, concurrent credits, original credit denomination,
+CSRF, expiry and retry limits. Backend migration and matching shared artifacts
+must ship together; source validation does not qualify a measured deployment.
+
+Still required before a release: live staging interruption/reconnect checks with
+the measured gateway and each supported provider, billing reconciliation through
+a real provider failure, and Windows VM qualification. The local UTM CLI returned
+macOS automation permission error -1743 during this batch, so no Windows run was
+performed. Ambiguous direct/pool exchanges and invalid response authentication
+remain ineligible for automatic fresh inference; do not enable replay to work
+around a provider's missing recovery evidence.

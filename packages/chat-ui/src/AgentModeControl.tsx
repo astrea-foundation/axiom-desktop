@@ -1,5 +1,5 @@
 /** @jsxRuntime automatic */
-import { Bot, Check } from "lucide-react";
+import { Bot, Check, Globe2 } from "lucide-react";
 import { useRef } from "react";
 import { createPortal } from "react-dom";
 import type { ConfigureDesktopAgentRequest, DesktopMcpServer } from "@axiom/chat-core/viewTypes";
@@ -22,11 +22,14 @@ export function AgentModeControl({ options, open, onOpenChange }: {
   options: AgentControlOptions; open: boolean; onOpenChange(open: boolean): void;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
+  const count = options.selection.mcpTools?.length ?? 0;
+  const remote = options.mcpServers?.some(server => server.remote && server.tools.some(tool => options.selection.mcpTools?.includes(tool.name)));
+  const description = `${count} MCP ${count === 1 ? "tool" : "tools"} selected${remote ? ", including remote tools" : ""}`;
   return <>
-    <button ref={trigger} type="button" data-agent-toggle aria-label="Agent" aria-haspopup="dialog" aria-expanded={open} aria-pressed={options.selection.enabled || !!options.selection.mcpTools?.length}
+    <button ref={trigger} type="button" data-agent-toggle aria-label="Agent" aria-description={description} title={description} aria-haspopup="dialog" aria-expanded={open} aria-pressed={options.selection.enabled}
       onClick={() => onOpenChange(true)}
       className={"flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors " + (options.selection.enabled ? "bg-brand text-on-brand hover:bg-brand-hover dark:bg-[var(--color-cherry)] dark:text-on-accent dark:hover:bg-[var(--color-cherry)]" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]")}>
-      <Bot size={14} aria-hidden="true" />Agent{options.selection.mcpTools?.length ? <span className="text-[10px]">{options.selection.mcpTools.length}</span> : null}{options.selection.enabled ? <Check size={12} aria-hidden="true" /> : null}
+      <Bot size={14} aria-hidden="true" />Agent{options.selection.enabled ? <Check size={12} aria-hidden="true" /> : null}{remote ? <Globe2 size={12} aria-hidden="true" /> : null}{count ? <span className="text-[10px]">{count}</span> : null}
     </button>
     {open ? createPortal(<AgentSettingsDialog key={options.scope} options={options} onClose={() => {
       onOpenChange(false);

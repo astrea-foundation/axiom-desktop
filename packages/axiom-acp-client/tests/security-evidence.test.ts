@@ -15,6 +15,68 @@ function fixture(t: TestContext) {
   return client;
 }
 
+test("signed Chutes staging reports require hardware, release authorization, and explicit provenance scope", () => {
+  const evidence = securityEvidence();
+  Object.assign(evidence, { providerId: "chutes-preview", modelId: "chutes-preview:qwen3.8-27b",
+    attestationProtocol: "chutes-tdx-nvidia-release-v1", e2eeProtocol: "chutes-mlkem768-desktop-v1",
+    e2eeEncryptionVersion: 1, attestationGeneration: null });
+  evidence.checks = ["Intel TDX", "NVIDIA GPU", "Chutes encryption key and fresh challenge", "Repository release authorization"]
+    .map(name => ({ name, passed: true, detail: name === "Intel TDX" ? "UpToDate" : "verified" }));
+  evidence.providerClaims = [
+    { name: "release_authority_fingerprint", value: "ab".repeat(32) },
+    { name: "release_channel", value: "staging" },
+    { name: "execution_provenance", value: "Not independently established by the Chutes evidence; release authorization is a separate claim." },
+  ];
+  const report: VerifySecurityResponse = { status: { state: "verified" }, evidence };
+  assert.equal(publicSecurityEvidence(report, evidence.modelId)!.status.state, "verified");
+  const hosted = structuredClone(report);
+  hosted.evidence!.providerId = "chutes";
+  hosted.evidence!.modelId = "chutes:qwen3.8-27b";
+  assert.equal(publicSecurityEvidence(hosted, hosted.evidence!.modelId)!.providerId, "chutes");
+  for (const check of hosted.evidence!.checks) {
+    const changed = structuredClone(hosted);
+    changed.evidence!.checks.find(value => value.name === check.name)!.passed = false;
+    assert.throws(() => publicSecurityEvidence(changed, hosted.evidence!.modelId));
+  }
+  for (let i = 0; i < evidence.checks.length; i++) {
+    const changed = structuredClone(report); changed.evidence!.checks[i]!.passed = false;
+    assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+  }
+  const changed = structuredClone(report); changed.evidence!.providerClaims.pop();
+  assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+});
+
+test("the explicit Chutes preview report stays degraded and cannot hide hardware failures", () => {
+  const evidence = securityEvidence();
+  evidence.status.state = "degraded";
+  evidence.providerId = "chutes-preview";
+  evidence.modelId = "chutes-preview:qwen3.8-27b";
+  evidence.attestationProtocol = "chutes-hardware-development-v1";
+  evidence.e2eeProtocol = "chutes-mlkem768-desktop-v1";
+  evidence.e2eeEncryptionVersion = 1;
+  evidence.attestationGeneration = null;
+  evidence.checks = [
+    { name: "Intel TDX", detail: "UpToDate", passed: true },
+    { name: "NVIDIA GPU", detail: "verified", passed: true },
+    { name: "Chutes encryption key and fresh challenge", detail: "quote-bound", passed: true },
+    { name: "Application provenance", detail: "unqualified development preview", passed: false },
+  ];
+  const preview: VerifySecurityResponse = { status: { state: "degraded" }, evidence };
+  assert.equal(publicSecurityEvidence(preview, evidence.modelId)!.status.state, "degraded");
+  const changed = structuredClone(preview);
+  changed.status.state = "verified"; changed.evidence!.status.state = "verified";
+  assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+  for (const index of [0, 1, 2, 3]) {
+    const changed = structuredClone(preview);
+    changed.evidence!.checks[index]!.passed = !changed.evidence!.checks[index]!.passed;
+    assert.throws(() => publicSecurityEvidence(changed, evidence.modelId));
+  }
+  const outdated = structuredClone(preview);
+  outdated.evidence!.checks.push({ name: "Intel TDX", detail: "OutOfDate", passed: false });
+  assert.throws(() => publicSecurityEvidence(outdated, evidence.modelId));
+  assert.throws(() => publicSecurityEvidence(preview, "some-other-model"));
+});
+
 test("degraded reports retain OutOfDate and reject every other failed check", () => {
   const evidence = securityEvidence();
   evidence.status.state = "degraded";
@@ -32,6 +94,32 @@ test("degraded reports retain OutOfDate and reject every other failed check", ()
   intel.detail = "OutOfDate";
   evidence.checks.find((check) => check.name === "NVIDIA GPU")!.passed = false;
   assert.throws(() => publicSecurityEvidence(result, "test-model"), /incomplete|mismatched/);
+});
+
+test("NEAR gateway and replica OutOfDate consent stays visible without permitting other failures", () => {
+  for (const protocol of ["near-tdx-nvidia-gateway-v1", "near-tdx-nvidia-gateway-v2"]) {
+    for (const name of ["Intel TDX", "NEAR gateway (Intel TDX)", "Worker 2 (Intel TDX)", "Worker 16 (Intel TDX)"]) {
+      const evidence = securityEvidence();
+      evidence.status.state = "degraded";
+      evidence.providerId = "near";
+      evidence.attestationProtocol = protocol;
+      evidence.e2eeProtocol = "near-v3";
+      evidence.checks.push({ name, detail: "OutOfDate", passed: false });
+      const result: VerifySecurityResponse = { status: { state: "degraded" }, evidence };
+      if (protocol === "near-tdx-nvidia-gateway-v1" && name.startsWith("Worker")) {
+        assert.throws(() => publicSecurityEvidence(result, "test-model"));
+        continue;
+      }
+      assert.equal(publicSecurityEvidence(result, "test-model")!.status.state, "degraded");
+      for (const detail of ["Revoked", "OutOfDateConfigurationNeeded", "unknown"]) {
+        evidence.checks.at(-1)!.detail = detail;
+        assert.throws(() => publicSecurityEvidence(result, "test-model"));
+      }
+      evidence.checks.at(-1)!.detail = "OutOfDate";
+      evidence.checks.push({ name: "Worker 2 NVIDIA GPU", detail: "failed", passed: false });
+      assert.throws(() => publicSecurityEvidence(result, "test-model"));
+    }
+  }
 });
 
 test("consent requires the selected model and is sent only by an explicit call", async (t) => {
@@ -244,6 +332,86 @@ test("composition warms once while pending and reuses the result until expiry", 
   assert.notEqual(client.prewarmSecurity("test-model"), first);
   await client.prewarmSecurity("test-model");
   assert.equal(client.getState().sessions.thread?.security?.state, "verified");
+});
+
+test("automatic renewal applies an already cached warmup to a newly loaded thread without re-verification", async (t) => {
+  const client = fixture(t);
+  client.state.removeSession("thread");
+  const report = result();
+  const request = t.mock.method(client.process, "request", async () => report);
+  await client.prewarmSecurity("test-model");
+  client.state.addSession("thread", ""); model(client, "test-model");
+  assert.equal(client.getState().sessions.thread?.securityEvidence, null);
+  await client.ensureSecurity("thread");
+  await client.ensureSecurity("thread");
+  assert.equal(request.mock.callCount(), 1);
+  assert.equal(request.mock.calls[0]!.arguments[0], "_axiom/security/prewarm");
+  const current = client.getState().sessions.thread!;
+  assert.equal(current.security?.state, "verified");
+  assert.equal(current.securityEvidence?.verifiedAtUnixSeconds, report.evidence!.verifiedAtUnixSeconds);
+  assert.equal(current.securityEvidence?.hardExpiresAtUnixSeconds, report.evidence!.hardExpiresAtUnixSeconds);
+});
+
+test("automatic renewal rereads near-expiry native material without forcing a hardware appraisal", async (t) => {
+  const client = fixture(t);
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  const first = result();
+  const request = t.mock.method(client.process, "request", async () => first);
+  await client.prewarmSecurity("test-model");
+  now = first.evidence!.hardExpiresAtUnixSeconds * 1000 - 30_000;
+  const renewed = result();
+  const pending = hold(t, client);
+  const a = client.ensureSecurity("thread"), b = client.ensureSecurity("thread");
+  await Promise.resolve();
+  assert.equal(pending.request.mock.callCount(), 1);
+  assert.equal(pending.request.mock.calls[0]!.arguments[0], "_axiom/security/prewarm");
+  assert.equal(client.getState().sessions.thread?.securityEvidence?.hardExpiresAtUnixSeconds, first.evidence!.hardExpiresAtUnixSeconds);
+  pending.resolve(renewed); await Promise.all([a, b]);
+  assert.equal(client.getState().sessions.thread?.securityEvidence?.hardExpiresAtUnixSeconds, renewed.evidence!.hardExpiresAtUnixSeconds);
+  assert.equal(request.mock.callCount(), 1);
+});
+
+for (const change of ["account", "runtime", "model", "running", "request-report"] as const) {
+  test(`automatic report renewal cannot overwrite a changed ${change} context`, async (t) => {
+    const client = fixture(t);
+    const pending = hold(t, client);
+    const renewal = client.ensureSecurity("thread");
+    await Promise.resolve();
+    if (change === "account") client.state.setAccount({ revision: 2, state: "valid", account: { id: "other", linkedMethods: [] } });
+    if (change === "runtime") {
+      for (const runtimeInstanceId of ["one", "two"]) client.state.extensionEvent({
+        runtimeInstanceId, sequence: 1, occurredAt: new Date().toISOString(), sessionId: "thread",
+        event: { kind: "security_changed", status: { state: "unverified" } },
+      });
+    }
+    if (change === "model") { model(client, "other-model"); model(client, "test-model"); }
+    if (change === "running") client.state.setRunning("thread", true);
+    const actual = securityEvidence(); actual.modelKeyFingerprint = "d4".repeat(32);
+    if (change === "request-report") requestReport(client, actual);
+    pending.resolve(result());
+    await assert.rejects(renewal, /changed/);
+    assert.equal(client.getState().sessions.thread?.securityEvidence?.modelKeyFingerprint ?? null,
+      change === "request-report" ? actual.modelKeyFingerprint : null);
+  });
+}
+
+test("automatic renewal refuses expired material and preserves warmup retry backoff", async (t) => {
+  const client = fixture(t);
+  const expired = result(); expired.evidence!.hardExpiresAtUnixSeconds = Math.floor(Date.now() / 1000) - 1;
+  const request = t.mock.method(client.process, "request", async () => expired);
+  await assert.rejects(client.ensureSecurity("thread"), /fresh evidence|incomplete|mismatched/);
+  await assert.rejects(client.ensureSecurity("thread"), /fresh evidence|incomplete|mismatched/);
+  assert.equal(request.mock.callCount(), 1);
+  assert.equal(client.getState().sessions.thread?.securityEvidence, null);
+});
+
+test("explicit Refresh still bypasses the reusable warmup report", async (t) => {
+  const client = fixture(t);
+  const methods: string[] = [];
+  t.mock.method(client.process, "request", async (method: string) => { methods.push(method); return result(); });
+  await client.ensureSecurity("thread");
+  await client.verifySecurity("thread");
+  assert.deepEqual(methods, ["_axiom/security/prewarm", "_axiom/security/verify"]);
 });
 
 test("typing failures back off without timers, and manual refresh remains available", async (t) => {

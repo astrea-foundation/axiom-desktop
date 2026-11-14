@@ -86,6 +86,47 @@ pub const ID: &str = "axiom-direct";
 pub const MODEL: &str = "direct:qwen3.8-27b";
 const PROFILE: &str = "axiom-snp-nvidia-v1";
 
+/// The grant bounds the decrypted envelope, including JSON escaping, signed
+/// bindings and proof. Reserve a coarse MiB budget for this input rather than
+/// the protocol-wide ceiling: older account APIs can admit ordinary requests
+/// without supporting the largest newer image/history envelope.
+fn request_input_budget(input: &Input) -> Result<u64> {
+    const MIB: usize = 1024 * 1024;
+    const ENVELOPE_HEADROOM: usize = 512 * 1024;
+    #[derive(Default)]
+    struct EscapedJsonSize(usize);
+    impl std::io::Write for EscapedJsonSize {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            // Input JSON becomes a string inside the encrypted envelope. Its
+            // quotes and backslashes need one additional level of escaping.
+            let extra = bytes
+                .iter()
+                .filter(|&&byte| byte == b'"' || byte == b'\\')
+                .count();
+            self.0 = self.0.saturating_add(bytes.len()).saturating_add(extra);
+            if self.0 > axiom_pool_protocol::MAX_REQUEST {
+                return Err(std::io::Error::other("direct input exceeds its byte limit"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    // Count without making another copy of plaintext or base64 image data.
+    let mut size = EscapedJsonSize::default();
+    serde_json::to_writer(&mut size, input)
+        .map_err(|_| SecureClientError::capability("AstreaAI input exceeds its byte limit"))?;
+    let required = size
+        .0
+        .checked_add(ENVELOPE_HEADROOM)
+        .filter(|&bytes| bytes <= axiom_pool_protocol::MAX_REQUEST)
+        .ok_or_else(|| SecureClientError::capability("AstreaAI input exceeds its byte limit"))?;
+    let budget = (required.div_ceil(MIB) * MIB).min(axiom_pool_protocol::MAX_REQUEST);
+    u64::try_from(budget)
+        .map_err(|_| SecureClientError::capability("AstreaAI input exceeds its byte limit"))
+}
+
 pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>> {
     let (path, bundled) = if let Some(path) = std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE") {
         (PathBuf::from(path), false)
@@ -117,6 +158,9 @@ fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
+        ("windows", "aarch64") if directory.join("direct/win32-arm64/native.json").exists() => {
+            "win32-arm64"
+        }
         ("windows", "aarch64" | "x86_64") => "win32-x64",
         ("linux", "x86_64") => "linux-x64",
         _ => return Ok(None),
@@ -230,7 +274,13 @@ mod installed_bundle_tests {
     use super::*;
 
     fn installed_executable(directory: &std::path::Path) -> PathBuf {
-        for target in ["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"] {
+        for target in [
+            "darwin-arm64",
+            "darwin-x64",
+            "win32-x64",
+            "win32-arm64",
+            "linux-x64",
+        ] {
             let path = directory.join("direct").join(target);
             std::fs::create_dir_all(&path).unwrap();
             installed_config(&path);
@@ -538,23 +588,25 @@ impl DirectProvider {
                 .await;
         }
         let updates = progress.clone();
+        let input = Input::Image {
+            prompt: request.prompt.into(),
+            references,
+            uncensored,
+            width: size.width,
+            height: size.height,
+            steps: 8,
+            seed: rand_core::RngCore::next_u32(&mut rand_core::OsRng),
+        };
+        let input_bytes = request_input_budget(&input)?;
         let (worker, output) = self
             .client
             .execute_with(
-                Input::Image {
-                    prompt: request.prompt.into(),
-                    references,
-                    uncensored,
-                    width: size.width,
-                    height: size.height,
-                    steps: 8,
-                    seed: rand_core::RngCore::next_u32(&mut rand_core::OsRng),
-                },
+                input,
                 Limits {
                     context_tokens: 8192,
                     output_tokens: 1,
-                    input_bytes: axiom_pool_protocol::MAX_REQUEST as u64,
-                    output_bytes: 32 * 1024 * 1024,
+                    input_bytes,
+                    output_bytes: 64 * 1024 * 1024,
                     image_pixels: u64::from(size.width) * u64::from(size.height),
                     image_steps: 8,
                     input_image_pixels,
@@ -832,7 +884,6 @@ impl Session {
         }
         let mut messages = Vec::new();
         let mut input_image_pixels = 0u64;
-        let mut input_image_count = 0usize;
         for m in request.messages {
             if (!m.images.is_empty() && !self.model.supports_images)
                 || !m.files.is_empty()
@@ -865,12 +916,6 @@ impl Session {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            input_image_count += images.len();
-            if input_image_count > axiom_pool_protocol::vision::MAX_IMAGES {
-                return Err(SecureClientError::capability(
-                    "This connection supports at most eight images in the current context",
-                ));
-            }
             for image in &images {
                 input_image_pixels = input_image_pixels
                     .checked_add(image.pixels())
@@ -929,7 +974,7 @@ impl Session {
         let limits = Limits {
             context_tokens: 32768,
             output_tokens: max_tokens,
-            input_bytes: axiom_pool_protocol::MAX_REQUEST as u64,
+            input_bytes: request_input_budget(&input)?,
             output_bytes: 32 * 1024 * 1024,
             image_pixels: 0,
             image_steps: 0,
@@ -1168,6 +1213,114 @@ fn evidence(
 mod tests {
     use super::*;
 
+    fn text_input(text: &str) -> Input {
+        Input::Chat {
+            messages: vec![Message::text("user", text)],
+            max_tokens: 128,
+            reasoning_effort: "medium".into(),
+            tools: vec![],
+        }
+    }
+
+    #[test]
+    fn ordinary_direct_chat_fits_the_existing_account_api_byte_limit() {
+        // Production's older reservation schema permits 36 MiB. The previous
+        // unconditional 144 MiB grant was rejected even for this tiny request.
+        let budget = request_input_budget(&text_input("Reply with just the word OK.")).unwrap();
+        assert_eq!(budget, 1024 * 1024);
+        assert!(budget <= 36 * 1024 * 1024);
+    }
+
+    #[test]
+    fn direct_byte_budget_includes_nested_escaping_and_scales_below_the_protocol_ceiling() {
+        let input = text_input(&"\"\\\n\0".repeat(250_000));
+        let escaped_input = serde_json::to_vec(&serde_json::to_string(&input).unwrap()).unwrap();
+        let budget = request_input_budget(&input).unwrap();
+        assert!(budget > u64::try_from(escaped_input.len()).unwrap());
+        assert!(budget <= 36 * 1024 * 1024);
+        assert!(budget < u64::try_from(axiom_pool_protocol::MAX_REQUEST).unwrap());
+        let mut bigger = Input::Chat {
+            messages: (0..20)
+                .map(|_| Message::text("user", "a".repeat(2 * 1024 * 1024)))
+                .collect(),
+            max_tokens: 128,
+            reasoning_effort: "medium".into(),
+            tools: vec![],
+        };
+        let budget = request_input_budget(&bigger).unwrap();
+        assert!(budget > 36 * 1024 * 1024);
+        assert!(budget <= u64::try_from(axiom_pool_protocol::MAX_REQUEST).unwrap());
+        if let Input::Chat { messages, .. } = &mut bigger {
+            for message in messages {
+                message.content = "\\".repeat(2 * 1024 * 1024);
+            }
+        }
+        assert!(request_input_budget(&bigger).is_err());
+    }
+
+    #[test]
+    fn direct_budgets_cover_real_signed_envelopes_for_chat_vision_and_images() {
+        use axiom_pool_protocol::{crypto::Identity, test_support::Fixture, types::Operation};
+        let fixture = Fixture::new();
+        let crypto = Identity::from_bytes(&[10; 32]).unwrap();
+        let mut vision_message = Message::text("user", "Describe this image.");
+        vision_message.images.push(fixture.image());
+        let inputs = [
+            text_input(&"\"\\\n\0".repeat(250_000)),
+            Input::Chat {
+                messages: vec![vision_message],
+                max_tokens: 128,
+                reasoning_effort: "medium".into(),
+                tools: vec![],
+            },
+            Input::Image {
+                prompt: "A blue square".into(),
+                references: vec![fixture.image()],
+                uncensored: true,
+                width: 1536,
+                height: 1536,
+                steps: 8,
+                seed: 1,
+            },
+        ];
+        for input in inputs {
+            let instant = now();
+            let budget = request_input_budget(&input).unwrap();
+            let mut grant = fixture.grant("synthetic-canary", instant);
+            grant.binding.limits.input_bytes = budget;
+            match &input {
+                Input::Image {
+                    references,
+                    width,
+                    height,
+                    ..
+                } => {
+                    grant.binding.operation = Operation::Image;
+                    grant.binding.limits.image_pixels = u64::from(*width) * u64::from(*height);
+                    grant.binding.limits.input_image_pixels = references
+                        .iter()
+                        .map(axiom_pool_protocol::vision::InlineImage::pixels)
+                        .sum();
+                }
+                Input::Chat { messages, .. } => {
+                    grant.binding.limits.input_image_pixels = messages
+                        .iter()
+                        .flat_map(|message| &message.images)
+                        .map(axiom_pool_protocol::vision::InlineImage::pixels)
+                        .sum();
+                }
+            }
+            input.validate(&grant.binding).unwrap();
+            grant
+                .validate(&grant.issuer, &fixture.worker, instant, true)
+                .unwrap();
+            let (sealed, _, _) = fixture.request_input(&grant, input, instant);
+            let (plaintext, _) = crypto.open(&sealed).unwrap();
+            assert!(u64::try_from(plaintext.len()).unwrap() <= budget);
+            assert!(budget <= 36 * 1024 * 1024);
+        }
+    }
+
     #[test]
     fn only_a_typed_authenticated_refusal_becomes_busy_and_is_not_auto_replayed() {
         let error = anyhow::Error::new(axiom_pool_protocol::frames::Rejection {
@@ -1198,12 +1351,13 @@ mod tests {
     }
 
     fn installed() -> SecureClientConfig {
+        let fixture_root = std::env::temp_dir();
         let mut config = SecureClientConfig::new("https://127.0.0.1:9443").unwrap();
         config.direct = Some(
             serde_json::from_value(serde_json::json!({
                 "origin":"https://worker.example:8443", "connect_ip":null,
-                "model_manifest":"aa".repeat(32), "issuer_key_file":"/private/operator.pem",
-                "verifier":{"binary":"/installed/verifier", "binary_sha256":"bb".repeat(32),
+                "model_manifest":"aa".repeat(32), "issuer_key_file":fixture_root.join("axiom-test-operator.pem"),
+                "verifier":{"binary":fixture_root.join("axiom-test-verifier"), "binary_sha256":"bb".repeat(32),
                     "publisher_key":"cc".repeat(32), "minimum_policy_sequence":10}
             }))
             .unwrap(),
@@ -1291,7 +1445,7 @@ mod tests {
         let size = runtime
             .dimensions(&runtime.image.default_aspect_ratio)
             .unwrap();
-        assert_eq!((size.width, size.height), (1536, 1536));
+        assert_eq!((size.width, size.height), (2048, 2048));
         assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
         let config = installed();
         assert!(

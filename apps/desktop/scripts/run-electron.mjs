@@ -2,12 +2,13 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setLinuxDesktopIdentity } from "./desktop-identity.mjs";
+import { electronLaunch } from "./launch-environment.mjs";
 
-const [target, ...args] = process.argv.slice(2);
+const entry = fileURLToPath(import.meta.url);
+const { target, args, env } = electronLaunch(process.argv.slice(2), process.env, process.execPath, entry);
 const require = createRequire(import.meta.url);
-const env = { ...process.env };
-delete env.ELECTRON_RUN_AS_NODE;
 setLinuxDesktopIdentity(env, process.platform);
 
 function packageBinary(packageName) {
@@ -46,7 +47,7 @@ if (target === "staging") {
 }
 
 const child = spawn(command, commandArgs, {
-  cwd: process.cwd(),
+  cwd: dirname(dirname(entry)),
   env,
   stdio: "inherit",
   windowsHide: false,

@@ -153,15 +153,27 @@ MCP servers or grant broader authority.
 Processes have bounded output/time and cancellation cleanup; background tasks
 have four slots. An approved host-authority program on macOS/Windows can access
 resources beyond its cwd. The Web toggle only gates built-in search/fetch tools.
+On Windows each command has a nested kill-on-close Job Object. The command
+starts suspended until it is assigned to that job, so descendants inherit the
+command's lifetime. Timeout, cancellation, a dropped run, and successful leader
+exit all terminate the job. This retains the process-wide exit-cleanup job.
+Output readers are cancelled with their command and have a bounded join after
+termination, including when a descendant inherited a pipe.
 MCP executables are trusted user-selected host code on every OS. Desktop starts
-only explicitly tested, selected [local connections](mcp.md), with per-thread
+only explicitly tested, selected [connections](mcp.md), with per-thread
 tool authority and approval separate from builtin Agent permissions. Account and
 revision checks prevent queued messages inheriting changed MCP authority.
-Environment secrets use immutable OS credential references and are never part
+Environment secrets and remote grants use immutable OS credential references and are never part
 of public snapshots. Server processes belong to their turn and are closed on
 completion/cancellation; returned schemas,
 text and side-effect claims stay untrusted. Ambiguous side-effecting calls are
 never automatically replayed. Read-only reconnect retry requires unchanged schema.
+Remote Streamable HTTP runs in the native client with a separate HTTP client,
+HTTPS endpoints (loopback HTTP for development), bounded bodies/events and
+redirects/POST retries disabled. OAuth uses native PKCE/state/issuer validation
+and account-scoped system credentials. Remote-aware capability negotiation is
+required to select or execute remote tools. Recorded call destinations are
+independent of later connection edits. Tool sharing lies outside model attestation.
 
 ## Accounts, local state and recovery
 
@@ -171,7 +183,12 @@ enter renderer state. The separate API-key creation operation intentionally retu
 one new automation key for display; its Debug/state paths redact or omit the token.
 There is no automation-key submission path for Desktop native sign-in.
 
-Conversation databases are not encrypted at rest. Startup repairs unfinished
+Conversation databases use SQLCipher and managed binary assets use authenticated
+encrypted external files, with domain-separated keys derived from an independent
+OS-credential-store secret. Draft/outbox imports delete legacy browser copies
+only after native acknowledgement. Missing/locked/wrong keys preserve existing
+data and fail closed. See [local storage](local-storage.md) for migration and
+recovery boundaries. Startup repairs unfinished
 turns to interrupted state without replay. Delete confirmations bind the exact
 selection, expire after 60 seconds and are one-use/process-local. IPC framing is
 bounded to 64 MiB (including escaped text and inline image payloads); retained sidecar stderr is capped at 64 KiB. Sequence gaps require

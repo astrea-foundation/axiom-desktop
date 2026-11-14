@@ -26,9 +26,18 @@ pub(crate) const ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-v2";
 /// client verifies both TDX quotes and the worker's NVIDIA evidence; receipts
 /// stay signed by the worker key over the exact request and response bytes.
 pub(crate) const GATEWAY_ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-gateway-v1";
+/// Every advertised replica sharing the recipient key must be locally verified.
+pub(crate) const GATEWAY_GROUP_ATTESTATION_PROTOCOL: &str = "near-tdx-nvidia-gateway-v2";
+
+pub(crate) fn is_gateway_protocol(protocol: &str) -> bool {
+    matches!(
+        protocol,
+        GATEWAY_ATTESTATION_PROTOCOL | GATEWAY_GROUP_ATTESTATION_PROTOCOL
+    )
+}
 
 pub(crate) fn supports_attestation_protocol(protocol: &str) -> bool {
-    protocol == ATTESTATION_PROTOCOL || protocol == GATEWAY_ATTESTATION_PROTOCOL
+    protocol == ATTESTATION_PROTOCOL || is_gateway_protocol(protocol)
 }
 
 pub(crate) struct NearProvider {
@@ -97,6 +106,10 @@ impl SecureProvider for NearProvider {
         model.file_mime_types.clear();
         model.reasoning_parameters.clear();
         model.thinking_parameters.clear();
+    }
+
+    fn contract_preference(&self, attestation_protocol: &str) -> u8 {
+        u8::from(attestation_protocol != GATEWAY_GROUP_ATTESTATION_PROTOCOL)
     }
 
     async fn establish(

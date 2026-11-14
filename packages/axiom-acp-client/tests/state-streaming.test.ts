@@ -35,18 +35,39 @@ function toolUpdate(revision: number, callId: string, status = "pending") {
     update: {
       sessionUpdate: status === "pending" ? "tool_call" : "tool_call_update",
       toolCallId: callId, status,
-      ...(status === "pending" ? { title: "Searching the web for news · web_search", kind: "search", rawInput: { query: "news" } } : {}),
+      ...(status === "pending" ? { title: "Searching the web for news: web_search", kind: "search", rawInput: { query: "news" } } : {}),
     },
   };
 }
 
 const report = (inputTokens: number) => ({ inputTokens, outputTokens: 10, modelId: "model", reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000 });
 
+test("compaction work counters remain separate from response text and clear on every terminal path", () => {
+  for (const phase of ["completed", "cancelled", "failed"] as const) {
+    const store = new AxiomStateStore();
+    store.replaceTimeline([page(1)]);
+    const original = store.snapshot().sessions.thread!.timeline;
+    const notify = (sequence: number, event: Parameters<typeof store.extensionEvent>[0]["event"]) => store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence, occurredAt: "2026-11-11T00:00:00Z", event });
+    notify(1, { kind: "compaction", phase: "started", detail: "Preparing" });
+    assert.equal(store.snapshot().sessions.thread!.compaction?.total, 0);
+    const progress = { completed: 1, total: 3, generatedTokens: 1246, estimated: true };
+    notify(2, { kind: "compaction", phase: "summarizing", progress });
+    assert.deepEqual(store.snapshot().sessions.thread!.compaction, progress);
+    assert.deepEqual(store.snapshot().sessions.thread!.timeline, original);
+    notify(3, { kind: "compaction", phase, detail: null });
+    assert.equal(store.snapshot().sessions.thread!.compaction, null);
+  }
+  const store = new AxiomStateStore();
+  store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence: 1, occurredAt: "2026-11-11T00:00:00Z", event: { kind: "compaction", phase: "started" } });
+  store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread", sequence: 2, occurredAt: "2026-11-11T00:00:00Z", event: { kind: "active_turn_changed", turnId: null } });
+  assert.equal(store.snapshot().sessions.thread!.compaction, null);
+});
+
 test("image percentages update the owning tool and survive durable refresh without transcript text", () => {
   const store = new AxiomStateStore();
   store.replaceTimeline([page(1)]);
   const proposed = toolUpdate(2, "image");
-  Object.assign(proposed.update, {title: "Generating image · generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  Object.assign(proposed.update, {title: "Generating image: generate", kind: "other", rawInput: {prompt: "A blue mug"}});
   store.standardUpdate(proposed);
   const progress = (revision: number, stage: string, percent: number) => ({...toolUpdate(revision, "image", "in_progress"),
     update: {sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: {imageProgress: {stage, percent}}}});
@@ -67,6 +88,28 @@ test("image percentages update the owning tool and survive durable refresh witho
   tool = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
   assert.deepEqual(tool.imageProgress, {stage: "finishing", percent: 99});
   assert.deepEqual(tool.content, []);
+});
+
+test("live image references survive tool completion and metadata-only timeline replacement", () => {
+  const store = new AxiomStateStore(); store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "image");
+  Object.assign(proposed.update, {title: "Generating image: generate", kind: "other", rawInput: {prompt: "A blue mug"}});
+  store.standardUpdate(proposed);
+  const imageResource = { callId: "image", sha256: "ab".repeat(32), mimeType: "image/png", width: 1024, height: 1024 };
+  store.standardUpdate({ ...toolUpdate(3, "image", "in_progress"), update: {
+    sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: { imageResource },
+  } });
+  store.standardUpdate(toolUpdate(4, "image", "completed"));
+  const live = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
+  assert.equal(live.status, "completed"); assert.equal(live.content.length, 1);
+  assert.deepEqual(live.content[0], { type: "image", mimeType: "image/png", width: 1024, height: 1024,
+    imageResource: { callId: "image", sha256: imageResource.sha256 } });
+  assert.ok(!JSON.stringify(live).includes('"data":'));
+  const durable = page(5); durable.thread.lastTimelineSequence = 2;
+  durable.items.push({ ...durable.items[0]!, id: "image-tool", externalId: "image", sequence: 2,
+    kind: "tool_call", content: "", status: "completed", metadata: { name: "generate", content: live.content } });
+  store.replaceTimeline([durable]);
+  assert.deepEqual(store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!.content, live.content);
 });
 
 test("late generated titles update the sidebar without replacing chat or recency", () => {
@@ -350,4 +393,47 @@ test("account switches clear stream revision tracking with the account-local tim
   store.setAccount({ revision: 2, state: "valid", account: { id: "two", linkedMethods: [] } });
   store.standardUpdate(delta(1, "new"));
   assert.equal(store.snapshot().sessions.thread!.timeline[0]?.text, "new");
+});
+
+test("MCP destinations survive live updates and durable reload independently of connection settings", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([page(1)]);
+  const proposed = toolUpdate(2, "mcp-call");
+  Object.assign(proposed.update, {title:"Calling MCP · mcp__project__search", rawInput:{query:"customer onboarding"},
+    _meta:{axiomMcpSource:{server:"project",destination:"https://original.example.com/mcp"}}});
+  store.standardUpdate(proposed);
+  const tool=()=>store.snapshot().sessions.thread!.timeline.find(item=>item.tool?.callId==="mcp-call")!.tool!;
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  assert.equal(tool().started,false);
+  store.standardUpdate(toolUpdate(3,"mcp-call","in_progress"));
+  assert.equal(tool().started,true);
+  store.standardUpdate(toolUpdate(4,"mcp-call","completed"));
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  const durable=page(5);durable.thread.lastTimelineSequence=2;
+  durable.items.push({...durable.items[0]!,id:"saved-call",externalId:"mcp-call",sequence:2,kind:"tool_call",content:"result",status:"completed",
+    metadata:{name:"mcp__project__search",arguments:{query:"customer onboarding"},started:true,mcp_source:{server:"project",destination:"https://original.example.com/mcp"}}});
+  store.replaceTimeline([durable]);
+  assert.equal(tool().mcpSource?.destination,"https://original.example.com/mcp");
+  assert.equal(tool().started,true);
+});
+
+test("tool-call drafting shows only for the running turn and the validated call replaces it", () => {
+  const store = new AxiomStateStore();
+  store.replaceTimeline([{ ...page(1, "Let me edit that."), activeTurnId: "turn" }]);
+  const drafting = (sequence: number, turnId: string) => store.extensionEvent({ runtimeInstanceId: "runtime", sessionId: "thread",
+    sequence, threadRevision: 1, occurredAt: "2026-09-07T00:00:00Z", event: { kind: "tool_call_drafting", turnId } });
+  drafting(1, "older-turn");
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId ?? null, null, "a stale turn cannot show progress");
+  drafting(2, "turn");
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, "turn");
+  store.standardUpdate(toolUpdate(2, "call"));
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null);
+  assert.equal(store.snapshot().sessions.thread!.timeline.at(-1)!.tool?.callId, "call");
+
+  drafting(3, "turn");
+  store.standardUpdate(delta(3, " More text."));
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null, "resumed text ends the draft");
+  drafting(4, "turn");
+  store.setRunning("thread", false);
+  assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null, "an ended turn cannot leave a draft row");
 });

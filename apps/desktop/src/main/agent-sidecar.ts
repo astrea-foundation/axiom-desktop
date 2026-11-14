@@ -3,7 +3,7 @@ import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { app, BrowserWindow, shell, type WebContents } from "electron";
-import type { DesktopMcpRequest } from "@axiom/axiom-acp-client";
+import type { DesktopMcpRequest, LocalPayloadRequest } from "@axiom/axiom-acp-client";
 import {
   AxiomAcpClient,
   DESKTOP_SIDECAR_INHERITED_ENV,
@@ -74,6 +74,10 @@ export async function resolveSidecar(): Promise<string> {
 export class AgentSidecar {
   rendererState(contents: WebContents) {
     return rendererTransport(contents).encode(this.state(), true);
+  }
+  rendererImage(contents: WebContents, context: string, id: string) {
+    const client = this.requireClient();
+    return rendererTransport(contents).readImage(context, id, request => client.readImage(request.threadId, request.callId, request.sha256));
   }
   constructor(private readonly stateChanged: (state: ClientState) => void = () => {}) {}
   private client: AxiomAcpClient | null = null;
@@ -243,11 +247,13 @@ export class AgentSidecar {
     return this.requireClient().loadChat(sessionId);
   }
 
+  localPayload(request: LocalPayloadRequest) { return this.requireClient().localPayload(request); }
   desktopMcp(request: DesktopMcpRequest) { return this.requireClient().desktopMcp(request); }
   configureDesktopAgent(request: ConfigureDesktopAgentRequest) { return this.requireClient().configureDesktopAgent(request); }
 
   getAttachments(threadId: string, userItemId: string) { return this.requireClient().getAttachments(threadId, userItemId); }
   regenerateImage(threadId: string, callId: string) { return this.requireClient().regenerateImage(threadId, callId); }
+  resolveImage(threadId: string, imageId: string) { return this.requireClient().resolveImage(threadId, imageId); }
 
   prompt(sessionId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number) {
     return this.requireClient().prompt(sessionId, text, clientItemId, webEnabled, agentRevision, revision, attachments, mcpRevision);
@@ -299,6 +305,10 @@ export class AgentSidecar {
 
   cryptoOptions() {
     return this.requireClient().cryptoOptions().catch((error: unknown) => { throw actionableAcpError(error); });
+  }
+
+  creditBilling(action: import("@axiom/axiom-acp-client").CreditBillingAction) {
+    return this.requireClient().creditBilling(action).catch((error: unknown) => { throw actionableAcpError(error); });
   }
 
   cryptoPayments() {
@@ -376,6 +386,10 @@ export class AgentSidecar {
 
   prewarmSecurity(modelId: string) {
     return this.requireClient().prewarmSecurity(modelId);
+  }
+
+  ensureSecurity(sessionId: string) {
+    return this.requireClient().ensureSecurity(sessionId);
   }
 
   verifySecurity(sessionId: string, acceptOutdatedTee = false, modelId?: string) {

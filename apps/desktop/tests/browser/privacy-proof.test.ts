@@ -13,7 +13,7 @@ let server: ViteDevServer;
 let origin: string;
 const captures = process.env.AXIOM_PRIVACY_CAPTURE_DIR;
 before(async () => {
-  server = await createServer({ configFile: false, root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
+  server = await createServer({ cacheDir: fileURLToPath(new URL("../../node_modules/.vite-tests/privacy-proof.test", import.meta.url)), configFile: false, root: fileURLToPath(new URL("../../src/renderer", import.meta.url)),
     plugins: [react(), tailwindcss()], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" });
   await server.listen(); origin = server.resolvedUrls!.local[0]!;
   browser = await chromium.launch({ headless: true });
@@ -262,7 +262,7 @@ for (const theme of ["light", "dark"]) test(`successful image turns keep environ
     await page.getByRole("button", { name: "Report needs refresh. View privacy proof", exact: true }).waitFor();
     assert.equal(await count(page), 0, "refresh waits for the native inference operation to finish");
     await proofButton(page).click();
-    assert.match(await dialog(page).innerText(), /Environment attestation/);
+    assert.match(await dialog(page).innerText(), /environment attestation/);
     assert.doesNotMatch(await dialog(page).innerText(), /Latest reply verification|complete replies|reply.*authenticated/i);
     await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
     await page.waitForFunction(() => (window as any).__privacyTest.calls() === 1);
@@ -295,6 +295,53 @@ test("reply history does not change the environment badge or add reply verdicts"
       await page.getByRole("button", { name: "Close privacy proof", exact: true }).click();
     }
     assert.equal(await count(page), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("automatic cache renewal keeps a valid report visible and only a click forces re-verification", async () => {
+  const { page, errors } = await open("dark", true);
+  try {
+    await page.evaluate(() => (window as any).__privacyTest.setCacheAware(true));
+    await page.clock.fastForward(270_000);
+    await page.waitForFunction(() => (window as any).__privacyTest.automaticCalls() === 1);
+    assert.equal(await count(page), 0);
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).isDisabled(), true);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    assert.equal(await page.evaluate(() => (window as any).__privacyTest.automaticCalls()), 1);
+    // The valid display is bounded by the real expiry, including during renewal.
+    await page.clock.fastForward(30_000);
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__privacyTest.finishReport({
+      ...(window as any).__privacyTest.report(), verifiedAtUnixSeconds: Math.floor(Date.now() / 1000),
+      hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+    }));
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).click();
+    assert.equal(await count(page), 1);
+    assert.equal(await page.evaluate(() => (window as any).__privacyTest.automaticCalls()), 1);
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__privacyTest.finish());
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("image-turn completion reuses automatic verification rather than forcing a new appraisal", async () => {
+  const { page, errors } = await open("light", true);
+  try {
+    await page.evaluate(() => {
+      (window as any).__privacyTest.setCacheAware(true);
+      (window as any).__privacyTest.update({ running: true, timeline: [
+        { id: "image", kind: "tool", text: "Generating image", status: "in_progress" },
+      ] });
+    });
+    await page.clock.fastForward(301_000);
+    assert.equal(await page.evaluate(() => (window as any).__privacyTest.automaticCalls()), 0);
+    await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
+    await page.waitForFunction(() => (window as any).__privacyTest.automaticCalls() === 1);
+    assert.equal(await count(page), 0);
+    await page.evaluate(() => (window as any).__privacyTest.finish());
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

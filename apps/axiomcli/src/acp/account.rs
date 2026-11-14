@@ -6,9 +6,9 @@ use super::{
     NativeLoginCompleteRequest, NativeLoginStartRequest, NativeLoginStartResponse,
     NativeLoginState, Responder, ServerContext, ValidationStatus, VersionedValidationStatus,
     agent_error, auth_login_method, await_request_future, begin_account_switch,
-    commit_account_store_switch, extension, extension_account_status, extension_billing_status,
-    extension_enabled, extension_not_negotiated, publish_account_switch_started,
-    send_extension_activity, validation_status_if_current,
+    commit_account_store_switch_reporting, extension, extension_account_status,
+    extension_billing_status, extension_enabled, extension_not_negotiated,
+    publish_account_switch_started, send_extension_activity, validation_status_if_current,
 };
 
 pub(super) fn account_status(
@@ -32,6 +32,14 @@ pub(super) fn account_status(
         }
         let _account_transition = ctx_account_transition.lock().await;
         let request_cancellation = responder.cancellation();
+        if ctx_auth.has_credential() && ctx_store.as_ref().is_some_and(|store| !store.is_active()) {
+            super::publish_account_preparing(
+                &connection,
+                &ctx_extension_state,
+                &ctx_auth,
+                extension::AccountPreparationPhase::CheckingSignIn,
+            )?;
+        }
         let validation = respond_or_return!(
             responder,
             await_request_future(&request_cancellation, ctx_auth.validate_with_revision(),).await
@@ -66,15 +74,24 @@ pub(super) fn account_status(
             .await?;
             respond_or_return!(
                 responder,
-                commit_account_store_switch(
+                commit_account_store_switch_reporting(
                     &ctx_sessions,
                     &ctx_account_work,
                     ctx_store.as_ref(),
                     target.as_deref(),
+                    &connection,
+                    &ctx_extension_state,
+                    &ctx_auth,
                 )
                 .await
                 .map_err(agent_error)
             );
+            super::publish_account_preparing(
+                &connection,
+                &ctx_extension_state,
+                &ctx_auth,
+                extension::AccountPreparationPhase::CheckingSignIn,
+            )?;
             validation =
                 validation_status_if_current(&ctx_auth, ctx_auth.validate_with_revision().await);
         }
@@ -219,11 +236,14 @@ pub(super) fn native_login_complete(
         .await?;
         respond_or_return!(
             responder,
-            commit_account_store_switch(
+            commit_account_store_switch_reporting(
                 &ctx_sessions,
                 &ctx_account_work,
                 ctx_store.as_ref(),
                 Some(&account.account.id),
+                &connection,
+                &ctx_extension_state,
+                &ctx_auth,
             )
             .await
             .map_err(agent_error)
@@ -234,6 +254,12 @@ pub(super) fn native_login_complete(
         // Revalidate through the manager so a server-side revocation racing
         // completion still fails closed before the next prompt.
         let committed_account_id = account.account.id.clone();
+        super::publish_account_preparing(
+            &connection,
+            &ctx_extension_state,
+            &ctx_auth,
+            extension::AccountPreparationPhase::CheckingSignIn,
+        )?;
         let mut validation =
             validation_status_if_current(&ctx_auth, ctx_auth.validate_with_revision().await);
         if matches!(
@@ -255,11 +281,14 @@ pub(super) fn native_login_complete(
             );
             respond_or_return!(
                 responder,
-                commit_account_store_switch(
+                commit_account_store_switch_reporting(
                     &ctx_sessions,
                     &ctx_account_work,
                     ctx_store.as_ref(),
                     None,
+                    &connection,
+                    &ctx_extension_state,
+                    &ctx_auth,
                 )
                 .await
                 .map_err(agent_error)
@@ -334,6 +363,7 @@ pub(super) fn logout(
     let request_cancellation = responder.cancellation();
     let task_runner = context.runner.clone();
     connection.spawn(async move {
+        let mut transitioning = false;
         let task_result: agent_client_protocol::Result<_> = async {
             let _account_transition = task_transition.lock().await;
             begin_account_switch(&task_sessions, &task_work, None, None)
@@ -346,9 +376,18 @@ pub(super) fn logout(
                 task_runner.as_ref(),
             )
             .await?;
-            commit_account_store_switch(&task_sessions, &task_work, task_store.as_ref(), None)
-                .await
-                .map_err(agent_error)?;
+            transitioning = true;
+            commit_account_store_switch_reporting(
+                &task_sessions,
+                &task_work,
+                task_store.as_ref(),
+                None,
+                &task_connection,
+                &task_extension,
+                &task_auth,
+            )
+            .await
+            .map_err(agent_error)?;
             let cancellation = CancellationToken::new();
             let logout = task_auth.logout_with_cancellation(&cancellation);
             tokio::pin!(logout);
@@ -377,6 +416,18 @@ pub(super) fn logout(
             Ok(extension::AccountStatusResponse { status })
         }
         .await;
+        if transitioning && let Err(error) = &task_result {
+            let mut status =
+                super::extension_account_switching(task_auth.reserve_account_transition_revision());
+            status.state = extension::AccountState::Unavailable;
+            status.detail = Some(error.to_string());
+            let _ = send_extension_activity(
+                &task_connection,
+                &task_extension,
+                None,
+                ActivityEvent::AccountChanged { status },
+            );
+        }
         responder.respond_with_result(task_result)
     })?;
     Ok(())
@@ -624,6 +675,40 @@ pub(super) fn redeem_gift_code(
             already_redeemed: receipt.already_redeemed,
             status,
         })
+    })?;
+    Ok(())
+}
+
+pub(super) fn credit_billing(
+    context: &ServerContext,
+    request: extension::CreditBillingRequest,
+    responder: Responder<extension::CreditBillingResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let client = context.billing.clone();
+    let cancellation = CancellationToken::new();
+    let guard = respond_or_return!(
+        responder,
+        context
+            .account_work
+            .register(cancellation.clone())
+            .map_err(agent_error)
+    );
+    let request_cancellation = responder.cancellation();
+    connection.spawn(async move {
+        let _guard = guard;
+        let operation = client.credit_control(&request.action, &cancellation);
+        tokio::pin!(operation);
+        let result = tokio::select! {
+            biased;
+            result = &mut operation => result,
+            () = request_cancellation.cancelled() => { cancellation.cancel(); operation.await }
+        };
+        let result = respond_or_return!(responder, result.map_err(agent_error));
+        responder.respond(extension::CreditBillingResponse { result })
     })?;
     Ok(())
 }

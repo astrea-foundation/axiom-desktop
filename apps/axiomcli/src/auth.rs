@@ -2,8 +2,8 @@
 //!
 //! Native login is approved in the system browser and bound to this process
 //! with a loopback callback, a one-time device secret, and PKCE S256. The
-//! durable credential is a rotating refresh token kept only in the platform
-//! credential store. Access tokens are short-lived and memory-only. A manual
+//! durable credential contains a rotating refresh token and recovery attempt
+//! kept only in the platform credential store. Access tokens are short-lived and memory-only. A manual
 //! `AXIOM_API_KEY` is an explicit automation credential and never enters the
 //! native-session persistence path.
 //! Explicit debug-only loopback development can use an owner-only local file.
@@ -36,7 +36,7 @@ use crate::{AxiomError, Result};
 #[cfg(target_os = "macos")]
 mod macos_keychain;
 
-const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
+pub(crate) const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT_PREFIX: &str = "native-refresh-token-v1";
 const MAX_TOKEN_BYTES: usize = 8 * 1024;
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
@@ -1671,9 +1671,9 @@ impl AuthManager {
             self.adopt_external_credential(persisted)?;
             return Err(account_changed());
         }
-        let refresh = bundle.refresh_token.expose_secret().to_owned();
+        let refresh = encode_refresh_credential(bundle.refresh_token.expose_secret())?;
         let persistence = self
-            .save_persisted_credential(refresh, credential_lock)
+            .save_persisted_credential(refresh.clone(), credential_lock)
             .await;
         if let Err(error) = persistence {
             // The server has already rotated or issued this session. If the
@@ -1711,7 +1711,7 @@ impl AuthManager {
             .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.refresh_token = Some(bundle.refresh_token);
+        state.refresh_token = Some(SecretString::from(refresh));
         state.refresh_token_pending = false;
         state.access_token = Some(CachedAccessToken {
             token: bundle.access_token,
@@ -1800,7 +1800,7 @@ impl AuthManager {
     }
 
     async fn refresh_under_lock(&self, allow_external_change: bool) -> Result<AccessTokenLease> {
-        let snapshot = self.acquire_credential_snapshot().await?;
+        let mut snapshot = self.acquire_credential_snapshot().await?;
         let credential_lock = &snapshot.lock;
         let persisted = snapshot.value.clone();
         self.resolve_pending_credential(persisted.as_deref());
@@ -1816,34 +1816,37 @@ impl AuthManager {
                 return Err(account_changed());
             }
         }
-        let refresh = persisted.ok_or_else(authentication_required)?;
+        let mut refresh = persisted.ok_or_else(authentication_required)?;
+        let mut credential = decode_refresh_credential(&refresh)?;
+        if credential.rotation_id.is_none() {
+            // Upgrade a legacy credential before dispatch. The same keyring
+            // entry and process-shared lock make retries survive process death.
+            refresh = encode_refresh_credential(&credential.refresh_token)?;
+            self.save_persisted_credential(refresh.clone(), credential_lock)
+                .await?;
+            credential = decode_refresh_credential(&refresh)?;
+            snapshot.value = Some(refresh.clone());
+            self.shared
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .refresh_token = Some(SecretString::from(refresh.clone()));
+        }
         let response = self
             .client
             .post(self.endpoint("/api/v1/auth/token/refresh"))
             .json(&RefreshRequest {
-                refresh_token: &refresh,
+                refresh_token: &credential.refresh_token,
+                rotation_id: credential.rotation_id.as_deref(),
             })
             .send()
             .await;
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                // Once a rotating refresh request has left this process, a
-                // lost response is ambiguous: the server may already have
-                // consumed the old token. Never retry that token and risk
-                // triggering family-reuse revocation.
-                let clear_error = self
-                    .delete_if_matches_and_clear_under_credential_lock(
-                        Some(&refresh),
-                        credential_lock,
-                    )
-                    .await
-                    .err();
-                let suffix = clear_error.map_or_else(String::new, |failure| {
-                    format!("; the local credential could not be cleared cleanly: {failure}")
-                });
                 return Err(AxiomError::Provider(format!(
-                    "session refresh response was lost; sign in again{suffix}: {error}"
+                    "session refresh is temporarily unavailable; your saved session was kept: {}",
+                    error.without_url()
                 )));
             }
         };
@@ -1855,33 +1858,20 @@ impl AuthManager {
         }
         if !response.status().is_success() {
             let status = response.status();
-            let clear_error = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
-                .await
-                .err();
-            let suffix = clear_error.map_or_else(String::new, |failure| {
-                format!("; the local credential could not be cleared cleanly: {failure}")
-            });
             return Err(AxiomError::Provider(format!(
-                "Axiom session refresh returned HTTP {status}; sign in again because rotation may have consumed the prior token{suffix}"
+                "Axiom session refresh returned HTTP {status}; your saved session was kept for retry"
             )));
         }
-        let Ok(response) = response.json::<RefreshResponse>().await else {
-            let _ = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
-                .await;
-            return Err(AxiomError::Protocol(
-                "invalid session refresh response".into(),
-            ));
-        };
-        let Some(bundle) = response.bundle() else {
-            let _ = self
-                .delete_if_matches_and_clear_under_credential_lock(Some(&refresh), credential_lock)
-                .await;
-            return Err(AxiomError::Protocol(
-                "session refresh omitted rotated tokens".into(),
-            ));
-        };
+        let response = response.json::<RefreshResponse>().await.map_err(|_| {
+            AxiomError::Protocol(
+                "invalid session refresh response; saved recovery attempt was kept".into(),
+            )
+        })?;
+        let bundle = response.bundle().ok_or_else(|| {
+            AxiomError::Protocol(
+                "session refresh omitted rotated tokens; saved recovery attempt was kept".into(),
+            )
+        })?;
         let switched_account = changed_externally
             && previous_account.is_some()
             && previous_account.as_deref() != Some(bundle.account.id.as_str());
@@ -2298,7 +2288,7 @@ fn build_client(api_base_url: &str, timeout: Duration) -> Result<(Client, Url, U
     Ok((client, api_base_url, auth_base_url))
 }
 
-fn credential_scope(api_base_url: &Url, client_id_path: &Path) -> (String, PathBuf) {
+pub(crate) fn credential_scope(api_base_url: &Url, client_id_path: &Path) -> (String, PathBuf) {
     let audience = api_base_url.origin().ascii_serialization();
     // Named hosted previews must never read or replace the ordinary staging
     // account's Keychain entry. Stable/default installations retain their
@@ -2466,7 +2456,7 @@ fn client_name(client_id: &str) -> String {
         .and_then(|value| sanitize_device_label(&value))
         .unwrap_or_else(|| format!("{} device", std::env::consts::OS));
     let suffix = &client_id[client_id.len() - 6..];
-    format!("{hostname} · {suffix}")
+    format!("{hostname} ({suffix})")
 }
 
 fn sanitize_device_label(value: &str) -> Option<String> {
@@ -2489,6 +2479,47 @@ fn validate_api_key_shape(value: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+// The envelope remains one protected credential-store value. Neither the bearer
+// nor the independently random retry capability is written into ordinary files.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RefreshCredential {
+    refresh_token: String,
+    rotation_id: Option<String>,
+}
+
+fn decode_refresh_credential(value: &str) -> Result<RefreshCredential> {
+    let Some(encoded) = value.strip_prefix("axc1_") else {
+        return Ok(RefreshCredential {
+            refresh_token: value.to_owned(),
+            rotation_id: None,
+        });
+    };
+    let invalid = || AxiomError::Protocol("invalid saved native refresh credential".into());
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| invalid())?;
+    let credential: RefreshCredential = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    validate_token_shape(&credential.refresh_token, "saved refresh token")?;
+    let attempt = credential.rotation_id.as_deref().ok_or_else(invalid)?;
+    if attempt.len() != 43
+        || !attempt
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(invalid());
+    }
+    Ok(credential)
+}
+
+fn encode_refresh_credential(refresh_token: &str) -> Result<String> {
+    let credential = RefreshCredential {
+        refresh_token: refresh_token.to_owned(),
+        rotation_id: Some(random_urlsafe(32)?),
+    };
+    let bytes = serde_json::to_vec(&credential)
+        .map_err(|_| AxiomError::Protocol("could not encode native refresh credential".into()))?;
+    Ok(format!("axc1_{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
 fn validate_token_shape(value: &str, label: &str) -> Result<()> {
@@ -2724,6 +2755,8 @@ struct CancelAuthorizationRequest<'a> {
 #[derive(Serialize)]
 struct RefreshRequest<'a> {
     refresh_token: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rotation_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -2948,6 +2981,7 @@ mod tests {
         approved: AtomicBool,
         refreshes: AtomicUsize,
         refresh_inputs: Mutex<Vec<String>>,
+        refresh_attempts: Mutex<Vec<String>>,
         refresh_failure: AtomicUsize,
         hold_refresh: AtomicBool,
         refresh_started: tokio::sync::Notify,
@@ -3045,6 +3079,12 @@ mod tests {
                     .expect("refresh token")
                     .to_owned(),
             );
+        state.refresh_attempts.lock().unwrap().push(
+            body["rotation_id"]
+                .as_str()
+                .expect("persisted attempt")
+                .to_owned(),
+        );
         let count = state.refreshes.fetch_add(1, Ordering::AcqRel) + 1;
         state.refresh_started.notify_one();
         if state.hold_refresh.load(Ordering::Acquire) {
@@ -3060,6 +3100,7 @@ mod tests {
             }
             2 => return Json(json!({"unexpected": true})).into_response(),
             3 => tokio::time::sleep(Duration::from_millis(75)).await,
+            4 => return AxumStatus::UNAUTHORIZED.into_response(),
             _ => {}
         }
         Json(bundle_json(
@@ -3186,6 +3227,7 @@ mod tests {
             approved: AtomicBool::new(false),
             refreshes: AtomicUsize::new(0),
             refresh_inputs: Mutex::new(Vec::new()),
+            refresh_attempts: Mutex::new(Vec::new()),
             refresh_failure: AtomicUsize::new(0),
             hold_refresh: AtomicBool::new(false),
             refresh_started: tokio::sync::Notify::new(),
@@ -3523,7 +3565,7 @@ mod tests {
         .expect("login");
         assert_eq!(account.account.id, "acct_test-123");
         assert_eq!(
-            store.load().expect("load").as_deref(),
+            stored_refresh_token(&store).as_deref(),
             Some("refresh-token-with-enough-entropy-12345678")
         );
         let debug = format!("{auth:?}");
@@ -3558,7 +3600,7 @@ mod tests {
         server.refresh_release.notify_one();
         assert!(matches!(pending.await.unwrap(), ValidationStatus::Valid(_)));
         assert_eq!(store.loads.load(Ordering::Acquire), 1);
-        assert_eq!(store.saves.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 2);
         assert_eq!(server.refreshes.load(Ordering::Acquire), 1);
         assert!(fs2::FileExt::try_lock_exclusive(&peer_lock).is_ok());
         drop(peer_lock);
@@ -3634,7 +3676,7 @@ mod tests {
         assert!(first.is_ok());
         assert!(second.is_ok());
         assert_eq!(state.refreshes.load(Ordering::Acquire), 1);
-        assert_eq!(store.saves.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 2);
     }
 
     #[tokio::test]
@@ -3664,7 +3706,7 @@ mod tests {
             "the second manager must reload the rotated token under the process-shared lock",
         );
         assert_eq!(
-            store.load().expect("load").as_deref(),
+            stored_refresh_token(&store).as_deref(),
             Some("refresh-token-with-enough-entropy-00000002")
         );
     }
@@ -3735,7 +3777,7 @@ mod tests {
         assert!(auth.generation() > generation);
         assert_eq!(server.revocations.load(Ordering::Acquire), 0);
         assert_eq!(
-            store.load().unwrap().as_deref(),
+            stored_refresh_token(&store).as_deref(),
             Some("refresh-token-with-enough-entropy-00000002")
         );
         assert!(
@@ -3848,27 +3890,114 @@ mod tests {
         assert_eq!(second_store.deletes.load(Ordering::Acquire), 0);
     }
 
+    fn stored_refresh_token(store: &MemoryStore) -> Option<String> {
+        store
+            .load()
+            .expect("load")
+            .map(|value| decode_refresh_credential(&value).unwrap().refresh_token)
+    }
+
     #[tokio::test]
-    async fn ambiguous_refresh_results_burn_the_local_token_instead_of_replaying_it() {
+    async fn transient_refresh_failures_keep_the_durable_attempt_for_another_process() {
         for failure in [1, 2] {
             let (auth, state, store) = manager().await;
             let refresh_token = "initial-refresh-token-with-enough-entropy";
-            *store.credential.lock().expect("credential lock") = Some(refresh_token.into());
-            auth.shared.state.write().expect("state lock").refresh_token =
+            *store.credential.lock().unwrap() = Some(refresh_token.into());
+            auth.shared.state.write().unwrap().refresh_token =
                 Some(SecretString::from(refresh_token.to_owned()));
             state.refresh_failure.store(failure, Ordering::Release);
-
             let error = auth
                 .access_token(Duration::ZERO, &CancellationToken::new())
                 .await
-                .expect_err("an ambiguous refresh result must require a fresh login");
-
+                .expect_err("transient refresh must fail without losing saved credentials");
             assert!(!error.to_string().contains(refresh_token));
-            assert!(!auth.has_credential());
-            assert!(store.load().expect("load").is_none());
-            assert_eq!(store.deletes.load(Ordering::Acquire), 1);
-            assert_eq!(state.refreshes.load(Ordering::Acquire), 1);
+            assert!(auth.has_credential());
+            let persisted = store.load().unwrap().unwrap();
+            assert_eq!(
+                decode_refresh_credential(&persisted).unwrap().refresh_token,
+                refresh_token
+            );
+            assert_eq!(store.deletes.load(Ordering::Acquire), 0);
+            state.refresh_failure.store(0, Ordering::Release);
+            let peer = peer_manager(&auth, &store, &persisted);
+            peer.access_token(Duration::ZERO, &CancellationToken::new())
+                .await
+                .expect("same attempt recovers");
+            let attempts = state.refresh_attempts.lock().unwrap();
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(attempts[0], attempts[1]);
+            assert_eq!(
+                state.refresh_inputs.lock().unwrap().as_slice(),
+                &[refresh_token, refresh_token]
+            );
+            assert_ne!(stored_refresh_token(&store).as_deref(), Some(refresh_token));
         }
+    }
+
+    #[tokio::test]
+    async fn transport_timeout_keeps_the_same_refresh_attempt_for_retry() {
+        let (mut auth, state, store) = manager().await;
+        let token = "initial-refresh-token-with-enough-entropy";
+        *store.credential.lock().unwrap() = Some(token.into());
+        auth.shared.state.write().unwrap().refresh_token =
+            Some(SecretString::from(token.to_owned()));
+        auth.client = Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+        state.hold_refresh.store(true, Ordering::Release);
+        assert!(
+            auth.access_token(Duration::ZERO, &CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(auth.has_credential());
+        assert_eq!(store.deletes.load(Ordering::Acquire), 0);
+        state.hold_refresh.store(false, Ordering::Release);
+        state.refresh_release.notify_one();
+        auth.client = Client::new();
+        auth.access_token(Duration::ZERO, &CancellationToken::new())
+            .await
+            .unwrap();
+        let attempts = state.refresh_attempts.lock().unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0], attempts[1]);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_refresh_still_clears_the_matching_protected_attempt() {
+        let (auth, state, store) = manager().await;
+        let credential =
+            encode_refresh_credential("initial-refresh-token-with-enough-entropy").unwrap();
+        *store.credential.lock().unwrap() = Some(credential.clone());
+        auth.shared.state.write().unwrap().refresh_token = Some(SecretString::from(credential));
+        state.refresh_failure.store(4, Ordering::Release);
+        assert!(
+            auth.access_token(Duration::ZERO, &CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(!auth.has_credential());
+        assert!(store.load().unwrap().is_none());
+        assert_eq!(store.deletes.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_refresh_is_not_dispatched_without_a_durable_recovery_attempt() {
+        let (auth, state, store) = manager().await;
+        let token = "initial-refresh-token-with-enough-entropy";
+        *store.credential.lock().unwrap() = Some(token.into());
+        auth.shared.state.write().unwrap().refresh_token =
+            Some(SecretString::from(token.to_owned()));
+        store.fail_save.store(true, Ordering::Release);
+        assert!(
+            auth.access_token(Duration::ZERO, &CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert_eq!(state.refreshes.load(Ordering::Acquire), 0);
+        assert_eq!(store.load().unwrap().as_deref(), Some(token));
+        assert_eq!(store.deletes.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -3897,18 +4026,16 @@ mod tests {
         let _ = caller.await;
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while store
-                .load()
-                .expect("load")
-                .is_none_or(|token| token == refresh_token)
-            {
+            while store.load().expect("load").is_none_or(|token| {
+                decode_refresh_credential(&token).unwrap().refresh_token == refresh_token
+            }) {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("detached rotation committed to the credential store");
         assert_eq!(state.refreshes.load(Ordering::Acquire), 1);
-        assert_eq!(store.saves.load(Ordering::Acquire), 1);
+        assert_eq!(store.saves.load(Ordering::Acquire), 2);
         assert!(
             store
                 .load()
@@ -3925,6 +4052,9 @@ mod tests {
         *store.credential.lock().expect("credential lock") = Some(refresh_token.into());
         auth.shared.state.write().expect("state lock").refresh_token =
             Some(SecretString::from(refresh_token.to_owned()));
+        let wrapped = encode_refresh_credential(refresh_token).unwrap();
+        *store.credential.lock().unwrap() = Some(wrapped.clone());
+        auth.shared.state.write().unwrap().refresh_token = Some(SecretString::from(wrapped));
         store.fail_save.store(true, Ordering::Release);
 
         let error = auth
@@ -4064,6 +4194,9 @@ mod tests {
         *store.credential.lock().expect("credential lock") = Some(refresh.into());
         auth.shared.state.write().expect("state lock").refresh_token =
             Some(SecretString::from(refresh.to_owned()));
+        let wrapped = encode_refresh_credential(refresh).unwrap();
+        *store.credential.lock().unwrap() = Some(wrapped.clone());
+        auth.shared.state.write().unwrap().refresh_token = Some(SecretString::from(wrapped));
         store
             .save_delay_ms
             .store(stalled_credential_delay_ms(), Ordering::Release);

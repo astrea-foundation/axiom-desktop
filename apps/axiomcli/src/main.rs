@@ -75,8 +75,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Manage account credits, subscriptions, card payments and automatic top-up.
+    Billing(axiomcli::billing::command::Arguments),
     /// Download, verify, install and restart an installed Axiom release.
     Update(axiomcli::updates::Arguments),
+    /// Permanently delete all local Axiom data and saved credentials. Stop Axiom first.
+    FactoryReset(axiomcli::factory_reset::Arguments),
+    /// Back up or recover an encrypted local store without starting account or inference services.
+    LocalData(axiomcli::storage_backup::Arguments),
     /// Run the account-bound secure loopback proxy under Desktop supervision.
     DesktopProxy {
         #[arg(long)]
@@ -221,6 +227,29 @@ enum SessionAction {
     },
 }
 
+/// The existing synthetic runner may use plaintext `SQLite` fixtures for direct
+/// SQL assertions, but it must never open the real desktop or CLI data roots.
+#[cfg(debug_assertions)]
+fn validate_synthetic_storage_roots(paths: &AxiomPaths) -> anyhow::Result<()> {
+    let temporary = std::env::temp_dir().canonicalize()?;
+    for (variable, actual) in [
+        ("XDG_CONFIG_HOME", paths.config_root()),
+        ("XDG_DATA_HOME", paths.data_root()),
+    ] {
+        let explicit = std::env::var_os(variable)
+            .map(PathBuf::from)
+            .with_context(|| format!("synthetic storage requires an isolated {variable}"))?
+            .canonicalize()?;
+        anyhow::ensure!(
+            explicit != temporary
+                && explicit.starts_with(&temporary)
+                && actual.canonicalize()?.starts_with(&explicit),
+            "synthetic storage is restricted to explicit temporary data and config roots"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -246,10 +275,29 @@ async fn main() -> anyhow::Result<()> {
     };
     if let Some(Command::Update(arguments)) = cli.command {
         // Update helpers must survive shutdown of the process being replaced.
+        let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+        let _reset_lease = axiomcli::factory_reset::runtime_lease(&paths)?;
         return axiomcli::updates::command(arguments).await;
+    }
+    if let Some(Command::FactoryReset(arguments)) = cli.command {
+        // Recovery must work without loading configuration, account or databases.
+        return axiomcli::factory_reset::command(&arguments);
+    }
+    if let Some(Command::LocalData(arguments)) = &cli.command {
+        return axiomcli::storage_backup::command(arguments);
+    }
+    if let Some(Command::ResetLocalState {
+        account,
+        frontend,
+        confirm,
+    }) = &cli.command
+    {
+        return axiomcli::storage_backup::reset_local_state(account, *frontend, *confirm);
     }
     install_descendant_cleanup();
     let _installation_lease = axiomcli::updates::lease()?;
+    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
+    let _reset_lease = axiomcli::factory_reset::runtime_lease(&paths)?;
     // The proxy owns no chat store, tools, agent configuration or system prompt.
     if let Some(Command::DesktopProxy {
         account_id,
@@ -271,25 +319,12 @@ async fn main() -> anyhow::Result<()> {
         .as_deref()
         .map(load_system_prompt_file)
         .transpose()?;
-    let paths = AxiomPaths::discover().context("failed to resolve Axiom platform paths")?;
     paths
         .prepare()
         .context("failed to prepare Axiom platform paths")?;
-    if let Some(Command::ResetLocalState {
-        account,
-        frontend,
-        confirm,
-    }) = &cli.command
-    {
-        anyhow::ensure!(*confirm, "refusing to delete local state without --confirm");
-        let removed = paths
-            .reset_account_frontend_state(account, *frontend)
-            .context("failed to reset account local state")?;
-        println!(
-            "removed {} local state file(s) for account {account}, frontend {frontend}",
-            removed.len()
-        );
-        return Ok(());
+    #[cfg(debug_assertions)]
+    if std::env::var_os("AXIOMCLI_TEST_RUNNER").is_some() {
+        validate_synthetic_storage_roots(&paths)?;
     }
     let config =
         Config::load_for(frontend, &paths).context("failed to load AxiomCLI configuration")?;
@@ -318,10 +353,23 @@ async fn main() -> anyhow::Result<()> {
     .context("failed to initialize Axiom authentication")?;
     let account_store_router = SessionStoreRouter::new(paths.clone(), frontend);
     if cfg!(debug_assertions) && std::env::var_os("AXIOMCLI_TEST_RUNNER").is_some() {
-        account_store_router
-            .activate("local-test-account")
-            .context("failed to initialize isolated test account storage")?;
-    } else if let ValidationStatus::Valid(account) = auth.validate().await {
+        #[cfg(debug_assertions)]
+        {
+            validate_synthetic_storage_roots(&paths)?;
+            account_store_router
+                .activate_fixture("local-test-account")
+                .context("failed to initialize isolated test account storage")?;
+        }
+    } else if !matches!(
+        &cli.command,
+        Some(Command::Acp {
+            frontend: FrontendKind::DesktopChat,
+            ..
+        })
+    ) && let ValidationStatus::Valid(account) = auth.validate().await
+    {
+        // Desktop opens the store from account_status after ACP is connected,
+        // so the renderer can display migration progress on restored sessions.
         account_store_router
             .activate(&account.account.id)
             .context("failed to open account-scoped local state")?;
@@ -334,7 +382,16 @@ async fn main() -> anyhow::Result<()> {
         cwd: None,
         resume: None,
     }) {
+        Command::Billing(arguments) => axiomcli::billing::command::run(arguments, &auth)
+            .await
+            .map_err(Into::into),
         Command::Update(_) => unreachable!("update is handled before agent initialization"),
+        Command::FactoryReset(_) => {
+            unreachable!("factory reset is handled before agent initialization")
+        }
+        Command::LocalData(_) => {
+            unreachable!("local data maintenance is handled before initialization")
+        }
         Command::DesktopProxy { .. } => {
             unreachable!("desktop proxy is handled before agent initialization")
         }
@@ -955,6 +1012,12 @@ fn print_headless_event(event: AppEvent) {
         AppEvent::ToolStarted { name, .. } => eprintln!("\n[tool] {name}"),
         AppEvent::ToolOutput { content, .. } => eprintln!("{content}"),
         AppEvent::ErrorRaised { message, .. } => eprintln!("error: {message}"),
+        AppEvent::ProviderStatusChanged { detail, .. }
+            if detail.starts_with("Connection interrupted. Retrying")
+                || detail == "Continuing…" =>
+        {
+            eprintln!("\n{detail}");
+        }
         _ => {}
     }
 }

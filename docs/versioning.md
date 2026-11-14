@@ -8,13 +8,14 @@ stable `vMAJOR.MINOR.PATCH`, match AxiomCLI's manifest and point to a promoted
 
 ## Local database
 
-The current SQLite schema is **4**, application ID **`0x41584133`**,
+The current SQLCipher-backed SQLite schema is **7**, application ID **`0x41584133`**,
 with the schema 1 baseline in [schema.sql](../apps/axiomcli/src/session/schema.sql)
 and the forward migration in [the initializer](../apps/axiomcli/src/session/schema.rs).
 Each authenticated account
 and frontend has a separate database. It contains threads, turns, timeline items,
 collections, preferences, both activity clocks, Agent settings, request usage,
-and full local prompt attachments in a separate table.
+and asset references in local prompt attachments. Managed image/file bytes are
+authenticated encrypted external files, deduplicated within the account store.
 Runtime event envelopes are translated into materialized records.
 Unknown application IDs and unsupported versions fail closed. Local response
 verification remains required before content can be marked verified. Schema 1 upgrades to schema 2 in a transaction without resetting history, adding
@@ -29,7 +30,8 @@ credential store. Future schema
 changes must continue adding transactional forward migrations.
 
 The [local-state reset command](configuration.md#paths-and-local-state) deletes
-only the selected account/frontend database. Stop processes using that store
+only the selected account/frontend database, external assets and migration
+sidecars. Stop processes using that store
 before resetting it. Hosted account and payment data are managed separately.
 
 On restart, incomplete turns become interrupted and tools are never replayed.
@@ -68,3 +70,20 @@ Automatic updates accept stable product versions and remember the highest signed
 release sequence/version per installation. A release version and its signed
 inventory are immutable. Desktop, bundled CLI and the standalone CLI/proxy pair
 are installed together. Storage compatibility must be checked before any rollback.
+
+Local account conversation storage schema 6 adds durable execution owners and
+version-1 authoritative model history. Schema upgrades run in one immediate
+transaction. Existing schema-4 conversations remain readable through the legacy
+projection until their next atomic write adopts canonical history. Newer or
+invalid canonical versions are rejected explicitly; downgrade tools must not
+reconstruct inference history from display rows.
+
+Schema 7 adds binary asset metadata/owners, native draft/outbox payloads and a
+retryable payload-purge marker. Known media slots in older attachments, generated
+timeline content, authoritative events and checkpoints migrate to external
+ciphertext references without changing runtime message hashes or IDs. The
+independent file-format migration exports plaintext SQLite into SQLCipher and
+verifies content before replacement. Both migrations preserve existing data on
+failure and require exclusive maintenance when rewriting older stores. See
+[encrypted local storage](local-storage.md) for the key lifecycle, migration and
+portable recovery format. An older unencrypted binary cannot open the new store.

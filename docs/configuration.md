@@ -44,22 +44,60 @@ and `XDG_DATA_HOME` overrides apply on every platform; relative values are rejec
   shared/trust-policy.json
   accounts/<opaque-account-id>/
     cli/state.sqlite3
+    cli/state.sqlite3.assets/<opaque-asset-id>
     desktop/state.sqlite3
+    desktop/state.sqlite3.assets/<opaque-asset-id>
     desktop/chat/<thread-id>/
 ```
 
 Shared installation identity and the trust-policy rollback journal are not
 conversation databases. Refresh tokens live only in the OS credential store.
-No account database opens while signed out. Schema migrations are described in
-[versioning](versioning.md).
+No account database opens while signed out. Databases use SQLCipher; binary
+image/file payloads are encrypted external assets. Independent storage keys live
+in the OS credential store. Existing database, image and browser draft/outbox data
+is migrated forwards. See [encrypted local storage](local-storage.md) for the
+format, migration and portable recovery commands.
 
 `axiomcli reset-local-state --account ACCOUNT_ID --frontend cli --confirm`
 (or `--frontend desktop-chat`) removes the selected account/frontend database and
-SQLite sidecars. Stop Desktop and CLI first. The command runs before authentication
+SQLite sidecars, encrypted external assets and pending migration files. Stop
+Desktop and CLI first. The command runs before authentication
 and schema loading, so it can remove obsolete state. Other accounts/frontends,
 configuration, identity, vault credentials, trust policy and workspace files are
 separate. Reset is destructive for the selected local history; it does not
 reset a hosted account or payment ledger.
+
+For a complete clean install, use **Settings → Account → Factory reset Axiom…**
+and type `RESET`. The equivalent offline recovery command, after quitting Desktop,
+CLI and proxy processes, is:
+
+```sh
+axiomcli factory-reset --confirm
+```
+
+Factory reset deletes all accounts' Desktop and CLI history, attachments and
+managed chat folders; shared and frontend configuration; installation identity
+and trust-policy caches; saved Axiom sign-ins and MCP secrets in the OS credential
+store; and Electron profiles, browser storage, logs and update caches. It works
+without loading configuration or database schemas and makes no network requests.
+The Desktop action stops its native processes, exits, runs the bundled cleanup
+helper after file handles close, and reopens Axiom. Other native processes using
+the same data must be closed; reset refuses to run while their storage lease is
+held. An empty `.axiom-factory-reset.lock` coordination file outside the data
+tree remains, containing no user information.
+
+The online account, credit, hosted API keys, external browser sign-in and files
+outside Axiom-managed storage are kept. Files in a custom Agent working directory
+or a Downloads folder are outside reset's scope. An OS credential-store failure
+leaves files available for retry; deletion can be partial if the filesystem fails
+after credential cleanup. Desktop displays an error after reopening if reset did
+not finish. Unlock the vault or close remaining processes and retry. Development
+staging/local profiles, including named profiles, reset their isolated files and
+scoped credentials. A production reset clears Axiom credential services,
+including retired secrets.
+
+See [troubleshooting](troubleshooting.md#completely-reset-local-data) for manual
+recovery on versions that predate the factory reset command.
 
 ## Trusted user configuration
 
@@ -90,15 +128,15 @@ tool_timeout_secs = 300 # per-call absolute deadline; 1–86400 seconds
 Set `model` to an ID discovered by `axiomcli models` or use the model picker.
 Model availability, prices, context capacity and reasoning capabilities come
 from the authenticated catalog and are validated by the registered provider.
-MCP names are unique and names/commands cannot be empty. `read_only_tools` is
+MCP names are unique; local connections require nonempty commands. `read_only_tools` is
 an explicit trust decision about a user-configured executable; a server's own
 annotation cannot grant that classification. MCP initialization/discovery retain a
 30-second deadline. Tool calls default to five minutes and use the server's
 `tool_timeout_secs`, including any progress notifications; progress does not reset
-the absolute deadline. Stop and timeout send a bounded MCP cancellation notification.
+the absolute deadline. Stop and timeout use bounded transport-specific MCP cancellation.
 A timed-out tool is never automatically replayed, even when marked read-only.
-Desktop uses its own account-scoped [local MCP connections](mcp.md), managed
-through Settings and selected per thread in the Agent menu. It does not launch
+Desktop uses its own account-scoped [MCP connections](mcp.md), managed
+through Settings and selected per conversation in the Agent dialog. It does not launch
 servers from shared CLI configuration.
 
 | Tool profile | Behavior |
@@ -110,7 +148,18 @@ servers from shared CLI configuration.
 | `full_access` | Exposed tools run without routine approval prompts |
 
 All profiles retain deny rules, input validation and the platform's actual
-process boundaries. See [security](threat-model.md#local-tools-and-processes).
+process boundaries. Workspace text search, context selection, Git worktree
+inspection and session diffs check each resolved file before reading its contents.
+Background session-diff baselines capture only immediately permitted files and
+skip `ask` and denied files without prompting. Foreground search, context, Git
+and session-diff reads retain normal approvals, including an explicit diff's
+first snapshot. Retained baseline content and fallback patches are checked again
+before being returned. Denied files are omitted; explicit `ask` rules require
+approval for each file even after the tool was approved.
+Declining a file approval stops the turn. URL fetching checks destination
+policy on every redirect, including redirects within one origin, before DNS
+resolution and dispatch. Each permitted hop still validates every DNS answer
+as public and pins the HTTP connection to those validated addresses. See [security](threat-model.md#local-tools-and-processes).
 
 ## Desktop profile
 
@@ -122,7 +171,7 @@ the embedded product prompt. `--system-prompt-file` cannot replace it. That prom
 combines the shared chat behavior, the Desktop capability profile and
 [`desktop-product.md`](../apps/axiomcli/prompts/desktop-product.md), which tells
 the model what AxiomAI is and how Desktop protects conversations: on-device TEE
-verification and encryption, the composer privacy badge, unencrypted-at-rest local
+verification and encryption, the composer privacy badge, encrypted local
 history, and the separate Web and Agent-mode boundaries. Keep it consistent with
 [privacy behavior](privacy.md) when either changes.
 
@@ -146,8 +195,9 @@ explicit Web consent independently of Agent permissions. See [Desktop](desktop.m
 
 ## Image generation and editing
 
-Vision uploads accept up to ten images per request within the selected provider's
-context limit; AstreaAI chat permits eight images across the current context.
+Vision uploads accept up to ten images per submitted user message. Later messages
+can each add ten more; chat history has no separate image-count limit. Model
+token/context and encoded request-byte budgets still apply.
 Desktop resizes each image
 locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
 before encryption. The unified image tool accepts optional `width` and `height`
@@ -178,15 +228,19 @@ requesting a correction. Viewing is optional and does not create or edit an
 image. Generated results are displayed to the user but are not automatically
 added to the model's visual context. Vision copies preserve aspect ratio and
 transparency, correct orientation, and fit within 1,048,576 pixels; originals
-remain available for editing, viewing and saving. Viewed images count toward
-the selected chat model's image context limit, including AstreaAI's eight-image
-cap. Successful views are restored from their tool
-records and conversation-local references without storing another image copy.
+remain available for editing, viewing and saving. Viewed images consume model
+context tokens and encoded request bytes, and can trigger normal automatic
+compaction. There is no conversation-wide view or generation count limit.
+Conversation image IDs remain available for later viewing and reference use.
+Successful views are restored from their tool records and conversation-local
+references or saved model checkpoints.
 
-Native code withholds and rejects image tools for nonvision models, including
-after a model switch, and rejects their new image uploads. Other file types
-retain their own model capability checks. Image tools work independently of
-Web and Agent mode and never grant local or Web permissions. Image work starts
+Native code enables `generate` when the installed image service passes its
+verified capability preflight, independently of chat vision support. It withholds
+and rejects `view_image` for chat models without vision, including after a model
+switch, and rejects their new image uploads. Other file types retain their own
+model capability checks. Image tools work independently of Web, MCP connections
+and Agent mode and never grant local or Web permissions. Image work starts
 through the LLM tool loop or an explicit per-image Regenerate action. The latter
 runs only the stored image request in a new image-only turn, preserving the chat
 prompt, original image, and later messages. The UI renders verified results with an
@@ -225,14 +279,18 @@ Provider request timeouts do not expire human approval/question cards. Those
 waits end on an answer, cancellation/disconnect, or an enabled whole-turn limit.
 
 Automatic compaction is based on 85% of the selected model's advertised context
-capacity, capped by local limits. The independent `max_context_bytes` guard
-includes encoded image/file data, so image-heavy conversations can compact
-below the token threshold. Base64 byte length is not a text-token count.
-New uploads also compact existing history before exceeding the selected model's
-image context cap (eight images for AstreaAI chat).
+capacity, capped by local token limits. Image counts and payload sizes never
+trigger compaction. The independent `max_context_bytes` guard bounds conversation
+text, reasoning and tool arguments; encoded image/file data has separate
+per-message limits. Exceeding a memory or provider transport limit returns an
+error while preserving the conversation. Base64 byte length is not a text-token
+count. Ten uploads is a per-message limit; later messages can add ten more.
+History, views, generation and retained asset catalogs have no image-count cap.
 Uploads and successful `view_image` observations use the selected model's visual
-allowance in both automatic compaction and the native token guard. After restore,
-the next turn recomputes that allowance using current model metadata. Generated
+allowance for new context before the provider reports usage. Existing context
+uses the provider count, including after reload when the report still covers the
+same completed context and model; model changes invalidate that baseline. Without
+a matching report, the next turn estimates using current model metadata. Generated
 images add visual context only when viewed. Unsupported reasoning levels fail
 locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model

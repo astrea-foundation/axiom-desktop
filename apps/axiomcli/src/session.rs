@@ -14,11 +14,19 @@ use rusqlite::Connection;
 use crate::paths::{AxiomPaths, FrontendKind};
 
 mod accounting;
+mod asset_codec;
+mod asset_migration;
+#[cfg(test)]
+mod asset_tests;
+mod assets;
 mod codec;
 mod collections;
 mod connection;
 mod events;
+mod execution;
+mod local_payloads;
 mod mcp;
+mod model_history;
 mod preferences;
 mod projection;
 mod queries;
@@ -31,12 +39,14 @@ mod tests;
 mod timeline;
 
 pub use codec::{model_for_resume, permission_for_resume, thinking_for_resume};
+pub use execution::ContextOperationGuard;
 pub use records::{
     Collection, CollectionChange, CollectionState, ExportOptions, InterruptedTool, LoadOutcome,
     ProfilePreferences, RecoveryStatus, SessionSummary, ThreadCatalogPage, ThreadLifecycle,
     ThreadRevision, ThreadSnapshot, ThreadSummary, TimelineItem, TimelineItemKind,
     TimelineItemStatus, TurnRecord, TurnStatus,
 };
+pub(crate) use schema::needs_maintenance;
 
 const MAX_TIMELINE_PAGE: usize = 1_000;
 const MAX_THREAD_CATALOG_PAGE: usize = 200;
@@ -56,9 +66,13 @@ pub struct SessionStore {
 
 struct StoreState {
     connection: Option<Connection>,
+    assets: Option<assets::AssetManager>,
     path: Option<PathBuf>,
     account_id: Option<String>,
     generation: u64,
+    owner_id: String,
+    executions: std::collections::HashMap<String, std::fs::File>,
+    context_operations: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +89,21 @@ struct StoreBinding {
 
 struct ConnectionGuard<'a> {
     guard: MutexGuard<'a, StoreState>,
+}
+
+impl ConnectionGuard<'_> {
+    fn assets(&self) -> &assets::AssetManager {
+        self.guard
+            .assets
+            .as_ref()
+            .expect("active stores have an asset manager")
+    }
+}
+
+pub(crate) fn asset_directory_for_database(path: &std::path::Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".assets");
+    path.with_file_name(name)
 }
 
 impl std::ops::Deref for ConnectionGuard<'_> {

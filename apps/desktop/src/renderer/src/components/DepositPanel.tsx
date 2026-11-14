@@ -54,7 +54,7 @@ export function DepositPanel({ payment, connected, quote, discountBps = 0 }: {
     <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="text-[17px] font-medium tracking-[-0.02em]">{payment.valuation_enabled ? "Top up via Zcash" : "Receive ZEC"}</h2>
-        {payment.valuation_enabled && discountBps === 500 ? <p className="mt-1 text-[12px] text-[var(--color-success)]">5% off · $9.50 buys $10 credit</p> : null}
+        {payment.valuation_enabled && discountBps === 500 ? <p className="mt-1 text-[12px] text-[var(--color-success)]">Save 5%: $9.50 buys $10 credit</p> : null}
       </div>
       {payment.valuation_enabled ? <div aria-label="Current ZEC exchange rate" className="text-right">
         <p className="font-medium tabular-nums">{currentQuote

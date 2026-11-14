@@ -39,6 +39,17 @@ test("the real preload carries explicit Web choices only on the consent-aware IP
   ]);
 });
 
+test("automatic TEE renewal and explicit Refresh use distinct preload actions", async () => {
+  const calls: unknown[][] = [];
+  const api = preload(async (...args) => { calls.push(args); return {}; });
+  await api.ensureSecurity("thread");
+  await api.verifySecurity("thread");
+  assert.deepEqual(calls, [
+    ["agent:security-ensure", "thread"],
+    ["agent:security-verify", "thread", undefined, undefined],
+  ]);
+});
+
 test("the preload preserves captured Agent settings revisions", async () => {
   const calls: unknown[][] = [];
   const api = preload(async (...args) => { calls.push(args); return {}; });

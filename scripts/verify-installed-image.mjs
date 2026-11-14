@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { prepareNativeReleaseQa } from './native-release-qa.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const imageTestModel = 'direct:qwen3.8-27b';
+const defaultUpstreamModel = 'deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated';
 
 // Deliberately do not inherit provider, verifier, profile, or test overrides.
 export function installedEnvironment(source, root) {
@@ -13,9 +15,22 @@ export function installedEnvironment(source, root) {
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'SYSTEMROOT']) {
     if (source[key]) environment[key] = source[key];
   }
-  return { ...environment, AXIOM_MODEL: 'direct:qwen3.8-27b',
+  return { ...environment,
     XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data'),
     XDG_CACHE_HOME: path.join(root, 'cache') };
+}
+
+export function requiredReleaseDefault(models) {
+  const model = models.find(item => item.providerId === 'near' && item.upstreamModel === defaultUpstreamModel);
+  if (!model?.tags?.some(tag => tag.id === 'uncensored')) {
+    throw new Error('Release catalog must contain NEAR DeepSeek V4.1 Flash 1017 Abliterated with its Uncensored tag');
+  }
+  return model;
+}
+
+export function verifyDefaultSelection(model, configOptions) {
+  const selected = configOptions?.find(option => option.category === 'model' || option.id === 'model')?.currentValue;
+  if (selected !== model.id) throw new Error('Fresh installed session did not select the abliterated release default');
 }
 
 export function verifiedImageUsage(requests) {
@@ -47,7 +62,8 @@ export async function verifyInstalledImage(binary, installer, output, version, s
   const nativeQa = prepareNativeReleaseQa(source, environment, version);
   const installedVersion = execFileSync(binary, ['--version'], { env: environment, encoding: 'utf8', timeout: 30000 }).trim();
   if (installedVersion !== `axiomcli ${version}`) throw new Error('Installed CLI version does not match the release');
-  const child = spawn(binary, ['acp', '--frontend', 'cli', ...(process.platform === 'darwin' ? ['--no-keychain-ui'] : [])],
+  const frontend = path.basename(installer).startsWith('AxiomCLI-') ? 'cli' : 'desktop-chat';
+  const child = spawn(binary, ['acp', '--frontend', frontend, ...(process.platform === 'darwin' ? ['--no-keychain-ui'] : [])],
     { cwd: output, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
   let buffer = '', sequence = 0, sessionId, closed = false;
   const pending = new Map(), images = new Map(), tools = new Map();
@@ -127,10 +143,23 @@ export async function verifyInstalledImage(binary, installer, output, version, s
     if (account.status.account?.id !== nativeQa.accountId || account.status.session?.credentialStore !== 'system credential store') {
       throw new Error('Installed acceptance must use its own native-session account and OS credential store');
     }
-    const session = await request('session/new', { cwd: output, mcpServers: [] });
+    // Check the normal catalog and fresh-profile default before choosing the
+    // image-test model. An image-service-only success cannot qualify a release
+    // whose preferred chat offering has disappeared or silently fallen back.
+    const catalog = await request('_axiom/models/list', {});
+    const defaultModel = requiredReleaseDefault(catalog.models);
+    let cwd = output;
+    if (frontend === 'desktop-chat') {
+      const bootstrap = await request('_axiom/desktop/bootstrap', {});
+      if (!path.isAbsolute(bootstrap.chatCwd ?? '')) throw new Error('Installed Desktop chat workspace is unavailable');
+      cwd = bootstrap.chatCwd;
+    }
+    const session = await request('session/new', { cwd, mcpServers: [] });
     sessionId = session.sessionId;
-    const model = session.configOptions?.find(option => option.category === 'model' || option.id === 'model')?.currentValue;
-    if (model !== environment.AXIOM_MODEL) throw new Error('Installed session selected an unexpected model');
+    verifyDefaultSelection(defaultModel, session.configOptions);
+    const selected = await request('session/set_config_option', { sessionId, configId: 'model', value: imageTestModel });
+    const model = selected.configOptions?.find(option => option.category === 'model' || option.id === 'model')?.currentValue;
+    if (model !== imageTestModel) throw new Error('Installed session did not select the explicit AstreaAI image-test model');
     const result = await request('session/prompt', { sessionId, prompt: [{ type: 'text',
       text: 'Generate exactly one image: a single flat blue circle centered on a plain white square background. Call generate once with a 1:1 aspect ratio. Then call view_image to inspect that generated image. Keep your final reply brief.' }] }, 300000);
     const page = await request('_axiom/thread/timeline', { threadId: sessionId, limit: 500 });
@@ -146,7 +175,9 @@ export async function verifyInstalledImage(binary, installer, output, version, s
       acceptanceRevision: source.GITHUB_SHA ?? null, installedVersion,
       installer: { name: path.basename(installer), sha256: sha256(readFileSync(installer)) },
       binary: { path: binary, sha256: sha256(readFileSync(binary)) },
-      configurationSource: 'installed-bundle', credentialSource: 'native-session-keychain', model, imageGenerationVersion, sessionId,
+      configurationSource: 'installed-bundle', credentialSource: 'native-session-keychain', frontend,
+      defaultModel: { id: defaultModel.id, providerId: defaultModel.providerId, upstreamModel: defaultModel.upstreamModel },
+      model, imageGenerationVersion, sessionId,
       lifecycle: page.thread.lifecycle, stopReason: result.stopReason, tools: toolStates.map(call => call.title),
       toolStates, images: [...images.values()], usage };
     writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });

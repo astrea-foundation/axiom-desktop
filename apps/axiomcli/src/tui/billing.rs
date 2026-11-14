@@ -40,6 +40,7 @@ impl fmt::Debug for GiftInput {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct BillingView {
     pub status: Option<BillingStatus>,
+    pub credits: Option<Box<axiom_acp_extension::CreditSummary>>,
     pub busy: bool,
     pub redeem: bool,
     pub message: Option<String>,
@@ -127,16 +128,34 @@ impl BillingView {
             );
         }
         let mut body = String::new();
-        if let Some(status) = &self.status {
+        if let Some(credits) = &self.credits {
             let _ = writeln!(
                 body,
-                "Available credit: {}\nTrial: {} · Other credit: {}\nTrial credit is used first.",
-                usd(i128::from(status.available_microusd)),
-                usd(i128::from(status.trial_microusd)),
-                usd(i128::from(status.paid_microusd))
+                "Weekly credits: {} of {}\nPurchased credit: {}",
+                credit_text(&credits.allowance.remaining_units),
+                credit_text(&credits.allowance.limit_units),
+                purchased_credit_text(&credits.purchased.available_units)
             );
-            if status.payment_review_required {
-                body.push_str("\nSpending is paused while a deposit is reviewed.\n");
+            if let Some(reset) = &credits.allowance.resets_at {
+                let _ = writeln!(body, "Weekly reset: {reset}.");
+            }
+            if credits.payment_review_required {
+                body.push_str("Spending is paused while a payment is reviewed.\n");
+            }
+            body.push_str("\nManage plans: axiomcli billing plans\nCard top-up: axiomcli billing top-up --help\nSaved cards and automatic top-up: axiomcli billing --help\n");
+        }
+        if let Some(status) = &self.status {
+            if self.credits.is_none() {
+                let _ = writeln!(
+                    body,
+                    "Available credit: {}\nTrial: {} · Other credit: {}\nTrial credit is used first.",
+                    usd(i128::from(status.available_microusd)),
+                    usd(i128::from(status.trial_microusd)),
+                    usd(i128::from(status.paid_microusd))
+                );
+                if status.payment_review_required {
+                    body.push_str("\nSpending is paused while a deposit is reviewed.\n");
+                }
             }
             match &status.payment_account {
                 Some(payment) if payment.state == "ready" && payment.valuation_enabled => {
@@ -206,6 +225,41 @@ pub(super) fn usd(micro: i128) -> String {
     )
 }
 
+fn purchased_credit_text(value: &str) -> String {
+    let Ok(units) = crate::billing::credits::credit_integer(value, true) else {
+        return "Unavailable".into();
+    };
+    if units > 0 && units < 1_000_000 {
+        return "Less than $0.01".into();
+    }
+    format!(
+        "{}${}.{:02}",
+        if units < 0 { "-" } else { "" },
+        units.abs() / 100_000_000,
+        (units.abs() % 100_000_000) / 1_000_000
+    )
+}
+
+fn credit_text(value: &str) -> String {
+    let Ok(units) = crate::billing::credits::credit_integer(value, true) else {
+        return "Unavailable".into();
+    };
+    let sign = if units < 0 { "-" } else { "" };
+    let absolute = units.abs();
+    let fraction = format!("{:06}", absolute % 1_000_000)
+        .trim_end_matches('0')
+        .to_string();
+    format!(
+        "{sign}{}{}",
+        absolute / 1_000_000,
+        if fraction.is_empty() {
+            String::new()
+        } else {
+            format!(".{fraction}")
+        }
+    )
+}
+
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, view: &BillingView, theme: Theme) {
     let area = centered_rect(94, 88, frame.area());
     frame.render_widget(Clear, area);
@@ -221,6 +275,7 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, view: &BillingView
 
 pub(super) struct BillingUpdate {
     status: BillingStatus,
+    credits: Option<Box<axiom_acp_extension::CreditSummary>>,
     message: Option<String>,
 }
 
@@ -277,6 +332,7 @@ impl BillingFlow {
                     .await
                     .map(|receipt| BillingUpdate {
                         status: receipt.status,
+                        credits: None,
                         message: Some(format!(
                             "{} {} to this account.",
                             usd(i128::from(receipt.credited_microusd)),
@@ -293,8 +349,28 @@ impl BillingFlow {
                     .await
                     .map(|status| BillingUpdate {
                         status,
+                        credits: None,
                         message: None,
                     })
+            };
+            let result = match result {
+                Ok(mut update) => match client
+                    .credit_control(
+                        &axiom_acp_extension::CreditBillingAction::Summary,
+                        &cancellation,
+                    )
+                    .await
+                {
+                    Ok(axiom_acp_extension::CreditBillingResult::Summary(value)) => {
+                        update.credits = value;
+                        Ok(update)
+                    }
+                    Ok(_) => Err(crate::AxiomError::Protocol(
+                        "Unexpected credit summary".into(),
+                    )),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
             };
             let _ = tx
                 .send(UiMessage::BillingFinished {
@@ -332,6 +408,7 @@ impl BillingFlow {
         match result {
             Ok(update) => {
                 view.status = Some(update.status);
+                view.credits = update.credits;
                 view.message = update.message;
                 view.redeem = false;
             }
@@ -419,6 +496,7 @@ mod tests {
             flow.generation,
             previous,
             Ok(BillingUpdate {
+                credits: None,
                 status: BillingStatus {
                     posted_microusd: 1_000_000,
                     available_microusd: 1_000_000,

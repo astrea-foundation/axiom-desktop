@@ -191,6 +191,7 @@ impl RuntimeProjection {
         self.sequence = self.sequence.saturating_add(1);
         self.events.push(EventEnvelope {
             schema_version: 1,
+            turn_id: None,
             sequence: self.sequence,
             occurred_at,
             correlation_id: CorrelationId::new(),
@@ -257,13 +258,22 @@ pub(super) fn project_tool(
     projection.push(
         parse_time(&item.created_at),
         AppEvent::ToolProposed {
+            mcp_source: item
+                .metadata
+                .get("mcp_source")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
             turn_id,
             call_id: call_id.clone(),
             name: name.clone(),
             arguments,
         },
     );
-    if item.status != TimelineItemStatus::Pending {
+    if item
+        .metadata
+        .get("started")
+        .and_then(Value::as_bool)
+        .unwrap_or(item.status != TimelineItemStatus::Pending)
+    {
         projection.push(
             parse_time(&item.created_at),
             AppEvent::ToolStarted {
@@ -303,35 +313,7 @@ pub(super) fn project_tool(
             },
         );
     }
-    if let Some(proof) = item.metadata.get("generated_image") {
-        if !matches!(name.as_str(), "generate" | "generate_image" | "edit_image") {
-            return Err(AxiomError::Storage(
-                "stored image requires its owning image tool".into(),
-            ));
-        }
-        let blocks = item
-            .metadata
-            .get("content")
-            .and_then(Value::as_array)
-            .ok_or_else(|| AxiomError::Storage("stored image bytes are missing".into()))?;
-        let images = blocks
-            .iter()
-            .filter_map(|entry| {
-                let content = if entry["type"] == "content" {
-                    &entry["content"]
-                } else {
-                    entry
-                };
-                (content["type"] == "image").then_some(content)
-            })
-            .collect::<Vec<_>>();
-        if images.len() != 1 || images[0]["mimeType"] != proof["mimeType"] {
-            return Err(AxiomError::Storage("stored image content differs".into()));
-        }
-        let mut image = proof.clone();
-        image["data"] = images[0]["data"].clone();
-        let image: axiom_secure_client::GeneratedImage = serde_json::from_value(image)
-            .map_err(|_| AxiomError::Storage("stored image proof is invalid".into()))?;
+    if let Some(image) = generated_image(item)? {
         projection.push(
             parse_time(&item.updated_at),
             AppEvent::ImageGenerated {
@@ -485,4 +467,45 @@ pub(super) fn project_notice(projection: &mut RuntimeProjection, item: &Timeline
     if let Some(event) = event {
         projection.push(parse_time(&item.updated_at), event);
     }
+}
+
+/// Reconstruct one saved image identically for runtime restore and lazy reads.
+pub(super) fn generated_image(
+    item: &TimelineItem,
+) -> Result<Option<axiom_secure_client::GeneratedImage>> {
+    let Some(proof) = item.metadata.get("generated_image") else {
+        return Ok(None);
+    };
+    if !matches!(
+        item.metadata["name"].as_str(),
+        Some("generate" | "generate_image" | "edit_image")
+    ) {
+        return Err(AxiomError::Storage(
+            "stored image requires its owning image tool".into(),
+        ));
+    }
+    let blocks = item
+        .metadata
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AxiomError::Storage("stored image bytes are missing".into()))?;
+    let images = blocks
+        .iter()
+        .filter_map(|entry| {
+            let content = if entry["type"] == "content" {
+                &entry["content"]
+            } else {
+                entry
+            };
+            (content["type"] == "image").then_some(content)
+        })
+        .collect::<Vec<_>>();
+    if images.len() != 1 || images[0]["mimeType"] != proof["mimeType"] {
+        return Err(AxiomError::Storage("stored image content differs".into()));
+    }
+    let mut image = proof.clone();
+    image["data"] = images[0]["data"].clone();
+    let image: axiom_secure_client::GeneratedImage = serde_json::from_value(image)
+        .map_err(|_| AxiomError::Storage("stored image proof is invalid".into()))?;
+    Ok(Some(image))
 }

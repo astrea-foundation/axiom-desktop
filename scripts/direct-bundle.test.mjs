@@ -10,11 +10,13 @@ async function fixture(t,target='linux-x64') {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'axiom-direct-bundle-'));
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.mkdir(path.join(root,'runtime'));
-  const binary=Buffer.alloc(64);
+  const binary=Buffer.alloc(128);
   if(target.startsWith('darwin-')) {binary.writeUInt32LE(0xfeedfacf);binary.writeUInt32LE(target==='darwin-arm64'?0x0100000c:0x01000007,4);}
+  else if(target.startsWith('win32-')) {binary.writeUInt16LE(0x5a4d);binary.writeUInt32LE(64,0x3c);binary.writeUInt32LE(0x4550,64);binary.writeUInt16LE(target==='win32-arm64'?0xaa64:0x8664,68);}
   else {binary.set(Buffer.from('7f454c460201','hex'));binary.writeUInt16LE(62,18);}
-  await fs.writeFile(path.join(root,'runtime/axiom-direct-verify'),binary);
-  const config={account:{origin:'https://api.axiom.stream'},verifier:{binary:'runtime/axiom-direct-verify',binary_sha256:bundle.digest(binary)}};
+  const executable='runtime/axiom-direct-verify'+(target.startsWith('win32-')?'.exe':'');
+  await fs.writeFile(path.join(root,executable),binary);
+  const config={account:{origin:'https://api.axiom.stream'},verifier:{binary:executable,binary_sha256:bundle.digest(binary)}};
   await fs.writeFile(path.join(root,'native.json'),JSON.stringify(config));
   async function stamp() {await fs.writeFile(path.join(root,'bundle.json'),JSON.stringify({schemaVersion:1,provider:'axiom-direct',target,nativeClean:true,files:await bundle.inventory(root)}));}
   await stamp();return {root,config,stamp};
@@ -86,3 +88,14 @@ for(const attack of ['changed','extra','missing','different-valid-input','symlin
     if(attack==='extra') assert.equal(await fs.readFile(path.join(target,'unexpected'),'utf8'),'extra');
   });
 }
+
+for(const native of [false,true]) test(`Windows ARM64 ${native?'prefers its native':'accepts legacy x64'} verifier bundle`,async t=>{
+  const source=await fs.mkdtemp(path.join(os.tmpdir(),'axiom-direct-win-'));
+  const resources=await fs.mkdtemp(path.join(os.tmpdir(),'axiom-direct-win-resources-'));
+  t.after(()=>fs.rm(source,{recursive:true,force:true}));t.after(()=>fs.rm(resources,{recursive:true,force:true}));
+  for(const target of (native?['win32-x64','win32-arm64']:['win32-x64'])) {
+    const {root}=await fixture(t,target);await fs.rename(root,path.join(source,target));
+  }
+  await bundle.copyBundles(resources,source,{platform:'win32',architecture:'arm64',signed:false});
+  await bundle.inspectBundle(path.join(resources,'direct',native?'win32-arm64':'win32-x64'),native?'win32-arm64':'win32-x64');
+});

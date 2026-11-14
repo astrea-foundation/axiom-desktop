@@ -18,7 +18,7 @@ use crate::{
 use super::codec::storage_error;
 use super::projection::project_runtime_events;
 use super::queries::{
-    StoredTimelineItem, ensure_thread_exists_connection, query_prompt_attachments, query_turns,
+    StoredTimelineItem, ensure_thread_exists_connection, query_replay_attachments, query_turns,
 };
 use super::records::{
     ExportOptions, InterruptedTool, LoadOutcome, RecoveryStatus, TimelineItemKind,
@@ -29,8 +29,12 @@ impl SessionStore {
     pub(super) fn interrupt_incomplete_turns(&self) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let mut connection = self.lock()?;
-        let transaction = connection.transaction().map_err(storage_error)?;
-        let ids = {
+        let path = connection.guard.path.clone();
+        let assets = connection.assets().clone();
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let candidates = {
             let mut statement = transaction
                 .prepare("SELECT DISTINCT thread_id FROM turns WHERE status='running'")
                 .map_err(storage_error)?;
@@ -40,41 +44,74 @@ impl SessionStore {
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(storage_error)?
         };
-        transaction.execute("UPDATE request_usage SET record=json_set(record, '$.state','failed', '$.responseVerified',json('false'), '$.errorCode','CLIENT_INTERRUPTED')
-            WHERE json_extract(record,'$.state')='running'", []).map_err(storage_error)?;
+        let mut ids = Vec::new();
+        // Keep recovery locks through commit. Another opener or executor cannot
+        // race recovery, and a live owner's OS lock is never stolen on timeout.
+        let mut recovery_locks = Vec::new();
+        for id in candidates {
+            if let Some(path) = &path {
+                let Some(lease) = super::execution::try_execution_lock(path, &id)? else {
+                    continue;
+                };
+                recovery_locks.push(lease);
+            }
+            ids.push(id);
+        }
         if ids.is_empty() {
             transaction.commit().map_err(storage_error)?;
             return Ok(());
         }
-        transaction
-            .execute(
-                "UPDATE turns SET status='interrupted', completed_at=?1,
-                    error=COALESCE(error, 'The previous process ended during this turn')
-                 WHERE status='running'",
-                [&now],
-            )
-            .map_err(storage_error)?;
-        transaction
-            .execute(
-                "UPDATE timeline_items SET status='interrupted', updated_at=?1
-                 WHERE status IN ('pending','in_progress')
-                   AND EXISTS(
-                     SELECT 1 FROM turns
-                     WHERE turns.thread_id=timeline_items.thread_id
-                       AND turns.id=timeline_items.turn_id
-                       AND turns.status='interrupted'
-                   )",
-                [&now],
-            )
-            .map_err(storage_error)?;
         for id in ids {
-            transaction
-                .execute(
-                    "UPDATE threads SET lifecycle='ready', revision=revision+1, updated_at=?2
-                     WHERE id=?1",
-                    params![id, now],
-                )
-                .map_err(storage_error)?;
+            let abandoned = {
+                let mut statement = transaction
+                    .prepare("SELECT id FROM turns WHERE thread_id=?1 AND status='running'")
+                    .map_err(storage_error)?;
+                statement
+                    .query_map([&id], |row| row.get::<_, String>(0))
+                    .map_err(storage_error)?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(storage_error)?
+            };
+            for turn in abandoned {
+                // Legacy histories have no canonical marker yet: retain their
+                // compatible projection until their next atomic write.
+                if super::model_history::exists(
+                    &transaction,
+                    &id.parse().map_err(|_| {
+                        crate::AxiomError::Storage("invalid saved thread ID".into())
+                    })?,
+                )? {
+                    let turn_id = turn
+                        .parse()
+                        .map_err(|_| crate::AxiomError::Storage("invalid saved turn ID".into()))?;
+                    super::model_history::append(
+                        &transaction,
+                        &assets,
+                        &EventEnvelope {
+                            schema_version: 1,
+                            sequence: 0,
+                            turn_id: Some(turn_id),
+                            occurred_at: Utc::now(),
+                            correlation_id: crate::app::CorrelationId::new(),
+                            origin: crate::app::Origin::Test,
+                            session_id: id.parse().map_err(|_| {
+                                crate::AxiomError::Storage("invalid saved thread ID".into())
+                            })?,
+                            event: crate::app::AppEvent::ErrorRaised {
+                                turn_id: Some(turn.parse().map_err(|_| {
+                                    crate::AxiomError::Storage("invalid saved turn ID".into())
+                                })?),
+                                message: "The previous process ended during this turn".into(),
+                            },
+                        },
+                        Some(&turn),
+                    )?;
+                }
+            }
+            transaction.execute("UPDATE request_usage SET record=json_set(record, '$.state','failed', '$.responseVerified',json('false'), '$.errorCode','CLIENT_INTERRUPTED') WHERE thread_id=?1 AND json_extract(record,'$.state')='running'", [&id]).map_err(storage_error)?;
+            transaction.execute("UPDATE turns SET status='interrupted', completed_at=?2, error=COALESCE(error, 'The previous process ended during this turn') WHERE thread_id=?1 AND status='running'", params![id, now]).map_err(storage_error)?;
+            transaction.execute("UPDATE timeline_items SET status='interrupted', updated_at=?2 WHERE thread_id=?1 AND status IN ('pending','in_progress') AND EXISTS(SELECT 1 FROM turns WHERE turns.thread_id=timeline_items.thread_id AND turns.id=timeline_items.turn_id AND turns.status='interrupted')", params![id, now]).map_err(storage_error)?;
+            transaction.execute("UPDATE threads SET lifecycle='ready', revision=revision+1, updated_at=?2 WHERE id=?1", params![id, now]).map_err(storage_error)?;
         }
         transaction.commit().map_err(storage_error)
     }
@@ -90,8 +127,30 @@ impl SessionStore {
     }
 
     pub fn load_recovering(&self, id: &SessionId) -> Result<LoadOutcome> {
+        self.load_history(id, false)
+    }
+
+    /// Complete transcript/recipe events, including model bodies superseded by
+    /// checkpoints. Only presentation consumers should pay for full hydration.
+    pub fn load_presentation(&self, id: &SessionId) -> Result<LoadOutcome> {
+        self.load_history(id, true)
+    }
+
+    fn load_history(&self, id: &SessionId, presentation: bool) -> Result<LoadOutcome> {
         let thread = self.thread_summary(id)?;
         let connection = self.lock()?;
+        let canonical = if presentation {
+            super::model_history::load_presentation(&connection, connection.assets(), id)?
+        } else {
+            super::model_history::load(&connection, connection.assets(), id)?
+        };
+        if let Some(events) = canonical {
+            let warnings = if events.iter().any(|event| matches!(&event.event,
+                crate::app::AppEvent::WarningRaised { message } if message == super::asset_codec::MEDIA_OMITTED)) {
+                vec![super::asset_codec::MEDIA_OMITTED.into()]
+            } else { Vec::new() };
+            return Ok(LoadOutcome { events, warnings });
+        }
         let turns = query_turns(&connection, id)?;
         let mut statement = connection
             .prepare(
@@ -123,6 +182,18 @@ impl SessionStore {
                 "thread {id} exceeds the {MAX_TIMELINE_ITEMS_PER_LOAD}-item runtime restore limit"
             ));
         }
+        for item in &mut items {
+            let omitted = super::asset_codec::MediaCodec {
+                assets: connection.assets(),
+                connection: &connection,
+                owner: &super::assets::thread_owner(&id.to_string()),
+                direction: super::asset_codec::Direction::Load,
+            }
+            .timeline(&mut item.metadata)?;
+            if omitted > 0 && warnings.is_empty() {
+                warnings.push(super::asset_codec::MEDIA_OMITTED.into());
+            }
+        }
         let mut attachments = HashMap::new();
         for item in &items {
             if item.kind == TimelineItemKind::UserMessage
@@ -130,7 +201,7 @@ impl SessionStore {
             {
                 attachments.insert(
                     item.id.clone(),
-                    query_prompt_attachments(&connection, id, &item.id)?,
+                    query_replay_attachments(&connection, connection.assets(), id, &item.id)?,
                 );
             }
         }
@@ -194,9 +265,9 @@ impl SessionStore {
     }
 
     pub fn export_with_options(&self, id: &SessionId, options: ExportOptions) -> Result<String> {
-        let thread = self.thread_summary(id)?;
+        let mut thread = self.thread_summary(id)?;
         let connection = self.lock()?;
-        let turns = query_turns(&connection, id)?;
+        let mut turns = query_turns(&connection, id)?;
         let maximum = options.max_items.max(1);
         let mut statement = connection
             .prepare(
@@ -220,18 +291,58 @@ impl SessionStore {
         for item in &mut items {
             if item.kind == TimelineItemKind::UserMessage && !options.include_prompts {
                 item.content = "[omitted by export policy]".into();
+                item.metadata = json!({});
             }
-            if item.kind == TimelineItemKind::ToolCall && !options.include_tool_output {
+            if item.kind == TimelineItemKind::ToolCall {
+                if !options.include_tool_output {
+                    item.content = "[omitted by export policy]".into();
+                    // Allowlist structural fields: new output-bearing metadata
+                    // must not silently bypass an omission policy.
+                    item.metadata = json!({"name": item.metadata.get("name"),
+                        "success": item.metadata.get("success")});
+                } else if !options.include_prompts
+                    && let Some(fields) = item.metadata.as_object_mut()
+                {
+                    fields.remove("arguments");
+                }
+            }
+            // Summaries, questions, plans, progress and notices can quote both
+            // prompts and tool results. They have no separable safe payload.
+            if (!options.include_prompts || !options.include_tool_output)
+                && matches!(item.kind, TimelineItemKind::Notice | TimelineItemKind::Plan)
+            {
                 item.content = "[omitted by export policy]".into();
+                item.metadata = json!({"code": item.metadata.get("code")});
             }
+        }
+        if !options.include_prompts {
+            thread.title = None;
+        }
+        if !options.include_prompts || !options.include_tool_output {
+            for turn in &mut turns {
+                turn.error = None;
+            }
+        }
+        for item in &mut items {
+            super::asset_codec::MediaCodec {
+                assets: connection.assets(),
+                connection: &connection,
+                owner: &super::assets::thread_owner(&id.to_string()),
+                direction: super::asset_codec::Direction::Load,
+            }
+            .timeline(&mut item.metadata)?;
         }
         drop(statement);
         drop(connection);
+        let mut recovery = self.recovery_status(id)?;
+        if !options.include_tool_output {
+            recovery.changed_paths.clear();
+        }
         let mut value = json!({
             "thread": thread,
             "turns": turns,
             "timeline_items": items,
-            "recovery": self.recovery_status(id)?,
+            "recovery": recovery,
         });
         redact_value(&mut value);
         serde_json::to_string_pretty(&value).map_err(Into::into)

@@ -169,3 +169,14 @@ test("oversized code stays complete without spending time on token highlighting"
     assert.equal(html.match(/# long example\n/g)?.length, 4000);
   }
 });
+
+test("fenced code blocks get a language header and a copy button; inline code does not", () => {
+  const html = render('Run:\n\n```bash\necho "hello"\n```\n\nThen `ls`.');
+  assert.equal(html.match(/class="code-block"/g)?.length, 1);
+  assert.match(html, /<span class="code-block__language">bash<\/span>/);
+  assert.match(html, /<button[^>]*class="code-block__copy"[^>]*aria-label="Copy code"/);
+  assert.match(html, /<div class="code-block">[\s\S]*<pre><code class="[^"]*language-bash/);
+  assert.equal(render("```\nplain words here\n```").match(/aria-label="Copy code"/g)?.length, 1);
+  assert.doesNotMatch(render("Use `ls` here."), /code-block/);
+  assert.match(render('```python\ndef pi():\n    return "unfinished'), /aria-label="Copy code"/, "streaming fences are copyable");
+});

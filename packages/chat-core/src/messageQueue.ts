@@ -24,6 +24,13 @@ export interface QueueApi {
   /** Hosts with asynchronous encrypted storage commit the outbox before network dispatch. */
   persistQueue?(items: readonly QueuedMessage[]): Promise<void>;
 }
+/** Optional host storage for encrypted queue metadata. The browser keeps its
+ * existing synchronous localStorage adapter when this is omitted. */
+export interface QueueStore {
+  load(account: string): Promise<QueuedMessage[]>;
+  save(account: string, items: readonly QueuedMessage[]): Promise<void>;
+}
+
 const MAX_MESSAGES = 32;
 const MAX_QUEUE_BYTES = 64 * 1024 * 1024;
 const key = (account: string) => `axiom.message-queue.v1:${encodeURIComponent(account)}`;
@@ -32,6 +39,8 @@ const key = (account: string) => `axiom.message-queue.v1:${encodeURIComponent(ac
  * removes a message. No background replay after account/runtime changes. */
 export class MessageQueue {
   private restoring: Promise<void> = Promise.resolve();
+  private saving: Promise<void> = Promise.resolve();
+  private restoreFailed = false;
   private loading = false;
   private account: string | null = null;
   private runtime: string | null = null;
@@ -44,7 +53,7 @@ export class MessageQueue {
   private operations = new Map<string, string>();
   private interruptions = new Map<string, { id: string | null; ready: boolean }>();
 
-  constructor(private storage: ConsentStorage | null, private changed: () => void, private reportError: (message: string) => void, private payloads: PayloadStore = localPayloads) {}
+  constructor(private storage: ConsentStorage | null, private changed: () => void, private reportError: (message: string) => void, private payloads: PayloadStore = localPayloads, private queueStore?: QueueStore) {}
 
   list(threadId: string | null, accountId = this.account): QueuedMessage[] {
     if (accountId !== this.account) return [];
@@ -62,15 +71,39 @@ export class MessageQueue {
     // and permission. A subsequent anonymous sync also has a null account and
     // must not expose the previous owner's items or wait on their restoration.
     this.items = []; this.paused.clear(); this.freshSends.clear();
-    this.loading = false; this.restoring = Promise.resolve();
+    this.loading = false; this.restoring = Promise.resolve(); this.saving = Promise.resolve(); this.restoreFailed = false;
   }
   private persist(): void {
+    if (this.queueStore) {
+      if (!this.account || this.restoreFailed) throw new Error("The saved queue is unavailable. Reconnect before sending.");
+      const account = this.account, generation = this.generation;
+      const snapshot = this.items.map(item => item.payloadId ? { ...item, text: "", attachments: undefined } : { ...item });
+      this.saving = this.saving.catch(() => undefined).then(async () => {
+        if (generation !== this.generation) throw new Error("The account or connection changed. Your message remains saved for review.");
+        await this.queueStore!.save(account, snapshot);
+      });
+      void this.saving.catch(() => {
+        if (generation !== this.generation) return;
+        for (const item of this.items) this.paused.add(item.threadId);
+        this.reportError("The encrypted queue could not be saved. Keep Axiom open and retry.");
+      });
+      return;
+    }
     if (!this.storage || !this.account) throw new Error("The message queue could not be saved. No new message was sent.");
     this.storage.setItem(key(this.account), JSON.stringify(this.items.map((item) => item.payloadId ? { ...item, text: "", attachments: undefined } : item)));
   }
   private save(): boolean {
     try { this.persist(); return true; }
     catch { this.reportError("The message queue could not be saved. Sending is paused; please keep Axiom open and try again."); return false; }
+  }
+
+  /** Wait for the exact queued snapshots to commit before clearing a draft,
+   * dispatching, deleting payloads, or restarting the application. */
+  async flush(): Promise<void> {
+    await this.restoring;
+    if (this.restoreFailed) throw new Error("The saved message queue could not be read. Nothing was sent.");
+    let pending: Promise<void>;
+    do { pending = this.saving; await pending; } while (pending !== this.saving);
   }
 
   sync(state: ClientState, api: QueueApi | null): void {
@@ -81,9 +114,10 @@ export class MessageQueue {
       this.generation++;
       this.account = account; this.runtime = runtime;
       this.operations.clear(); this.interruptions.clear(); this.items = []; this.paused.clear(); this.freshSends.clear();
+      this.restoreFailed = false; this.loading = false; this.saving = Promise.resolve();
       if (account) {
         try {
-          const raw = this.storage?.getItem(key(account));
+          const raw = this.queueStore ? null : this.storage?.getItem(key(account));
           const saved: unknown = raw ? JSON.parse(raw) : [];
           if (!Array.isArray(saved) || saved.length > MAX_MESSAGES) throw new Error("invalid queue");
           const generation = this.generation;
@@ -93,19 +127,22 @@ export class MessageQueue {
               || typeof value.webEnabled !== "boolean" || this.items.some((item) => item.id === value.id)
               || !Number.isSafeInteger(value.agentRevision ?? 0) || (value.agentRevision ?? 0) < 0
               || (value.mcpRevision !== undefined && (!Number.isSafeInteger(value.mcpRevision) || value.mcpRevision < 0))) throw new Error("invalid queue");
-            validatePrompt(value.text, value.attachments ?? []);
-            if (this.items.reduce((sum, item) => sum + promptBytes(item.text, item.attachments ?? []), promptBytes(value.text, value.attachments ?? [])) > MAX_QUEUE_BYTES) throw new Error("invalid queue size");
+            validatePrompt(value.text, value.attachments ?? [], true);
+            if (!this.queueStore && this.items.reduce((sum, item) => sum + promptBytes(item.text, item.attachments ?? []), promptBytes(value.text, value.attachments ?? [])) > MAX_QUEUE_BYTES) throw new Error("invalid queue size");
             this.items.push({ id: value.id, threadId: value.threadId, text: value.text, attachments: value.attachments,
               payloadId: value.payloadId, webEnabled: value.webEnabled, agentRevision: value.agentRevision ?? 0, mcpRevision: value.mcpRevision,
-              preparing: value.preparing === true, status: "queued", error: "Restored after reconnect. Review and send when ready." });
+              preparing: value.preparing === true, status: "queued", error: `${value.error ? value.error + " " : ""}Restored after reconnect. Review and send when ready.` });
             this.paused.add(value.threadId);
           };
-          if (saved.some((item) => item?.payloadId)) {
+          if (this.queueStore || saved.some((item) => item?.payloadId)) {
             this.loading = true;
             this.restoring = (async () => {
-              for (const value of saved) {
+              const values: unknown = this.queueStore ? await this.queueStore.load(account) : saved;
+              if (!Array.isArray(values) || (!this.queueStore && values.length > MAX_MESSAGES)) throw new Error("invalid queue");
+              for (const source of values) {
+                const value = { ...source } as QueuedMessage;
                 if (value.payloadId) {
-                  if (value.payloadId !== value.id) throw new Error("invalid payload reference");
+                  if (!this.queueStore && value.payloadId !== value.id) throw new Error("invalid payload reference");
                   const payload = await this.payloads.get(account, value.payloadId);
                   if (!payload) throw new Error("missing payload");
                   Object.assign(value, payload);
@@ -115,7 +152,7 @@ export class MessageQueue {
               }
             })().catch(() => {
               if (generation !== this.generation) return;
-              this.items = []; this.reportError("The saved message queue could not be read. Nothing was sent.");
+              this.items = []; this.restoreFailed = true; this.reportError("The saved message queue could not be read. Nothing was sent.");
             }).finally(() => {
               if (generation !== this.generation) return;
               this.loading = false; this.changed();
@@ -125,11 +162,11 @@ export class MessageQueue {
             this.loading = false;
             for (const value of saved) restore(value);
           }
-        } catch { this.items = []; this.reportError("The saved message queue could not be read. Nothing was sent."); }
+        } catch { this.items = []; this.restoreFailed = true; this.reportError("The saved message queue could not be read. Nothing was sent."); }
       }
       this.changed();
     }
-    if (!account || !api || this.loading) return;
+    if (!account || !api || this.loading || this.restoreFailed) return;
     const remaining = this.items.filter((item) => !state.sessions[item.threadId]?.timeline.some((row) => row.kind === "user" && row.clientItemId === item.id));
     if (remaining.length !== this.items.length) {
       const removed = this.items.filter((item) => !remaining.includes(item));
@@ -153,18 +190,36 @@ export class MessageQueue {
     const account = this.account;
     const id = crypto.randomUUID();
     await this.payloads.put(account, id, { text, attachments });
+    let reserved = false;
     try {
       if (generation !== this.generation) throw new Error("The account or connection changed. Your draft was kept.");
-      return this.reserve(threadId, text, webEnabled, attachments, id);
-    } catch (error) { await this.payloads.remove(account, id).catch(() => undefined); throw error; }
+      this.reserve(threadId, text, webEnabled, attachments, id);
+      reserved = true;
+      await this.flush();
+      if (generation !== this.generation) throw new Error("The account or connection changed. Your draft was kept.");
+      return id;
+    } catch (error) {
+      // A lost acknowledgement can follow a successful native commit. Never
+      // delete its payload and leave an acknowledged outbox record dangling.
+      if (!this.queueStore || !reserved) await this.payloads.remove(account, id).catch(() => undefined);
+      if (generation === this.generation) {
+        const item = this.items.find(item => item.id === id);
+        if (item) { item.status = "queued"; item.error = "Saving was not confirmed. Your draft was kept; review this message before sending."; }
+        this.changed();
+      }
+      throw error;
+    }
   }
   private cleanup(item: QueuedMessage, account = this.account): void {
-    if (account && item.payloadId) void this.payloads.remove(account, item.payloadId).catch(() => undefined);
+    if (account && item.payloadId && !this.items.some(queued => queued.payloadId === item.payloadId)) {
+      const committed = this.saving;
+      void committed.then(() => this.payloads.remove(account, item.payloadId!)).catch(() => undefined);
+    }
   }
   reserve(threadId: string | null, text: string, webEnabled: boolean, attachments: PromptAttachment[] = [], payloadId?: string): string {
     if (!this.account || !this.api || !this.state?.connected) throw new Error("Connect to Axiom before sending.");
     if (this.items.length >= MAX_MESSAGES) throw new Error("The message queue is full. Send or remove a queued message first.");
-    if (this.loading) throw new Error("Wait for your saved messages to load.");
+    if (this.loading || this.restoreFailed) throw new Error("Wait for your saved messages to load, or reconnect to retry.");
     validatePrompt(text, attachments);
     if (this.items.reduce((sum, item) => sum + promptBytes(item.text, item.attachments ?? []), promptBytes(text, attachments)) > MAX_QUEUE_BYTES) throw new Error("The local queue is full (64 MiB). Send or remove a queued message first.");
     const id = payloadId ?? crypto.randomUUID();
@@ -214,6 +269,15 @@ export class MessageQueue {
       const interruption = this.interruptions.get(item.threadId);
       if (interruption?.id === id) { interruption.id = null; this.paused.add(item.threadId); }
       this.freshSends.delete(id); this.cleanup(item);
+      if (this.queueStore) {
+        const generation = this.generation;
+        void this.saving.catch(() => {
+          if (generation !== this.generation || this.items.some(saved => saved.id === id)) return;
+          // Failed encrypted deletion must remain visible and reviewable.
+          this.items.splice(Math.min(previous.indexOf(item), this.items.length), 0, item);
+          this.paused.add(item.threadId); this.changed();
+        });
+      }
     }
     this.changed();
   }
@@ -277,7 +341,7 @@ export class MessageQueue {
     return [...this.operations.values()].includes(threadId);
   }
   private pump(): void {
-    if (!this.account || !this.api || !this.state?.connected || this.loading) return;
+    if (!this.account || !this.api || !this.state?.connected || this.loading || this.restoreFailed) return;
     for (const [threadId, interruption] of this.interruptions) {
       const session = this.state.sessions[threadId];
       if (!interruption.ready || !session || session.running || this.hasOperation(threadId)) continue;
@@ -319,6 +383,10 @@ export class MessageQueue {
     this.operations.set(item.id, item.threadId);
     this.changed();
     try {
+      if (this.queueStore) {
+        await this.flush();
+        if (generation !== this.generation) return;
+      }
       if (api.persistQueue) {
         await api.persistQueue(this.items.map((queued) => ({ ...queued })));
         if (generation !== this.generation) return;

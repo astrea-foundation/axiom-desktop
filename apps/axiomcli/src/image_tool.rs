@@ -56,7 +56,7 @@ pub(crate) fn configure_runtime_definition(
         "Omit aspect_ratio to retain a reference's shape."
     };
     tool.function.description = format!(
-        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; use view_image if you want to inspect the result before answering.",
+        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; if view_image is available, you may use it to inspect the result before answering.",
         p.aspect_ratios.join(", "),
         p.default_aspect_ratio,
         size.width,
@@ -88,14 +88,6 @@ impl std::fmt::Debug for ImageCatalog {
 }
 
 impl ImageCatalog {
-    pub fn ensure_output_capacity(&self) -> Result<()> {
-        let mut images = self
-            .0
-            .lock()
-            .map_err(|_| AxiomError::Storage("image catalog unavailable".into()))?;
-        retain_image_capacity(&mut images, 14_000_000);
-        Ok(())
-    }
     fn insert(&self, mut asset: LocalImage) -> Result<String> {
         asset
             .image
@@ -121,7 +113,6 @@ impl ImageCatalog {
             .max()
             .unwrap_or(0)
             + 1;
-        retain_image_capacity(&mut images, asset.image.data.len());
         let id = asset.id.clone();
         asset.position = position;
         images.insert(id.clone(), asset);
@@ -196,6 +187,42 @@ impl ImageCatalog {
         })
     }
 
+    /// Rebuild exactly the catalog a restored conversation gives its image
+    /// tools: uploads and verified generated images from this thread only.
+    /// Unusable saved images are omitted with a warning, as on restore.
+    pub fn from_history(
+        session_id: &crate::app::SessionId,
+        events: &[crate::app::EventEnvelope],
+    ) -> Result<Self> {
+        let images = Self::default();
+        for envelope in events {
+            if envelope.session_id != *session_id {
+                return Err(AxiomError::Storage(
+                    "image history belongs to another conversation".into(),
+                ));
+            }
+            match &envelope.event {
+                AppEvent::PromptAccepted {
+                    turn_id,
+                    attachments,
+                    ..
+                } => {
+                    if images
+                        .add_uploads(&session_id.to_string(), &turn_id.to_string(), attachments)
+                        .is_err()
+                    {
+                        tracing::warn!(%session_id, "unusable saved image uploads omitted from runtime catalog");
+                    }
+                }
+                AppEvent::ImageGenerated { image, .. } if images.add_generated(image).is_err() => {
+                    tracing::warn!(%session_id, "unusable saved generated image omitted from runtime catalog");
+                }
+                _ => {}
+            }
+        }
+        Ok(images)
+    }
+
     pub fn resolve(&self, id: &str) -> Result<LocalImage> {
         self.0.lock().map_err(|_| AxiomError::Storage("image catalog unavailable".into()))?
             .get(id).cloned().ok_or_else(|| AxiomError::Tool("Image is not available in this conversation. Use an image ID from this thread or attach the image here.".into()))
@@ -222,28 +249,6 @@ impl ImageCatalog {
         let mut ordered = images.values().collect::<Vec<_>>();
         ordered.sort_by_key(|a| a.position);
         Ok(serde_json::to_string(&ordered.into_iter().map(|a|json!({"image_id":a.id,"name":a.name,"origin":a.origin,"position":a.position,"source_image_ids":a.source_image_ids})).collect::<Vec<_>>())?)
-    }
-}
-
-// This is a bounded working catalog, not the saved conversation. Expiring an
-// older reference must not prevent future messages or image jobs in this thread.
-fn retain_image_capacity(images: &mut BTreeMap<String, LocalImage>, bytes: usize) {
-    while images.len() >= 256
-        || images
-            .values()
-            .map(|image| image.image.data.len())
-            .sum::<usize>()
-            + bytes
-            > 64 * 1024 * 1024
-    {
-        let Some(oldest) = images
-            .values()
-            .min_by_key(|image| image.position)
-            .map(|image| image.id.clone())
-        else {
-            break;
-        };
-        images.remove(&oldest);
     }
 }
 
@@ -348,7 +353,7 @@ fn image_result(
 ) -> Result<ToolResult> {
     let id = context.images.add_generated(&image)?;
     let mut result = ToolResult::success(format!(
-        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. Call view_image with this image_id to inspect the result, or generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
+        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. If view_image is available, call it with this image_id to inspect the result. Use generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
         image.width,
         image.height,
         image.usage.cost_microusd.as_deref().unwrap_or("unknown")
@@ -369,7 +374,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 2,359,296 pixels. New images default to 1:1 square at 1536×1536. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. You may call view_image to inspect it before answering."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. If view_image is available, you may call it to inspect the result before answering."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -378,7 +383,7 @@ impl Tool for ImageGenerationTool {
                 "items":{"type":"string","pattern":"^img_[0-9a-f]{32}$"},
                 "description":"Ordered references from this conversation. First is <image1>, second <image2>, etc. Omit or pass [] for text-only generation."},
             "aspect_ratio":{"type":"string","enum":IMAGE_ASPECT_RATIOS,"default":"1:1",
-                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 1536×1536 square for a new image or the signed installation default for references."}},
+                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 2048×2048 square for a new image or the signed installation default for references."}},
             "required":["prompt"], "additionalProperties":false})
     }
 
@@ -452,19 +457,11 @@ impl Tool for ImageGenerationTool {
                 ));
             }
         }
-        let mut copies = Vec::new();
-        for source in &sources {
-            copies.push(
-                context
-                    .images
-                    .view(&source.id, cancellation.clone())
-                    .await?,
-            );
-        }
+        // Generation has its own 2048² reference normalizer. A view_image
+        // thumbnail discards detail before the provider ever sees the source.
         let references = sources
             .iter()
-            .zip(&copies)
-            .map(|(source, image)| (source.id.as_str(), image))
+            .map(|source| (source.id.as_str(), source.image.as_ref()))
             .collect::<Vec<_>>();
         if args.aspect_ratio.is_some() && (args.width.is_some() || args.height.is_some()) {
             return Err(AxiomError::Tool(
@@ -495,7 +492,7 @@ impl Tool for ImageGenerationTool {
                     let size = axiom_inference::ImageDimensions { width, height };
                     size.validate().map_err(|_| {
                         AxiomError::Tool(
-                        "Output dimensions must use a 32-pixel grid, with area at most 1536×1536."
+                        "Output dimensions must use a 32-pixel grid, with area at most 2048×2048."
                             .into(),
                     )
                     })?;
@@ -515,7 +512,6 @@ impl Tool for ImageGenerationTool {
                 "Output dimensions exceed the current image service limit.".into(),
             ));
         }
-        context.images.ensure_output_capacity()?;
         let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
         let request = axiom_inference::ImageGenerationRequest {
             chat_model_id: &context.model_id,
@@ -659,7 +655,7 @@ async fn report_progress(
 
 /// A missing reference means generation; an explicitly null/invalid reference
 /// is an error, not permission to generate a different image.
-fn valid_image_id(id: &str) -> bool {
+pub(crate) fn valid_image_id(id: &str) -> bool {
     id.len() == 36
         && id.starts_with("img_")
         && id.as_bytes()[4..]
@@ -701,7 +697,7 @@ pub(crate) mod tests {
             definition.function.parameters["properties"]["reference_image_ids"]["maxItems"],
             3
         );
-        assert!(definition.function.description.contains("1536×1536"));
+        assert!(definition.function.description.contains("2048×2048"));
         assert!(definition.function.description.contains("6:5"));
         assert!(!definition.function.description.contains("0.9"));
     }
@@ -709,12 +705,12 @@ pub(crate) mod tests {
     #[test]
     fn aspect_ratios_select_the_largest_exact_supported_grid_and_reject_extremes() {
         for (ratio, width, height) in [
-            ("1:1", 1536, 1536),
-            ("2:3", 1216, 1824),
-            ("3:2", 1824, 1216),
-            ("16:9", 2048, 1152),
-            ("9:16", 1152, 2048),
-            ("21:9", 2240, 960),
+            ("1:1", 2048, 2048),
+            ("2:3", 1664, 2496),
+            ("3:2", 2496, 1664),
+            ("16:9", 2560, 1440),
+            ("9:16", 1440, 2560),
+            ("21:9", 2912, 1248),
         ] {
             assert_eq!(
                 dimensions_for_aspect_ratio(ratio).unwrap(),
@@ -793,18 +789,134 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn old_image_references_expire_without_exhausting_the_conversation() {
+    fn saved_history_resolves_the_same_ids_image_tools_use_and_only_for_its_thread() {
+        use crate::app::{CorrelationId, EventEnvelope, Origin, TurnId};
+        let session = SessionId::new();
+        let turn = TurnId::new();
+        let envelope = |session_id: &SessionId, event: AppEvent| EventEnvelope {
+            schema_version: 1,
+            turn_id: event.turn_id().cloned(),
+            sequence: 1,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
+            session_id: session_id.clone(),
+            event,
+        };
+        let upload = png(64, 32);
+        let mut edited = generated_fixture();
+        edited.source_image_ids = vec![format!("img_{}", "12".repeat(16))];
+        edited.request_id = "34".repeat(16);
+        edited.usage.request_id.clone_from(&edited.request_id);
+        let history = vec![
+            envelope(
+                &session,
+                AppEvent::PromptAccepted {
+                    turn_id: turn.clone(),
+                    text: "edit this".into(),
+                    attachments: vec![PromptAttachment::Image {
+                        name: "cat.png".into(),
+                        image: upload.clone(),
+                    }],
+                },
+            ),
+            envelope(
+                &session,
+                AppEvent::ImageGenerated {
+                    call_id: "first".into(),
+                    image: Box::new(generated_fixture()),
+                },
+            ),
+            envelope(
+                &session,
+                AppEvent::ImageGenerated {
+                    call_id: "second".into(),
+                    image: Box::new(edited),
+                },
+            ),
+        ];
+        let live = ImageCatalog::default();
+        live.add_uploads(
+            &session.to_string(),
+            &turn.to_string(),
+            &[PromptAttachment::Image {
+                name: "cat.png".into(),
+                image: upload.clone(),
+            }],
+        )
+        .unwrap();
+        let upload_id = id(&live);
+        let saved = ImageCatalog::from_history(&session, &history).unwrap();
+        let uploaded = saved.resolve(&upload_id).unwrap();
+        assert_eq!(
+            (uploaded.origin, uploaded.name.as_str()),
+            ("uploaded", "cat.png")
+        );
+        assert_eq!(*uploaded.image, upload);
+        let generated = saved.resolve(&format!("img_{}", "12".repeat(16))).unwrap();
+        assert_eq!(generated.origin, "generated");
+        assert_eq!(
+            saved
+                .resolve(&format!("img_{}", "34".repeat(16)))
+                .unwrap()
+                .origin,
+            "edited"
+        );
+        assert!(saved.resolve(&format!("img_{}", "56".repeat(16))).is_err());
+
+        let mut foreign = history.clone();
+        foreign.push(envelope(
+            &SessionId::new(),
+            AppEvent::TurnStarted { turn_id: turn },
+        ));
+        assert!(ImageCatalog::from_history(&session, &foreign).is_err());
+    }
+
+    #[test]
+    fn old_image_references_remain_available_after_many_generations() {
         let catalog = ImageCatalog::default();
         let mut image = generated_fixture();
         for index in 0..270 {
             image.request_id = format!("{index:032x}");
             image.usage.request_id.clone_from(&image.request_id);
-            catalog.ensure_output_capacity().unwrap();
             catalog.add_generated(&image).unwrap();
         }
-        assert!(catalog.resolve(&format!("img_{:032x}", 0)).is_err());
+        assert!(catalog.resolve(&format!("img_{:032x}", 0)).is_ok());
         assert!(catalog.resolve(&format!("img_{:032x}", 269)).is_ok());
-        assert_eq!(catalog.0.lock().unwrap().len(), 256);
+        assert_eq!(catalog.0.lock().unwrap().len(), 270);
+    }
+
+    #[test]
+    fn old_image_references_remain_available_after_64_mib_of_encoded_assets() {
+        let catalog = ImageCatalog::default();
+        let mut raw = STANDARD.decode(png(64, 64).data).unwrap();
+        // PNG permits trailing bytes; pad a valid small raster to exercise catalog
+        // byte retention without spending the test on compressing large rasters.
+        raw.resize(1024 * 1024, 0);
+        let image = Arc::new(ImageContent {
+            mime_type: "image/png".into(),
+            data: STANDARD.encode(raw),
+        });
+        for index in 0..50 {
+            catalog
+                .insert(LocalImage {
+                    id: format!("img_{index:032x}"),
+                    name: format!("upload-{index}.png"),
+                    origin: "uploaded",
+                    position: 0,
+                    source_image_ids: Vec::new(),
+                    image: image.clone(),
+                })
+                .unwrap();
+        }
+        assert!(50 * image.data.len() > 64 * 1024 * 1024);
+        for index in 0..50 {
+            assert_eq!(
+                catalog.resolve(&format!("img_{index:032x}")).unwrap().image,
+                image
+            );
+        }
+        assert_eq!(catalog.0.lock().unwrap().len(), 50);
     }
 
     #[tokio::test]
@@ -943,7 +1055,7 @@ pub(crate) mod tests {
             codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder},
         };
         let mut state = 0x0123_4567_u32;
-        let noise = (0..1536 * 1536 * 4)
+        let noise = (0..2048 * 2048 * 4)
             .map(|_| {
                 state ^= state << 13;
                 state ^= state >> 17;
@@ -953,9 +1065,9 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         let mut raw = Vec::new();
         PngEncoder::new_with_quality(&mut raw, CompressionType::Fast, PngFilter::NoFilter)
-            .write_image(&noise, 1536, 1536, ExtendedColorType::Rgba8)
+            .write_image(&noise, 2048, 2048, ExtendedColorType::Rgba8)
             .unwrap();
-        assert!(raw.len() > axiom_inference::MAX_IMAGE_BYTES);
+        assert!(raw.len() > 10 * 1024 * 1024);
         let source = ImageContent {
             mime_type: "image/png".into(),
             data: STANDARD.encode(raw),
@@ -1038,7 +1150,9 @@ pub(crate) mod tests {
                 image.validate().unwrap();
                 let raw = STANDARD.decode(&image.data).unwrap();
                 let image = image::load_from_memory(&raw).unwrap();
-                assert!(u64::from(image.width()) * u64::from(image.height()) <= 1_048_576);
+                // The tool hands the original to the provider; view_image's
+                // one-megapixel copy must never become a generation reference.
+                assert!([(1536, 1536), (64, 64)].contains(&(image.width(), image.height())));
             }
             if !request.references.is_empty() {
                 assert_eq!(

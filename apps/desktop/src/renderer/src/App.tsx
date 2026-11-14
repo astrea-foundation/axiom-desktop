@@ -1,6 +1,8 @@
 import { Folder, PanelLeftOpen } from "lucide-react";
+import { isChatPreparation } from "@axiom/chat-core/account";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
+import { AstreaBanner } from "./components/AstreaBanner";
 import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
 import { DismissibleNotice } from "./components/DismissibleNotice";
@@ -12,6 +14,7 @@ import type { SettingsCategory } from "./components/SettingsPanel";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { Sidebar } from "./components/Sidebar";
 import { SignInStatus } from "./components/SignInStatus";
+import { StorageMigrationScreen } from "./components/StorageMigrationScreen";
 import { TrafficLightGhost } from "./components/TrafficLightGhost";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { WebConsentDialog } from "./components/WebConsentDialog";
@@ -60,6 +63,7 @@ export function App() {
   }, [accountScreenOpen]);
   const account = useNativeAccount(agentState, catalog.desktopReady, catalog.refreshModels, catalog.clearModels, closeAccountScreen, setUiError);
   const { accountView, requiresSignIn, signInState, setSignInState, refreshAccount, logout, refreshBilling, cancelNativeSignIn, openSignIn, openAccountPortal } = account;
+  const accountPreparing = isChatPreparation(accountView);
   const conversations = useConversations(agentState, connectionContext, navigation, catalog, requiresSignIn, openSignIn, setUiError);
   const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
@@ -82,7 +86,7 @@ export function App() {
     : agentState.error ? { source: "agent", text: agentState.error }
     : modelCatalogError ? { source: "catalog", text: modelCatalogError } : null;
   const fileDrop = useChatFileDrop(
-    !accountScreenOpen && !preparation && (surface === "welcome" || (surface === "thread" && !!activeSession)) && !attachmentDraft.attachmentsBusy,
+    !accountScreenOpen && !accountPreparing && !preparation && (surface === "welcome" || (surface === "thread" && !!activeSession)) && !attachmentDraft.attachmentsBusy,
     attachmentDraft.attachmentScope + surface,
     (files) => void attachmentDraft.addFiles(files),
   );
@@ -157,6 +161,14 @@ export function App() {
     <FirstLaunchUpdate updates={updates} />
   </div>;
 
+  if (agentState.account?.storageMigration) return <div className="app-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
+    <TrafficLightGhost />
+    {windowControlsCutout ? <WindowControls /> : null}
+    <div className="drag-region fixed left-0 right-[112px] top-0 h-8" aria-hidden="true" />
+    <StorageMigrationScreen progress={agentState.account.storageMigration} detail={agentState.account.detail ?? agentState.error} disconnected={!agentState.connected}
+      onRetry={async () => { setSignInState({ kind: "closed" }); await refreshAccount(); }} />
+  </div>;
+
   return (
     <div className="app-canvas flex h-full overflow-hidden p-2.5 text-[var(--color-text-primary)]">
       <TrafficLightGhost />
@@ -220,6 +232,7 @@ export function App() {
             await window.axiomDesktop?.agent.assignThreadCollection(threadId, folderId);
           })())}
           account={accountView}
+          aboveAccount={accountView.kind === "valid" && sidebarOpen ? <AstreaBanner /> : undefined}
           onSignIn={openSignIn}
           onLogout={logout}
           connected={agentState.connected}
@@ -279,13 +292,13 @@ export function App() {
             }} />
           </header>
 
-          {signInState.kind !== "closed" ? (
+          {signInState.kind !== "closed" && !agentState.account?.preparationPhase ? (
             <div className="mx-5 mb-2 mt-12 shrink-0">
               <SignInStatus state={signInState} onCancel={cancelNativeSignIn} onRetry={openSignIn} />
             </div>
           ) : null}
 
-          {errorNotice ? (
+          {errorNotice && !accountPreparing ? (
             <DismissibleNotice key={JSON.stringify([billingAccountId, agentState.runtimeInstanceId, errorNotice.source, errorNotice.text, errorNotice.source === "agent" ? errorRevision : 0])}
               onDismiss={errorNotice.source === "ui" ? () => setUiError(null) : undefined}
               className={`shadow-glass-pop absolute left-1/2 top-12 z-40 max-w-[80%] -translate-x-1/2 rounded-xl bg-[var(--surface-float)] px-4 py-2 text-[12.5px] ${errorNotice.source === "catalog" ? "text-[var(--color-text-secondary)]" : "text-[var(--color-danger-strong)]"} backdrop-blur`}>
@@ -294,11 +307,15 @@ export function App() {
           ) : null}
 
           <div className="relative min-h-0 flex-1">
-            {surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : surface === "thread" && (preparation || activeSession) ? (
+            {!accountPreparing && surface === "proxy" ? <ProxyView accountId={agentState.connected ? billingAccountId : null} runtimeId={agentState.runtimeInstanceId} onInspecting={setProxyInspecting} /> : !accountPreparing && surface === "thread" && (preparation || activeSession) ? (
               <ChatView
                 preparation={preparation}
                 attachmentPreviews={conversations.attachmentPreviews}
                 onRevise={!isStreaming && agentState.account?.state === "valid" ? reviseMessage : undefined}
+                onContinue={!isStreaming && activeThreadId && agentState.account?.state === "valid" ? async () => {
+                  const queued = messageQueue.enqueue(activeThreadId, "Continue from where you stopped. Preserve completed work and do not repeat completed tool actions.", webAccess.enabled);
+                  messageQueue.sendNow(queued);
+                } : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}
@@ -325,13 +342,17 @@ export function App() {
                 pendingUserMessage={pendingUserMessage}
                 securityScope={agentAccountScope}
                 securityRefreshDisabledReason={!agentState.connected ? "Reconnect to refresh verification" : requiresSignIn ? "Sign in to refresh verification" : undefined}
+                onEnsureSecurity={async () => {
+                  if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
+                  await window.axiomDesktop.agent.ensureSecurity(activeThreadId);
+                }}
                 onVerifySecurity={async () => {
                   if (!activeThreadId || !window.axiomDesktop?.agent) throw new Error("No active thread");
                   await window.axiomDesktop.agent.verifySecurity(activeThreadId);
                 }}
                 onAcceptOutdatedTee={() => conversations.acceptOutdatedTee(modelId)}
               />
-            ) : surface === "thread" ? (
+            ) : !accountPreparing && surface === "thread" ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--color-text-tertiary)]">
                 {threadLoadError?.id === activeThreadId ? (
                   <>
@@ -361,10 +382,17 @@ export function App() {
                 selectedModelId={modelId || models[0]?.id || ""}
                 modelStatusLabel={modelStatusLabel}
                 onModelChange={catalog.selectNewModel}
-                account={accountView}
-                signInActive={signInState.kind !== "closed"}
+                account={accountPreparing && accountView.kind === "unavailable" && errorNotice
+                  ? { ...accountView, technicalDetails: [...new Set([accountView.technicalDetails, errorNotice.text].filter(Boolean))].join("\n\n") }
+                  : accountView}
+                signInActive={signInState.kind !== "closed" && !agentState.account?.preparationPhase}
                 onSignIn={openSignIn}
-                onRefreshAccount={() => void refreshAccount()}
+                onRefreshAccount={refreshAccount}
+                onOpenSettings={trigger => {
+                  accountScreenReturnFocus.current = trigger;
+                  setSettingsCategory("account");
+                  setAccountScreen("settings");
+                }}
                 reasoningEffort={effectiveReasoningEffort}
                 onReasoningEffortChange={catalog.selectNewThinking}
               />

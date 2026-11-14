@@ -31,7 +31,7 @@ export function contextUsagePresentation({ usage, contextWindowTokens, autoCompa
   const usageLabel = used === null ? "No usage reported yet" : `${tokens.format(used)} tokens`;
   const breakdownLabel = used !== null && usage ? `${tokens.format(usage.inputTokens)} input, ${tokens.format(usage.outputTokens)} output` : null;
   const capacityLabel = capacity === null ? "Context size unavailable" : `${tokens.format(capacity)} token context window`;
-  const percentageLabel = percentage === null ? "—" : `${percent.format(percentage)}% used`;
+  const percentageLabel = percentage === null ? "Not available" : `${percent.format(percentage)}% used`;
   const compactionLabel = threshold === null ? "Compaction threshold unavailable"
     : `Auto-compacts at ${tokens.format(threshold)} tokens (${percent.format(threshold / capacity! * 100)}%)`;
   return { percentage, usageLabel, breakdownLabel, capacityLabel, percentageLabel, compactionLabel };
@@ -43,6 +43,14 @@ const money = (value: bigint) => `$${value / 1000000n}.${(value % 1000000n).toSt
 export function requestUsageTotals(records: RequestUsage[]) {
   // Snapshots replace cumulative counters; duplicate deliveries are not charges.
   const unique = [...new Map(records.map((record) => [record.requestId, record])).values()];
+  // Wire pages use random request IDs as stable cursors, not chronological
+  // positions. Live updates and reloads must select the same newest request.
+  const timestamp = (value: string | null | undefined) => value != null && /^\d+$/.test(value) ? BigInt(value) : -1n;
+  unique.sort((a, b) => {
+    const start = timestamp(a.startedAtMs) - timestamp(b.startedAtMs);
+    const finish = timestamp(a.finishedAtMs) - timestamp(b.finishedAtMs);
+    return start < 0n ? -1 : start > 0n ? 1 : finish < 0n ? -1 : finish > 0n ? 1 : a.requestId.localeCompare(b.requestId);
+  });
   const sum = (key: "inputTokens" | "outputTokens" | "costMicrousd" | "cachedInputTokens" | "reasoningTokens") =>
     unique.reduce((total, request) => total + BigInt(request[key] ?? "0"), 0n);
   const starts = unique.map((r) => Number(r.startedAtMs)).filter(Number.isFinite);
@@ -70,12 +78,12 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
   const requests = requestUsageTotals(props.requestUsage ?? []).records;
   const conversation = requests.filter((request) => request.purpose === "conversation");
   const latest = conversation.at(-1);
-  const latestKnown = latest && latest.inputTokens != null && latest.outputTokens != null;
+  const latestKnown = conversation.filter((request) => request.inputTokens != null && request.outputTokens != null).at(-1);
   const usage = latestKnown ? {
-    inputTokens: Number(latest.inputTokens), outputTokens: Number(latest.outputTokens),
-    modelId: latest.modelId, reportedAt: latest.finishedAtMs ?? latest.startedAtMs ?? "",
-    contextWindowTokens: latest.contextWindowTokens ?? (latest.modelId === props.usage?.modelId ? props.usage.contextWindowTokens : undefined),
-    autoCompactThresholdTokens: latest.autoCompactThresholdTokens ?? (latest.modelId === props.usage?.modelId ? props.usage.autoCompactThresholdTokens : undefined),
+    inputTokens: Number(latestKnown.inputTokens), outputTokens: Number(latestKnown.outputTokens),
+    modelId: latestKnown.modelId, reportedAt: latestKnown.finishedAtMs ?? latestKnown.startedAtMs ?? "",
+    contextWindowTokens: latestKnown.contextWindowTokens ?? (latestKnown.modelId === props.usage?.modelId ? props.usage?.contextWindowTokens : undefined),
+    autoCompactThresholdTokens: latestKnown.autoCompactThresholdTokens ?? (latestKnown.modelId === props.usage?.modelId ? props.usage?.autoCompactThresholdTokens : undefined),
   } : props.usage;
   const view = contextUsagePresentation({ ...props, usage });
   const turnId = props.activeTurnId ?? latest?.turnId;
@@ -118,7 +126,7 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
             <circle cx="16" cy="16" r="13" strokeWidth="2.5" stroke="currentColor" pathLength="100" strokeDasharray={`${fill} 100`} strokeLinecap={fill > 0 ? "round" : "butt"} />
           </svg>
           <span aria-hidden="true" className="text-[9px] font-medium tabular-nums">
-            {view.percentage === null ? "—" : Math.floor(view.percentage)}
+            {view.percentage === null ? "N/A" : Math.floor(view.percentage)}
           </span>
         </span>
       </button>

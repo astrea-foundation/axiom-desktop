@@ -43,6 +43,32 @@ impl std::fmt::Display for InsufficientCredit {
 
 impl std::error::Error for InsufficientCredit {}
 
+#[derive(Debug)]
+pub struct TrialCapacity {
+    pub retry_at: Option<i64>,
+}
+
+impl std::fmt::Display for TrialCapacity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Free trials are currently at capacity. Please try again later.")
+    }
+}
+
+impl std::error::Error for TrialCapacity {}
+
+fn unavailable_error(body: &Value) -> anyhow::Error {
+    if body["detail"]["code"] == "trial_capacity" {
+        TrialCapacity {
+            retry_at: body["detail"]["retry_at_unix_seconds"]
+                .as_i64()
+                .filter(|at| *at > 0),
+        }
+        .into()
+    } else {
+        anyhow::anyhow!("pool metadata request rejected")
+    }
+}
+
 fn check_status(status: reqwest::StatusCode, detail: &'static str) -> Result<()> {
     if status == reqwest::StatusCode::PAYMENT_REQUIRED {
         return Err(InsufficientCredit.into());
@@ -206,6 +232,13 @@ impl PoolClient {
         }
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(direct::CapacityUnavailable::Preparation.into());
+        }
+        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            let body = tokio::select! {
+                _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+                body = attestation::bounded_json(response, 4096) => body.unwrap_or(Value::Null),
+            };
+            return Err(unavailable_error(&body));
         }
         check_status(response.status(), "pool metadata request rejected")?;
         attestation::bounded_json(response, 8 * 1024 * 1024).await
@@ -559,6 +592,25 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trial_capacity_retains_only_the_typed_retry_timestamp() {
+        let error = unavailable_error(&json!({"detail": {"code": "trial_capacity",
+            "message": "private upstream diagnostic", "retry_at_unix_seconds": 1791849600}}));
+        assert_eq!(
+            error.downcast_ref::<TrialCapacity>().unwrap().retry_at,
+            Some(1_791_849_600)
+        );
+        assert!(!error.to_string().contains("private"));
+        assert!(!unavailable_error(&json!({"detail":{"code":"other"}})).is::<TrialCapacity>());
+        let invalid = unavailable_error(
+            &json!({"detail":{"code":"trial_capacity","retry_at_unix_seconds":-1}}),
+        );
+        assert_eq!(
+            invalid.downcast_ref::<TrialCapacity>().unwrap().retry_at,
+            None
+        );
+    }
 
     #[test]
     fn only_payment_required_is_a_typed_balance_error() {

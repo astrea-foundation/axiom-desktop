@@ -231,7 +231,14 @@ impl TuiState {
                 rail_row = rail_row.saturating_add(1);
             }
             match item {
-                TaskTimelineItem::Response { text, markdown } => {
+                TaskTimelineItem::Response { text, markdown }
+                | TaskTimelineItem::InterruptedResponse { text, markdown } => {
+                    if matches!(item, TaskTimelineItem::InterruptedResponse { .. })
+                        && !text.is_empty()
+                    {
+                        lines.push(Line::from("    [Interrupted attempt · partial answer]"));
+                        rail_row = rail_row.saturating_add(1);
+                    }
                     let rendered = markdown
                         .borrow_mut()
                         .render(

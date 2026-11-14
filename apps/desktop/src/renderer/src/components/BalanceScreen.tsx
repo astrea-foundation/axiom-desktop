@@ -6,6 +6,7 @@ import { usdFromMicrousd } from "../lib/currency";
 import { FundingPanel } from "./FundingPanel";
 import { AccountScreen } from "./AccountScreen";
 import { GiftCodePanel } from "./GiftCodePanel";
+import { CreditBillingPanel } from "./CreditBillingPanel";
 
 interface BalanceScreenProps {
   onClose: () => void;
@@ -19,6 +20,7 @@ interface BalanceScreenProps {
 export function BalanceScreen({ onClose, connected, account, billing, onRefreshBilling, onLogin }: BalanceScreenProps) {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState<string | null>(null);
+  const [creditsActive, setCreditsActive] = useState(false);
   const generation = useRef(0);
   const content = useRef<HTMLElement>(null);
   const signedIn = account?.state === "valid";
@@ -30,6 +32,7 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
     generation.current++;
     setBillingError(null);
     setBillingBusy(false);
+    setCreditsActive(false);
     return () => { generation.current++; };
   }, [account?.account?.id, account?.state, connected]);
 
@@ -81,15 +84,16 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
   };
 
   return (
-    <AccountScreen title="Balance" onClose={onClose}>
+    <AccountScreen title="Billing" onClose={onClose}>
       <section ref={content} tabIndex={-1} aria-label="Balance and payments" className="shadow-glass-card min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-[22px] bg-[var(--surface-card)] p-5 outline-none sm:p-8">
           {signedIn ? (
             <div>
+              <div hidden={creditsActive}>
               <h2 className="mb-1 text-[13px] font-medium text-[var(--color-text-secondary)]">Available credit</h2>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[32px] font-semibold tracking-[-0.03em] text-[var(--color-text-primary)]">
-                    {billing ? usdFromMicrousd(billing.availableMicrousd, 2) : "—"}
+                    {billing ? usdFromMicrousd(billing.availableMicrousd, 2) : "Loading…"}
                   </div>
                   {!billing ? <div role="status" className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">{!connected ? "Connect to load your balance." : billingError ? "Balance unavailable" : "Loading balance…"}</div> : null}
                   {billing && billing.postedMicrousd < 0 ? <p role="status" className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Top up to send another message.</p> : null}
@@ -117,7 +121,9 @@ export function BalanceScreen({ onClose, connected, account, billing, onRefreshB
                 </details>
               ) : null}
               {billing?.paymentReviewRequired ? <p role="alert" className="mt-4 text-[12px] text-[var(--color-warning-strong)]">Spending is paused while a deposit is reviewed. Your trial credit is unchanged.</p> : null}
-              {account?.account?.id ? <FundingPanel key={`funding:${account.account.id}`} accountId={account.account.id} payment={billing ? billing.paymentAccount ?? null : undefined} connected={connected} quote={billing?.zecUsdQuote} onRefreshBilling={onRefreshBilling} /> : null}
+              </div>
+              {account?.account?.id ? <CreditBillingPanel key={`billing:${account.account.id}`} accountId={account.account.id} connected={connected} onSummary={setCreditsActive} onRefreshBilling={onRefreshBilling}
+                cryptoContent={<FundingPanel key={`funding:${account.account.id}`} accountId={account.account.id} payment={billing ? billing.paymentAccount ?? null : undefined} connected={connected} quote={billing?.zecUsdQuote} onRefreshBilling={onRefreshBilling} collapseDirect={typeof window !== "undefined" && !!window.axiomDesktop?.agent.creditBilling} />} /> : null}
 
               {account?.account?.id ? <GiftCodePanel key={`gift:${account.account.id}`} accountId={account.account.id} connected={connected} /> : null}
 

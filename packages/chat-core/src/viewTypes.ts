@@ -29,6 +29,7 @@ export type SecurityState =
   "unverified" | "verifying" | "unattested_development" | "verified" | "degraded" | "outdated" | "failed";
 
 export interface DesktopMcpResponse {
+  remoteSupported?: boolean;
   revision: number;
   servers: DesktopMcpServer[];
   selectedTools: string[];
@@ -36,6 +37,8 @@ export interface DesktopMcpResponse {
 }
 
 export interface DesktopMcpServer {
+  displayName?: string | null;
+  remote?: { url: string; auth?: "none" | "bearer" | "oauth"; clientId?: string | null; clientMetadataUrl?: string | null } | null;
   name: string;
   command: string;
   args: string[];
@@ -216,6 +219,7 @@ export interface NativeSession {
 }
 
 export interface BillingStatus {
+  credits?: import("./creditBalances.js").CreditBalanceSummary | null;
   /**
    * Monotonic within one agent runtime; clients ignore older projections.
    */
@@ -372,6 +376,8 @@ export interface PromptResult {
 }
 
 export type ToolActivity = {
+  mcpSource?: { server: string; destination?: string | null };
+  started?: boolean;
   callId: string;
   name?: string;
   title: string;
@@ -418,6 +424,7 @@ export interface ClientSessionState {
   securityVerificationError?: string | null;
   contextUsage?: ContextUsage | null;
   requestUsage?: RequestUsage[];
+  compaction?: { completed: number; total: number; generatedTokens: number; estimated: boolean } | null;
   modes: SessionMode[];
   currentModeId: string | null;
   configOptions: SessionConfigOption[];
@@ -425,6 +432,8 @@ export interface ClientSessionState {
   interactions: PendingInteraction[];
   running: boolean;
   activeTurnId?: string | null;
+  /** Turn whose model output is currently writing a tool call; display-only. */
+  toolCallDraftTurnId?: string | null;
   desktopAgent?: DesktopAgentSettings | null;
   desktopMcp?: Pick<DesktopMcpResponse, "revision" | "selectedTools"> | null;
   needsResync: boolean;

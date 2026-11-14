@@ -1,4 +1,6 @@
-import {prepareUpdateRestart} from './update-lifecycle';
+import { localPayloadRequest, requireLocalPayloadAccount } from "./local-payload";
+import {prepareUpdateRestart, prepareLocalState, releaseLocalState} from './update-lifecycle';
+import {LocalStateLifecycle} from './local-state-lifecycle';
 import { validatePrompt } from "@axiom/axiom-acp-client";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -19,8 +21,10 @@ import { UpdateService } from "./update-service";
 import { updateIdentity } from "./update-identity";
 import { nativeUpdates } from "./native-updates";
 import { claimFirstLaunchUpdate } from "./first-launch-update";
+import { claimAstreaBanner } from "./astrea-banner";
 import { localProfile } from "./local-profile";
 import { installPageContextMenu } from "./page-context-menu";
+import { FactoryResetController, checkFactoryResetSupport, factoryResetError, factoryResetRelaunch } from "./factory-reset";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -50,6 +54,42 @@ const sidecar = new AgentSidecar((state) => {
 });
 let shutdownStarted = false;
 let updates: UpdateService | undefined;
+const allowedCloses = new WeakSet<BrowserWindow>();
+const localLifecycle = new LocalStateLifecycle<BrowserWindow>({
+  flush: prepareLocalState,
+  release: releaseLocalState,
+  close: window => {
+    if (!window.isDestroyed()) { allowedCloses.add(window); window.close(); }
+  },
+  stop: async () => { await Promise.allSettled([proxy.dispose(), sidecar.stop(), updates?.dispose()]); },
+  quit: () => { shutdownStarted = true; app.quit(); },
+  failed: error => {
+    const message = error instanceof Error ? error.message : "Local data could not be saved. Keep Axiom open and retry.";
+    const window = BrowserWindow.getAllWindows().find(window => !window.isDestroyed());
+    if (window) {
+      window.show(); window.focus();
+      void dialog.showMessageBox(window, { type: "error", title: "Axiom stayed open", message: "Your drafts could not be saved.", detail: message, buttons: ["Keep Axiom open"] });
+    }
+  },
+});
+const factoryReset = new FactoryResetController({
+  isInstalling: () => updates?.snapshot().status === "installing" || shutdownStarted || localLifecycle.busy,
+  prepare: async () => {
+    const executable = await resolveSidecar();
+    await checkFactoryResetSupport(executable);
+    const relaunch = factoryResetRelaunch({
+      sidecar: executable, executable: process.env.APPIMAGE || app.getPath("exe"),
+      argv: process.argv, userData: app.getPath("userData"),
+      development: Boolean(developmentRendererUrl()), developmentRestart: process.env.AXIOM_DESKTOP_DEV_RESTART,
+      profile: IS_STAGING_PROFILE ? "staging" : LOCAL_PROFILE.userDataName ? "local" : "system",
+      profileName: IS_STAGING_PROFILE ? process.env.AXIOM_DESKTOP_STAGING_PROFILE_NAME
+        : LOCAL_PROFILE.userDataName ? process.env.AXIOM_DESKTOP_LOCAL_PROFILE_NAME : undefined,
+    });
+    return () => app.relaunch(relaunch);
+  },
+  stop: async () => { await Promise.all([updates?.dispose(), proxy.dispose(), sidecar.stop()]); },
+  quit: () => { shutdownStarted = true; app.quit(); },
+});
 // Dev-only: preview another platform's chrome (AXIOM_DESKTOP_PLATFORM_PREVIEW=win32).
 const PLATFORM_PREVIEW = app.isPackaged ? undefined : process.env.AXIOM_DESKTOP_PLATFORM_PREVIEW;
 
@@ -117,6 +157,10 @@ function agentHandle(channel: string, handler: AgentHandler): void {
     if (!trusted || !BrowserWindow.fromWebContents(event.sender)) {
       throw new Error("agent IPC rejected an untrusted renderer");
     }
+    if (factoryReset.isPending()) throw new Error("Axiom is resetting. Wait for it to reopen.");
+    if (localLifecycle.busy && (channel.startsWith("agent:prompt") || channel === "proxy:start")) {
+      throw new Error("Axiom is saving local data before closing or changing accounts. Retry when it finishes.");
+    }
     if (updates?.snapshot().status === 'installing' && (channel.startsWith('agent:prompt') || channel === 'proxy:start')) {
       throw new Error('Axiom is installing an update. Wait for it to restart.');
     }
@@ -125,6 +169,8 @@ function agentHandle(channel: string, handler: AgentHandler): void {
 }
 
 function installAgentIpc(): void {
+  agentHandle("astrea-banner:claim", () => claimAstreaBanner(app.getPath("userData")));
+  agentHandle("app:factory-reset", (_event, confirmation: unknown) => factoryReset.reset(confirmation));
   agentHandle("proxy:state", () => proxy.snapshot());
   agentHandle("proxy:start", (_event, port: unknown, accountId: unknown, runtimeId: unknown) => {
     if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) throw new Error("Port must be between 1 and 65535");
@@ -135,6 +181,8 @@ function installAgentIpc(): void {
     clipboard.writeText(proxy.copyToken(boundedString(accountId, "account ID", 128), boundedString(runtimeId, "runtime ID", 128)));
   });
   agentHandle("agent:state", (event) => sidecar.rendererState(event.sender));
+  agentHandle("agent:image-read", (event, context: unknown, id: unknown) =>
+    sidecar.rendererImage(event.sender, boundedString(context, "image context", 128), boundedString(id, "image resource", 128)));
   agentHandle("agent:usage-summary", async (_event, accountId: unknown, period: unknown = "all_time", timezone: unknown = "UTC") => {
     const id = boundedString(accountId, "account ID", 128);
     if (period !== "week" && period !== "month" && period !== "all_time") throw new Error("Invalid usage period");
@@ -142,6 +190,13 @@ function installAgentIpc(): void {
     requirePaymentAccount(id, sidecar.state());
     const result = await sidecar.usageSummary({ period, timezone: zone });
     requirePaymentAccount(id, sidecar.state());
+    return result;
+  });
+  agentHandle("agent:local-payload", async (_event, value: unknown) => {
+    const request = localPayloadRequest(value);
+    requireLocalPayloadAccount(request.accountId, sidecar.state());
+    const result = await sidecar.localPayload(request);
+    requireLocalPayloadAccount(request.accountId, sidecar.state());
     return result;
   });
   agentHandle("agent:desktop-bootstrap", () => sidecar.desktopBootstrap());
@@ -170,6 +225,11 @@ function installAgentIpc(): void {
     sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
   agentHandle("agent:image-regenerate", (_event, threadId: unknown, callId: unknown) =>
     sidecar.regenerateImage(boundedString(threadId, "thread ID", 128), boundedString(callId, "image call ID", 512)));
+  agentHandle("agent:image-resolve", (_event, threadId: unknown, imageId: unknown) => {
+    const id = boundedString(imageId, "image ID", 36);
+    if (!/^img_[0-9a-f]{32}$/.test(id)) throw new Error("Invalid image ID");
+    return sidecar.resolveImage(boundedString(threadId, "thread ID", 128), id);
+  });
   agentHandle("agent:prompt-revise", (_event, sessionId: unknown, text: unknown, userItemId: unknown, expectedRevision: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
     if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
     if (typeof text !== "string") throw new Error("Invalid prompt input");
@@ -273,6 +333,24 @@ function installAgentIpc(): void {
     return result;
   });
   agentHandle("agent:billing-status", () => sidecar.billingStatus());
+  agentHandle("agent:credit-billing", async (_event, request: unknown, accountId: unknown) => {
+    const id = boundedString(accountId, "account ID", 128);
+    requirePaymentAccount(id, sidecar.state());
+    const { validateCreditAction, allowedBillingUrl } = await import("@axiom/axiom-acp-client");
+    const action = validateCreditAction(request);
+    const response = await sidecar.creditBilling(action);
+    requirePaymentAccount(id, sidecar.state());
+    if (["checkout", "portal", "setup_card", "create_card_payment", "operation"].includes(action.kind)) {
+      const result = response.result;
+      const url = result.kind === "portal" ? result.value.url : result.kind === "operation" ? result.value.url
+        : result.kind === "card_payment" ? result.value.checkout_url : null;
+      if (url) {
+        if (!allowedBillingUrl(url)) throw new Error("Invalid billing destination.");
+        await shell.openExternal(url);
+      }
+    }
+    return response;
+  });
   agentHandle("agent:crypto-options", async (_event, accountId: unknown) => {
     const id = boundedString(accountId, "account ID", 128);
     requirePaymentAccount(id, sidecar.state());
@@ -323,16 +401,25 @@ function installAgentIpc(): void {
   agentHandle("agent:native-login-start", (_event, methodHint: unknown) =>
     sidecar.nativeLoginStart(loginMethod(methodHint)),
   );
-  agentHandle("agent:native-login-complete", (_event, loginId: unknown) =>
-    sidecar.nativeLoginComplete(boundedString(loginId, "login ID", 128)),
-  );
+  agentHandle("agent:native-login-complete", (_event, loginId: unknown) => {
+    const id = boundedString(loginId, "login ID", 128);
+    let cancelled = false;
+    return localLifecycle.account(async () => {
+      await proxy.stop();
+      if (cancelled) throw new Error("Account change cancelled while closing Axiom.");
+      return sidecar.nativeLoginComplete(id);
+    }, () => { cancelled = true; return sidecar.nativeLoginCancel(id); });
+  });
   agentHandle("agent:native-login-cancel", (_event, loginId: unknown) =>
     sidecar.nativeLoginCancel(boundedString(loginId, "login ID", 128)),
   );
   agentHandle("agent:account-open", () => sidecar.openAccountPortal());
-  agentHandle("agent:logout", async () => { await proxy.stop(); return sidecar.logout(); });
+  agentHandle("agent:logout", () => localLifecycle.account(async () => { await proxy.stop(); return sidecar.logout(); }));
   agentHandle("agent:security-prewarm", (_event, modelId: unknown) =>
     sidecar.prewarmSecurity(boundedString(modelId, "model ID", 512)),
+  );
+  agentHandle("agent:security-ensure", (_event, sessionId: unknown) =>
+    sidecar.ensureSecurity(boundedString(sessionId, "session ID", 128)),
   );
   agentHandle("agent:security-verify", (_event, sessionId: unknown, acceptOutdatedTee: unknown, modelId: unknown) =>
     sidecar.verifySecurity(boundedString(sessionId, "session ID", 128), acceptOutdatedTee === true,
@@ -474,6 +561,13 @@ function createWindow(): BrowserWindow {
   });
 
   window.setMenuBarVisibility(false);
+  window.on("close", event => {
+    if (shutdownStarted || allowedCloses.has(window)) { allowedCloses.delete(window); return; }
+    event.preventDefault();
+    if (factoryReset.isPending()) return;
+    if (process.platform !== "darwin" && BrowserWindow.getAllWindows().length === 1) void localLifecycle.quit();
+    else void localLifecycle.close(window);
+  });
   installApplicationMenu();
   installPageContextMenu(window, app.getPath("downloads"), (items) => Menu.buildFromTemplate(items));
   if (PLATFORM_PREVIEW && process.platform === "darwin") window.setWindowButtonVisibility(false);
@@ -594,6 +688,10 @@ if (primaryInstance) app.on("second-instance", () => {
 });
 
 if (primaryInstance) void app.whenReady().then(async () => {
+  const resetError = factoryResetError(process.argv);
+  if (resetError !== null) {
+    dialog.showErrorBox("Factory reset did not finish", `${resetError}\n\nSome data or saved credentials may remain. Resolve the problem and try again from Settings → Account.`);
+  }
   const metadata = app.isPackaged
     ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }
     : {};
@@ -606,10 +704,12 @@ if (primaryInstance) void app.whenReady().then(async () => {
     run: nativeUpdates(resolveSidecar),
     parentPid: process.pid,
     prepareRestart: prepareUpdateRestart,
-    canRestart: () => !Object.values(sidecar.state().sessions).some(session => session.running)
+    canRestart: () => !localLifecycle.busy && !factoryReset.isPending() && !Object.values(sidecar.state().sessions).some(session => session.running)
       && !['running', 'starting', 'stopping'].includes(proxy.snapshot().status),
     restart: async () => {
       await Promise.all([proxy.dispose(), sidecar.stop()]);
+      // The updater already received renderer ACKs before stopping native.
+      shutdownStarted = true;
       app.quit();
     },
     emit: (state) => {
@@ -687,6 +787,6 @@ app.on("window-all-closed", () => {
 app.on("before-quit", (event) => {
   if (shutdownStarted) return;
   event.preventDefault();
-  shutdownStarted = true;
-  void Promise.all([proxy.dispose(), sidecar.stop(), updates?.dispose()]).finally(() => app.quit());
+  if (factoryReset.isPending()) return;
+  void localLifecycle.quit();
 });

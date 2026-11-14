@@ -1,10 +1,15 @@
 import { ipcRenderer } from "electron";
 import { AgentStateImages } from "./agent-state-images";
-import type { AgentStatePacket } from "../shared/agent-state";
-import type { PromptAttachment, GetAttachmentsResponse } from "@axiom/axiom-acp-client";
+import type { AgentImagePacket, AgentStatePacket } from "../shared/agent-state";
+import type { GeneratedImageUrl } from "./agent-state-images";
+import type { PromptAttachment, GetAttachmentsResponse, ResolveImageResponse } from "@axiom/axiom-acp-client";
 import type {
   AccountStatusResponse,
+  LocalPayloadRequest,
+  LocalPayloadResponse,
   BillingStatusResponse,
+  CreditBillingAction,
+  CreditBillingResponse,
   CryptoOptionsResponse,
   CryptoPaymentResponse,
   CryptoPaymentsResponse,
@@ -45,6 +50,7 @@ import type {
 } from "@axiom/axiom-acp-client";
 
 export interface AgentApi {
+  localPayload: (request: LocalPayloadRequest) => Promise<LocalPayloadResponse>;
   getState: () => Promise<ClientState>;
   desktopBootstrap: () => Promise<DesktopBootstrapResponse>;
   newChat: () => Promise<SessionStartResult>;
@@ -58,6 +64,9 @@ export interface AgentApi {
   promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number) => Promise<PromptResult>;
   getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
   regenerateImage: (threadId: string, callId: string) => Promise<{ callId: string }>;
+  resolveImage: (threadId: string, imageId: string) => Promise<ResolveImageResponse>;
+  loadGeneratedImage: (assetId: string) => Promise<GeneratedImageUrl>;
+  releaseGeneratedImage: (assetId: string) => void;
   revisePrompt: (sessionId: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean, agentRevision: number, mcpRevision?: number) => Promise<PromptResult>;
   steer: (request: SteerTurnRequest) => Promise<SteerTurnResponse>;
   cancel: (sessionId: string) => Promise<void>;
@@ -68,6 +77,7 @@ export interface AgentApi {
   setSettings: (settings: ThreadSettingsRequest) => Promise<ThreadSettingsResult>;
   accountStatus: () => Promise<AccountStatusResponse>;
   billingStatus: () => Promise<BillingStatusResponse>;
+  creditBilling?: (action: CreditBillingAction, accountId: string) => Promise<CreditBillingResponse>;
   cryptoOptions: (accountId: string) => Promise<CryptoOptionsResponse>;
   cryptoPayments: (accountId: string) => Promise<CryptoPaymentsResponse>;
   cryptoInvoiceAction: (request: CryptoInvoiceActionRequest, accountId: string) => Promise<CryptoPaymentResponse>;
@@ -83,6 +93,7 @@ export interface AgentApi {
   openAccountPortal: () => Promise<void>;
   logout: () => Promise<AccountStatusResponse>;
   prewarmSecurity: (modelId: string) => Promise<VerifySecurityResponse>;
+  ensureSecurity: (sessionId: string) => Promise<VerifySecurityResponse>;
   verifySecurity: (sessionId: string, acceptOutdatedTee?: boolean, modelId?: string) => Promise<VerifySecurityResponse>;
   compact: (sessionId: string, focus?: string) => Promise<CompactResponse>;
   deletePreview: (sessionIds: string[]) => Promise<DeletePreviewResponse>;
@@ -107,16 +118,35 @@ function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
 const stateImages = new AgentStateImages();
 const stateListeners = new Set<(state: ClientState) => void>();
 // Subscribe before any renderer listeners: initial image payloads must not be
-// lost between bootstrap and React mounting. Only document-local URLs cross
-// contextBridge, never binary assets or multi-megabyte base64 strings.
-ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => {
+// lost between bootstrap and React mounting. State projections carry document-
+// local URLs; explicit draft/attachment APIs transfer their owning input bytes.
+let localState: ClientState | null = null;
+let localEpoch = 0;
+function acceptState(packet: AgentStatePacket): ClientState {
   const state = stateImages.accept(packet);
+  const identity = (value: ClientState | null) => JSON.stringify([value?.connected, value?.runtimeInstanceId, value?.account?.state, value?.account?.account?.id]);
+  if (identity(state) !== identity(localState)) localEpoch++;
+  localState = state;
+  return state;
+}
+
+ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => {
+  const state = acceptState(packet);
   for (const listener of stateListeners) listener(state);
 });
 window.addEventListener("unload", () => stateImages.dispose(), { once: true });
 
 export const agentApi: AgentApi = {
-  getState: async () => stateImages.accept(await invoke<AgentStatePacket>("state")),
+  localPayload: async (request) => {
+    if (!localState?.connected || localState.account?.state !== "valid" || localState.account.account?.id !== request.accountId) {
+      throw new Error("The account changed. Local data was not accessed.");
+    }
+    const epoch = localEpoch;
+    const result = await invoke<LocalPayloadResponse>("local-payload", request);
+    if (epoch !== localEpoch) throw new Error("The account changed while saving local data.");
+    return result;
+  },
+  getState: async () => acceptState(await invoke<AgentStatePacket>("state")),
   desktopBootstrap: () => invoke("desktop-bootstrap"),
   newChat: () => invoke("chat-new"),
   desktopMcp: (request) => invoke("desktop-mcp", request),
@@ -127,6 +157,9 @@ export const agentApi: AgentApi = {
   promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision),
   getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
   regenerateImage: (threadId, callId) => invoke("image-regenerate", threadId, callId),
+  resolveImage: (threadId, imageId) => invoke("image-resolve", threadId, imageId),
+  loadGeneratedImage: (assetId) => stateImages.load(assetId, (context, id) => invoke<AgentImagePacket>("image-read", context, id)),
+  releaseGeneratedImage: (assetId) => stateImages.release(assetId),
   revisePrompt: (sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision) => invoke("prompt-revise", sessionId, text, userItemId, expectedRevision, webEnabled, agentRevision, mcpRevision),
   steer: (request) => invoke("steer", request),
   cancel: (sessionId) => invoke("cancel", sessionId),
@@ -137,6 +170,7 @@ export const agentApi: AgentApi = {
   setSettings: (settings) => invoke("set-settings", settings),
   accountStatus: () => invoke("account-status"),
   billingStatus: () => invoke("billing-status"),
+  creditBilling: (action, accountId) => invoke("credit-billing", action, accountId),
   cryptoOptions: (accountId) => invoke("crypto-options", accountId),
   cryptoPayments: (accountId) => invoke("crypto-payments", accountId),
   cryptoInvoiceAction: (request, accountId) => invoke("crypto-invoice-action", request, accountId),
@@ -152,6 +186,7 @@ export const agentApi: AgentApi = {
   openAccountPortal: () => invoke("account-open"),
   logout: () => invoke("logout"),
   prewarmSecurity: (modelId) => invoke("security-prewarm", modelId),
+  ensureSecurity: (sessionId) => invoke("security-ensure", sessionId),
   verifySecurity: (sessionId, acceptOutdatedTee, modelId) => invoke("security-verify", sessionId, acceptOutdatedTee, modelId),
   compact: (sessionId, focus) => invoke("compact", sessionId, focus),
   deletePreview: (sessionIds) => invoke("delete-preview", sessionIds),

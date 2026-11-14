@@ -25,6 +25,7 @@ interface ChatViewProps {
   onSubmit: () => void;
   onStop: () => void;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
+  onContinue?: () => Promise<void>;
   isStreaming: boolean;
   models: ProviderModel[];
   selectedModelId: string;
@@ -36,6 +37,7 @@ interface ChatViewProps {
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
   pendingUserMessage?: PendingUserMessage | null;
   onVerifySecurity: () => void | Promise<unknown>;
+  onEnsureSecurity?: () => void | Promise<unknown>;
   onAcceptOutdatedTee?: () => Promise<void>;
   securityScope?: string;
   securityRefreshDisabledReason?: string;
@@ -56,6 +58,7 @@ export function ChatView({
   onSubmit,
   onStop,
   onRevise,
+  onContinue,
   isStreaming,
   models,
   selectedModelId,
@@ -67,6 +70,7 @@ export function ChatView({
   onReasoningEffortChange,
   pendingUserMessage,
   onVerifySecurity,
+  onEnsureSecurity,
   onAcceptOutdatedTee,
   securityScope,
   securityRefreshDisabledReason,
@@ -91,7 +95,7 @@ export function ChatView({
         {...autoScroll.handlers}
       >
         <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} attachmentPreviews={attachmentPreviews} />
+          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} onContinue={onContinue} attachmentPreviews={attachmentPreviews} />
         </div>
       </div>
 
@@ -99,6 +103,7 @@ export function ChatView({
         <button
           type="button"
           onClick={autoScroll.resume}
+          onWheel={autoScroll.onOverlayWheel}
           aria-label="Scroll to latest"
           className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[var(--surface-float)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
         >
@@ -140,6 +145,7 @@ export function ChatView({
             requestUsage={session?.requestUsage}
             activeTurnId={session?.activeTurnId}
             onVerifySecurity={onVerifySecurity}
+            onEnsureSecurity={onEnsureSecurity}
           />
         </div>
       </div>

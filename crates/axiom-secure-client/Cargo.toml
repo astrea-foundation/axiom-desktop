@@ -43,12 +43,12 @@ url = "2.5.7"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 x509-parser = { version = "0.17.0", features = ["verify"] }
 zeroize = "1.8.2"
-ryu = "1.0.20"
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+axiom-pool-protocol = { version = "0.1.0", path = "../../vendor/axiom-pool-protocol", features = ["test-fixture"] }
 tokio = { version = "1.48.0", features = ["test-util"] }
 aes-gcm = "0.10"
 http = "1.3.1"

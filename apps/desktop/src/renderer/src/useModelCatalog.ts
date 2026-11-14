@@ -196,7 +196,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
   }, [activeThreadId]);
 
   const updateSettings = (nextModel?: string, nextThinking?: ReasoningEffort) => {
-    if (!activeThreadId || !activeSession) return;
+    if (!activeThreadId || !activeSession || (nextModel && activeSession.running)) return;
     const api = window.axiomDesktop?.agent;
     if (!api) return;
     const generation = ++settingsGeneration.current;
@@ -230,6 +230,8 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
 
   const modelStatusLabel = models.length && modelId && !selectedModel ? "Model unavailable" : !agentState.connected || !desktopReady
     ? "Starting…"
+    : !agentState.account || agentState.account.state === "starting"
+      ? "Preparing your account…"
     : modelCatalogError
       ? "Models unavailable"
       : agentState.account?.state === "expired"

@@ -71,6 +71,21 @@ impl ServerHandler for FixtureServer {
         if self.mode == "duplicate" {
             tools.push(self.tool());
         }
+        if self.mode.starts_with("sibling_") {
+            let reconnected = self.state.as_ref().is_some_and(|path| path.exists());
+            if self.mode != "sibling_removed" || !reconnected {
+                let property = if reconnected {
+                    json!({"value":{"type":"integer"}})
+                } else {
+                    json!({"value":{"type":"string"}})
+                };
+                tools.push(Tool::new(
+                    "sibling",
+                    "sibling tool",
+                    object_schema(&property),
+                ));
+            }
+        }
         Ok(ListToolsResult {
             tools,
             ..Default::default()
@@ -83,7 +98,7 @@ impl ServerHandler for FixtureServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         match self.mode.as_str() {
-            "crash_once" | "schema_drift" => {
+            "crash_once" | "schema_drift" | "sibling_changed" | "sibling_removed" => {
                 let state = self.state.as_ref().expect("state path");
                 if !state.exists() {
                     std::fs::write(state, b"called").expect("write marker");
@@ -111,6 +126,13 @@ impl ServerHandler for FixtureServer {
             }
             "slow" => context.ct.cancelled().await,
             _ => {}
+        }
+        if request.name == "sibling" && self.mode.starts_with("sibling_") {
+            std::fs::write(
+                self.state.as_ref().unwrap().with_extension("dispatched"),
+                b"unsafe call",
+            )
+            .unwrap();
         }
         let value = request
             .arguments
@@ -201,6 +223,10 @@ fn config(mode: &str, state: Option<&Path>, read_only: bool) -> McpServerConfig 
         "1".into(),
     ]);
     McpServerConfig {
+        display_name: None,
+        remote: None,
+        oauth_credentials: None,
+        oauth_identity: None,
         env: std::collections::BTreeMap::default(),
         name: "Blossom Fixture".into(),
         command: "env".into(),
@@ -231,7 +257,7 @@ async fn discovers_real_stdio_tools_and_preserves_policy_provenance() {
     let tool = &tools[0];
     assert_eq!(tool.name(), "mcp__blossom_fixture__echo");
     assert!(matches!(
-        tool.effects(&context(&temp), &json!({"value":"pink"}))
+        tool.effects(&context(&temp), &json!({"value":"task-management flask-sqlalchemy"}))
             .expect("effects")
             .as_slice(),
         [Effect::Mcp { server, tool, side_effecting: true }]
@@ -241,7 +267,7 @@ async fn discovers_real_stdio_tools_and_preserves_policy_provenance() {
     let result = tool
         .execute(
             &context(&temp),
-            json!({"value":"pink"}),
+            json!({"value":"task-management flask-sqlalchemy"}),
             CancellationToken::new(),
         )
         .await
@@ -249,8 +275,16 @@ async fn discovers_real_stdio_tools_and_preserves_policy_provenance() {
     assert!(result.success);
     assert!(result.content.contains("Blossom Fixture"));
     assert!(result.content.contains("untrusted MCP result"));
-    assert!(!result.content.contains("axm_"));
-    assert!(result.content.contains("[REDACTED]"));
+    let saved: Value = serde_json::from_str(&result.content).expect("result envelope");
+    // No configured secret is present. Credential-like server text is ordinary
+    // authoritative content and must survive without diagnostic rewriting.
+    assert_eq!(
+        saved["result"]["content"][0]["text"],
+        "echo=\"task-management flask-sqlalchemy\"; secret=axm_1234567890abcdefghijklmnop"
+    );
+    for tool in tools {
+        tool.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -422,14 +456,68 @@ async fn explicit_environment_values_never_reach_tool_results_or_debug_output() 
     let result = tools[0]
         .execute(
             &context(&root),
-            json!({"text": secret}),
+            json!({"value": format!("task-management flask-sqlalchemy {secret}")}),
             CancellationToken::new(),
         )
         .await
         .unwrap();
     assert!(!result.content.contains(secret));
-    assert!(result.content.contains("[REDACTED]"));
+    let saved: Value = serde_json::from_str(&result.content).expect("result envelope");
+    assert_eq!(
+        saved["result"]["content"][0]["text"],
+        "echo=\"task-management flask-sqlalchemy [REDACTED]\"; secret=axm_1234567890abcdefghijklmnop"
+    );
     for tool in tools {
         tool.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn reconnect_revalidates_sibling_schema_and_removal() {
+    for mode in ["sibling_changed", "sibling_removed"] {
+        let temp = TempDir::new().unwrap();
+        let marker = temp.path().join("generation");
+        let mut config = config(mode, Some(&marker), true);
+        config.read_only_tools.push("sibling".into());
+        let tools = connect_tools(&[config], 4096).await.unwrap();
+        let a = tools
+            .iter()
+            .find(|tool| tool.name().ends_with("__echo"))
+            .unwrap();
+        let b = tools
+            .iter()
+            .find(|tool| tool.name().ends_with("__sibling"))
+            .unwrap();
+        let first = a
+            .execute(
+                &context(&temp),
+                json!({"value":"a"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(first.success, "unchanged A may reconnect");
+        assert_eq!(
+            serde_json::from_str::<Value>(&first.content).unwrap()["connection_generation"],
+            2
+        );
+        let second = b
+            .execute(
+                &context(&temp),
+                json!({"value":"old schema"}),
+                CancellationToken::new(),
+            )
+            .await;
+        let error = second.unwrap_err().to_string();
+        assert!(
+            error.contains(if mode == "sibling_removed" {
+                "no longer advertises"
+            } else {
+                "changed the schema"
+            }),
+            "{error}"
+        );
+        assert!(!marker.with_extension("dispatched").exists());
+        a.shutdown().await;
     }
 }

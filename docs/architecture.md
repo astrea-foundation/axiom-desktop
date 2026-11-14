@@ -44,14 +44,16 @@ model preferences, selection, and durable submission/queue lifecycle respectivel
 Account/runtime generations and stable submission IDs remain the guards against
 late work affecting a different account or conversation.
 
-Desktop sends generated PNG bytes once per document-local image resource,
-separately from streaming state. Main replaces duplicate inline blocks with
-opaque references; preload creates local Blob URLs before state crosses
-`contextBridge`. Token updates carry metadata and references, not image base64.
-Each window has its own resource context. Logout, account/runtime changes,
+With `imageResources@1`, native timeline queries project image dimensions and
+identities without sending PNGs to Desktop. Live image updates also carry
+metadata. Main mints opaque window/document handles; viewport requests resolve
+one account-owned completed tool and check its original hash before preload
+creates a local Blob URL. No image bytes cross `contextBridge`. Preload shares
+duplicate reads, limits concurrency to two and retains at most 32 MiB of idle
+originals, with active viewers pinned. Logout, account/runtime changes,
 disconnection and document unload revoke resources; deleted timeline resources
-are released. A full bootstrap resends assets, and late same-context bootstrap
-assets can repair references without rolling back newer conversation state.
+and delayed replies are discarded. Legacy inline image transport still sends
+assets separately from streaming state and supports late bootstrap recovery.
 Native conversation storage, image hashes, E2EE verification and resolution
 limits are unchanged. Browser inline-image compatibility decoding yields in
 bounded chunks outside React rendering.
@@ -76,6 +78,22 @@ holding the CLI/Desktop coordination lock continuously through server rotation
 and persistence. Commit reuses that locked observation, and the macOS writer
 updates the existing item in place without reading the old password again.
 The item keeps its existing access controls and shared service/account identity.
+The protected entry is an `axc1_` envelope containing the rotating refresh token
+and an independently random 32-byte recovery attempt. It is still one OS
+credential item, using the existing origin/profile scope. Legacy bare tokens
+upgrade under the same process-shared lock before a request is dispatched.
+Transport timeouts, 5xx and malformed responses retain the same durable attempt;
+a different CLI/Desktop process reloads it under that lock. The API may return
+the exact original rotation for two minutes while all session/token bounds are
+valid and the successor remains unused. Retries never extend expiration or
+create another family branch. A different attempt, late retry or successor reuse
+retains family revocation; HTTP 401 clears the matching local credential.
+Successful rotation replaces the entry with the successor and a fresh attempt.
+Install compatible platform migration/API support before shipping this native
+client; an old API rejects the new request field and the native client keeps its
+entry for a later compatible retry. This envelope is opaque to older native
+versions, so do not downgrade a profile with a saved current session.
+
 A denied read remains unavailable and is not retried by account-status polling.
 
 The hosted account ID is an opaque identifier, independent of email, wallet or
@@ -99,13 +117,97 @@ recovery, projections and value encoding. Helpers receive the existing connectio
 or transaction; moving a method does not create an extra commit boundary.
 Runtime events become materialized records rather than stored event envelopes.
 Startup marks unfinished work interrupted and never replays side effects.
+Stop rebuilds model context from the committed local timeline before accepting
+the next prompt. For models that support reasoning replay, request preparation
+preserves reasoning-only assistant entries with a `<response_incomplete>` body
+marking the reasoning as unfinished. Empty assistant entries and reasoning-only
+entries for models without replay support are omitted from requests. The local
+timeline retains the original thinking trace without the generated marker.
+Partial answer text, refusals and tool calls remain eligible for replay under the
+selected model's capabilities. This applies independently of the next prompt's
+Web setting and does not relax provider message validation.
 The inspectable [SQL baseline](../apps/axiomcli/src/session/schema.sql) and
 [versioning policy](versioning.md) define compatibility.
 
 Conversation content and drafts stay local. Desktop drafts, pending submissions,
 Web preferences and queues use account-scoped local state. Deleting a thread
 removes its conversation records but does not delete files in its working directory.
-Local conversation databases are not encrypted at rest by AxiomCLI.
+Local conversation databases use SQLCipher with independent OS-protected keys.
+Managed image/file bytes are encrypted external assets; authoritative records
+and checkpoints keep their references. Drafts and the outbox use native encrypted
+persistence with acknowledged forward import from legacy browser storage. See
+[encrypted local storage](local-storage.md). Authoritative prompts, assistant
+messages, tool results and metadata retain their exact runtime content; only
+diagnostics and explicit exports apply credential redaction. MCP adapters still
+filter exact secrets supplied in their configured environment before establishing
+a tool result; generic diagnostic heuristics never rewrite successful results. If automatic
+compaction fails before a turn, original context and media remain recoverable.
+The turn fails with an explicit retry/choose-larger-context message; it never
+substitutes a local excerpt for the source history.
+
+Provider requests project interruption/recovery notes into quoted application
+context at their original position, so only the initial message has the system
+role. Recovery warnings and unknown side-effect outcomes remain intact; this
+context grants no new user authorization. Canonical local history retains its
+original roles and reasoning. Empty assistant messages are omitted from requests;
+reasoning-only assistants receive an incomplete-response status body only when
+the selected model supports reasoning replay. Refusals and complete tool batches
+remain available.
+
+Automatic compaction checks estimated/reported tokens, tool/template overhead,
+provider transport bytes and message-count limits before ordinary inference and
+between tool steps. Direct transport accounting includes nested JSON escaping,
+tool schemas and envelope headroom. Pre-turn compaction keeps the new prompt and its attachments
+verbatim while summarizing older history. A prompt that cannot fit on its own
+fails recoverably; its original remains visible locally, while a model-history
+checkpoint keeps it out of subsequent requests and restored context.
+
+Compaction first checks whether the native conversation and summary output fit
+one request, using provider-reported context counts when available. Local token
+estimates alone use a conservative UTF-8 text-byte bound to select raw requests
+or fragments; native image/file bytes are excluded from that text bound. This
+prevents repeated underestimated raw requests even when a provider cannot prove
+that its error preceded generation. Historical system
+notes are demoted to untrusted context and reasoning/refusal text is preserved
+even when the selected model cannot replay its original fields. Fallback grouping
+keeps consecutive serialized fragments and native attachments together until a
+token or provider request limit is reached. All passes must succeed before the
+successor context replaces the original; partial summaries never commit. An
+explicit authenticated pre-generation context-size rejection uses the stable
+`CONTEXT_LENGTH_EXCEEDED` code and allows at most four progressively smaller
+fragment replans of the rejected pass. Completed passes are preserved. Generic
+request errors, unauthenticated rejection bodies, transport interruptions and
+failures after generation starts do not authorize this recovery. Currently the
+Tinfoil EHBP parser exposes this code for an explicit context rejection after
+clean authenticated EOF; protocols without such proof retain the failure.
+
+Account databases migrate transactionally to schema 7. Each thread has a
+versioned authoritative semantic history independent of presentation rows.
+Exact provider-neutral model-message checkpoints preserve raw tool argument
+strings, grouped tool calls, tool results, reasoning, images, files and context
+boundaries. Live attestation state and evidence remain ephemeral; historical
+response verification never restores a live lease. Resume uses this source; timeline edits cannot rewrite inference
+context. Display remains a projection of the same semantic events. The latest
+exact checkpoint for each turn is retained alongside the full semantic source
+history, so earlier message revisions preserve exact model structure. Checkpoints
+reference deduplicated model messages, avoiding a new copy of every earlier
+image or file at every checkpoint.
+Legacy threads without canonical records use their existing compatible timeline
+projection until the next write adopts it atomically. A partial legacy load
+refuses migration with an explicit error and retains the original records. Unsupported canonical
+versions or corrupt authoritative records fail explicitly instead of silently
+rebuilding a different conversation. Content already lost by older versions
+cannot be recovered by migration.
+
+Execution ownership combines a persisted owner ID and an OS lock per active
+thread. Opening a database preserves live work owned by another client. A new
+claim rejects concurrent execution transactionally; process exit releases the
+lock, allowing recovery to mark only abandoned turns interrupted. Recovery also
+runs before a new claim so an already-open observer can recover a later crash.
+These local lock files are retained to preserve inode identity. Delayed native
+output carries its originating turn ID and cannot attach to another turn.
+Account switching invalidates old handles and releases their local execution
+locks. Interrupted tool operations remain unknown and are never replayed.
 
 ## Runtime boundaries
 

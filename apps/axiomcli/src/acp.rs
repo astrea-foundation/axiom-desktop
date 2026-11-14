@@ -67,6 +67,7 @@ mod account;
 mod catalog;
 mod collections;
 mod images;
+mod local_payload;
 mod mcp;
 mod prompts;
 mod security;
@@ -302,7 +303,7 @@ fn slash_help_text() -> String {
     let lines = slash::COMMANDS
         .iter()
         .filter(|spec| !matches!(spec.name, "theme" | "web" | "usage"))
-        .map(|spec| format!("{} — {}", spec.usage, spec.description))
+        .map(|spec| format!("{}: {}", spec.usage, spec.description))
         .collect::<Vec<_>>()
         .join("\n");
     format!("AxiomCLI commands:\n{lines}\nCommands run locally and are not model prompts.")
@@ -455,8 +456,46 @@ fn extension_security_evidence(
     let direct_tinfoil = evidence.provider_id == "tinfoil"
         && evidence.attestation_protocol == "tinfoil-snp-sigstore-v1"
         && evidence.e2ee_protocol == "tinfoil-ehbp-v1";
+    // This explicit debug-only adapter uses Chutes directly, with no Axiom
+    // relay lease. Its hardware-only evidence stays degraded/development.
+    #[cfg(debug_assertions)]
+    let direct_preview = evidence.provider_id == "chutes-preview"
+        && evidence.model_id == "chutes-preview:qwen3.8-27b"
+        && evidence.attestation_protocol == "chutes-hardware-development-v1"
+        && evidence.e2ee_protocol == "chutes-mlkem768-desktop-v1"
+        && evidence.e2ee_encryption_version == 1
+        && evidence.state == axiom_secure_client::SecurityState::Degraded
+        && status == crate::app::SecurityStatus::Degraded;
+    #[cfg(not(debug_assertions))]
+    let direct_preview = false;
+    // Direct Chutes sessions use the quoted ML-KEM key, not an Axiom relay
+    // lease. Keep policy sequence separate rather than inventing a generation.
+    let direct_release = ((cfg!(debug_assertions)
+        && evidence.provider_id == "chutes-preview"
+        && evidence.model_id == "chutes-preview:qwen3.8-27b")
+        || (evidence.provider_id == "chutes" && evidence.model_id == "chutes:qwen3.8-27b"))
+        && evidence.attestation_protocol == "chutes-tdx-nvidia-release-v1"
+        && evidence.e2ee_protocol == "chutes-mlkem768-desktop-v1"
+        && evidence.e2ee_encryption_version == 1
+        && evidence.state == axiom_secure_client::SecurityState::Verified
+        && status == crate::app::SecurityStatus::Verified
+        && evidence.checks.iter().all(|check| check.passed)
+        && evidence
+            .checks
+            .iter()
+            .any(|check| check.id == "release_authorization")
+        && evidence.provider_claims.iter().any(|claim| {
+            claim.name == "release_authority_fingerprint"
+                && claim.value.len() == 64
+                && claim.value.bytes().all(|b| b.is_ascii_hexdigit())
+        });
     let attestation_generation = evidence.attestation_generation;
-    if attestation_generation == Some(0) || (attestation_generation.is_none() && !direct_tinfoil) {
+    if attestation_generation == Some(0)
+        || (attestation_generation.is_none()
+            && !direct_tinfoil
+            && !direct_preview
+            && !direct_release)
+    {
         return Err(crate::AxiomError::Protocol(
             "verified provider evidence is missing its attestation generation".into(),
         ));
@@ -684,14 +723,18 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
     let revision = status.revision;
     match status.status {
         ValidationStatus::Missing => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::SignedOut,
             account: None,
             session: None,
             detail: None,
         },
         ValidationStatus::Valid(account) => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::Valid,
             account: Some(extension::AccountProfile {
                 id: account.account.id,
@@ -712,14 +755,18 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
             detail: None,
         },
         ValidationStatus::Expired => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::Expired,
             account: None,
             session: None,
             detail: Some("The native account session expired or was revoked".into()),
         },
         ValidationStatus::Unavailable(detail) => ExtensionAccountStatus {
+            preparation_phase: None,
             revision,
+            storage_migration: None,
             state: ExtensionAccountState::Unavailable,
             account: None,
             session: None,
@@ -731,11 +778,29 @@ fn extension_account_status(status: VersionedValidationStatus) -> ExtensionAccou
 fn extension_account_switching(revision: u64) -> ExtensionAccountStatus {
     ExtensionAccountStatus {
         revision,
-        state: ExtensionAccountState::Unavailable,
+        preparation_phase: Some(extension::AccountPreparationPhase::SwitchingAccount),
+        storage_migration: None,
+        state: ExtensionAccountState::Starting,
         account: None,
         session: None,
-        detail: Some("Switching the local Axiom account context".into()),
+        detail: None,
     }
+}
+
+fn publish_account_preparing(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+    phase: extension::AccountPreparationPhase,
+) -> agent_client_protocol::Result<()> {
+    let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+    status.preparation_phase = Some(phase);
+    send_extension_activity(
+        connection,
+        extension_state,
+        None,
+        ActivityEvent::AccountChanged { status },
+    )
 }
 
 async fn publish_account_switch_started(
@@ -955,11 +1020,20 @@ fn extension_activity(event: &AppEvent) -> Option<ActivityEvent> {
                 .map(|path| path.display().to_string())
                 .collect(),
         }),
+        AppEvent::ToolCallDrafting { turn_id } => Some(ActivityEvent::ToolCallDrafting {
+            turn_id: turn_id.to_string(),
+        }),
         AppEvent::ContextCompacted {
             messages_before, ..
         } => Some(ActivityEvent::Compaction {
             phase: CompactionPhase::Completed,
             detail: Some(format!("compacted {messages_before} conversation messages")),
+            progress: None,
+        }),
+        AppEvent::CompactionProgressUpdated { progress } => Some(ActivityEvent::Compaction {
+            phase: CompactionPhase::Summarizing,
+            detail: Some("Compacting conversation context".into()),
+            progress: Some(progress.clone()),
         }),
         _ => None,
     }
@@ -1399,13 +1473,162 @@ async fn commit_account_store_switch(
     account_id: Option<&str>,
 ) -> crate::Result<()> {
     drain_account_switch(sessions, work_tracker).await?;
-    let result = match (store, account_id) {
-        (Some(store), Some(account_id)) => store.activate_account(account_id),
-        (Some(store), None) => store.deactivate_account(),
-        (None, _) => Ok(()),
-    };
+    let result = store_switch_task(store, account_id, None, None)
+        .await
+        .unwrap_or_else(|error| {
+            Err(crate::AxiomError::Storage(format!(
+                "Local storage task failed: {error}"
+            )))
+        });
     finish_account_switch(sessions, work_tracker).await;
     result
+}
+
+/// All `SQLite`, key-store and media work runs off the ACP executor. The switch
+/// barrier remains held until the task actually finishes, even on failure.
+fn store_switch_task(
+    store: Option<&SessionStore>,
+    account_id: Option<&str>,
+    progress: Option<tokio::sync::watch::Sender<Option<crate::storage_progress::Progress>>>,
+    decrypting: Option<tokio::sync::watch::Sender<bool>>,
+) -> tokio::task::JoinHandle<crate::Result<()>> {
+    let store = store.cloned();
+    let account_id = account_id.map(str::to_owned);
+    tokio::task::spawn_blocking(move || match (store, account_id) {
+        (Some(store), Some(account_id)) => store.activate_account_with_progress(
+            &account_id,
+            &|update| {
+                if let Some(sender) = &progress {
+                    sender.send_replace(Some(update));
+                }
+            },
+            &|| {
+                if let Some(sender) = &decrypting {
+                    sender.send_replace(true);
+                }
+            },
+        ),
+        (Some(store), None) => store.deactivate_account(),
+        (None, _) => Ok(()),
+    })
+}
+
+async fn commit_account_store_switch_reporting(
+    sessions: &Sessions,
+    work_tracker: &AccountWorkTracker,
+    store: Option<&SessionStore>,
+    account_id: Option<&str>,
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+) -> crate::Result<()> {
+    drain_account_switch(sessions, work_tracker).await?;
+    if account_id.is_some() {
+        // Observational delivery cannot abort an in-progress local commit.
+        let _ = publish_account_preparing(
+            connection,
+            extension_state,
+            auth,
+            extension::AccountPreparationPhase::OpeningChats,
+        );
+    }
+    let (sender, mut updates) = tokio::sync::watch::channel(None);
+    let (decrypting_sender, mut decrypting_updates) = tokio::sync::watch::channel(false);
+    let mut task = store_switch_task(store, account_id, Some(sender), Some(decrypting_sender));
+    let mut last_progress = None;
+    let mut decryption_reported = false;
+    let result = loop {
+        tokio::select! {
+            result = &mut task => break result,
+            changed = decrypting_updates.changed() => {
+                if changed.is_err() {
+                    break task.await;
+                }
+                if *decrypting_updates.borrow_and_update() && updates.borrow().is_none() {
+                    let _ = publish_account_preparing(connection, extension_state, auth,
+                        extension::AccountPreparationPhase::DecryptingChats);
+                    decryption_reported = true;
+                }
+            }
+            changed = updates.changed() => {
+                if changed.is_err() {
+                    break task.await;
+                }
+                let progress = updates.borrow_and_update().clone();
+                if let Some(progress) = progress {
+                    publish_storage_progress(connection, extension_state, auth, progress.clone());
+                    last_progress = Some(progress);
+                }
+            }
+        }
+    }
+    .unwrap_or_else(|error| {
+        Err(crate::AxiomError::Storage(format!(
+            "Local storage task failed: {error}"
+        )))
+    });
+    // The task may finish before the executor consumes its last observation.
+    let latest = updates.borrow().clone();
+    let decryption_started = *decrypting_updates.borrow();
+    if decryption_started && !decryption_reported && latest.is_none() {
+        let _ = publish_account_preparing(
+            connection,
+            extension_state,
+            auth,
+            extension::AccountPreparationPhase::DecryptingChats,
+        );
+    }
+    if latest != last_progress
+        && let Some(progress) = latest.as_ref()
+    {
+        publish_storage_progress(connection, extension_state, auth, progress.clone());
+    }
+    finish_account_switch(sessions, work_tracker).await;
+    if let Err(error) = &result {
+        let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+        status.state = ExtensionAccountState::Unavailable;
+        if account_id.is_some() {
+            status.preparation_phase = Some(if decryption_started {
+                extension::AccountPreparationPhase::DecryptingChats
+            } else {
+                extension::AccountPreparationPhase::OpeningChats
+            });
+        }
+        status.detail = Some(error.to_string());
+        if latest.is_some() || last_progress.is_some() {
+            status.storage_migration = Some(crate::storage_progress::Progress {
+                phase: crate::storage_progress::Phase::Failed,
+                completed: None,
+                total: None,
+            });
+        }
+        let _ = send_extension_activity(
+            connection,
+            extension_state,
+            None,
+            ActivityEvent::AccountChanged { status },
+        );
+    }
+    result
+}
+
+fn publish_storage_progress(
+    connection: &ConnectionTo<Client>,
+    extension_state: &ExtensionState,
+    auth: &AuthManager,
+    progress: crate::storage_progress::Progress,
+) {
+    let mut status = extension_account_switching(auth.reserve_account_transition_revision());
+    status.state = ExtensionAccountState::Starting;
+    status.detail = None;
+    status.storage_migration = Some(progress);
+    // A disconnected renderer must not abort a durable migration mid-commit.
+    let _ = send_extension_activity(
+        connection,
+        extension_state,
+        None,
+        ActivityEvent::AccountChanged { status },
+    );
 }
 
 fn work_matches(registry: &SessionRegistry, internal_id: &SessionId, work: &SessionWork) -> bool {
@@ -1485,6 +1708,9 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
+    LegacyPayloadImport = 1 << 27,
+    LocalPayload = 1 << 23,
+    CommandInvocation = 1 << 22,
     Steering = 1 << 11,
     ThreadCatalog = 1 << 0,
     Timeline = 1 << 1,
@@ -1506,6 +1732,11 @@ enum ExtensionFeature {
     CryptoInvoices = 1 << 18,
     ImageGeneration = 1 << 19,
     ImageRegeneration = 1 << 20,
+    ImageResources = 1 << 21,
+    RemoteMcp = 1 << 24,
+    ImageResolution = 1 << 25,
+    ToolCallDrafting = 1 << 26,
+    CreditBilling = 1 << 28,
 }
 
 struct ExtensionState {
@@ -1547,6 +1778,21 @@ impl ExtensionState {
             return;
         };
         let mut mask = 0;
+        if features.local_payload >= 1 {
+            mask |= ExtensionFeature::LocalPayload as u64;
+        }
+        if features.local_payload >= 2 {
+            mask |= ExtensionFeature::LegacyPayloadImport as u64;
+        }
+        if features.command_invocation >= 1 {
+            mask |= ExtensionFeature::CommandInvocation as u64;
+        }
+        if features.image_resources >= 1 {
+            mask |= ExtensionFeature::ImageResources as u64;
+        }
+        if features.image_resources >= 2 {
+            mask |= ExtensionFeature::ImageResolution as u64;
+        }
         if features.attachments >= 2 {
             mask |= ExtensionFeature::Attachments as u64;
         }
@@ -1583,6 +1829,9 @@ impl ExtensionState {
         if features.billing >= 5 {
             mask |= ExtensionFeature::CryptoInvoices as u64;
         }
+        if features.billing >= 7 {
+            mask |= ExtensionFeature::CreditBilling as u64;
+        }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;
         }
@@ -1595,6 +1844,9 @@ impl ExtensionState {
         if features.activity >= 1 {
             mask |= ExtensionFeature::Activity as u64;
         }
+        if features.activity >= 2 {
+            mask |= ExtensionFeature::ToolCallDrafting as u64;
+        }
         if features.desktop_chat >= 1 {
             mask |= ExtensionFeature::DesktopChat as u64;
         }
@@ -1603,6 +1855,9 @@ impl ExtensionState {
         }
         if features.desktop_mcp >= 1 {
             mask |= ExtensionFeature::DesktopMcp as u64;
+        }
+        if features.desktop_mcp >= 2 {
+            mask |= ExtensionFeature::RemoteMcp as u64;
         }
         if features.image_generation >= 3 {
             mask |= ExtensionFeature::ImageGeneration as u64;
@@ -1839,6 +2094,8 @@ fn send_event(
     } = delivery;
     if let Some(extension_state) = extension_state
         && let Some(activity) = extension_activity(&event)
+        && (!matches!(activity, ActivityEvent::ToolCallDrafting { .. })
+            || extension_state.feature_enabled(ExtensionFeature::ToolCallDrafting))
     {
         send_extension_activity_correlated(
             connection,
@@ -2021,7 +2278,7 @@ fn send_event(
                     .into_iter()
                     .map(|item| {
                         protocol::PlanEntry::new(
-                            format!("{} · {}", item.id, item.title),
+                            format!("{}: {}", item.id, item.title),
                             protocol::PlanEntryPriority::Medium,
                             match item.status {
                                 crate::app::TaskStatus::Pending => {
@@ -2046,6 +2303,7 @@ fn send_event(
             call_id,
             name,
             arguments,
+            mcp_source,
             ..
         } => {
             let kind = tool_kind(&name);
@@ -2053,7 +2311,7 @@ fn send_event(
             // that stable identity in the title for generic clients while making
             // the leading text useful to a person watching the task run.
             let title = format!(
-                "{} · {name}",
+                "{}: {name}",
                 describe_tool(&name, &arguments, ToolDisplayPhase::Proposed, cwd)
             );
             send_session_update(
@@ -2063,6 +2321,10 @@ fn send_event(
                     protocol::ToolCall::new(call_id, title)
                         .kind(kind)
                         .status(protocol::ToolCallStatus::Pending)
+                        .meta(protocol::Meta::from_iter([(
+                            "axiomMcpSource".into(),
+                            serde_json::to_value(mcp_source).unwrap_or_default(),
+                        )]))
                         .raw_input(arguments),
                 ),
                 revision,
@@ -2096,6 +2358,23 @@ fn send_event(
             ]),
             revision,
         ),
+        AppEvent::ImageGenerated { call_id, image }
+            if extension_state
+                .is_some_and(|state| state.feature_enabled(ExtensionFeature::ImageResources)) =>
+        {
+            send_tool_update(
+                connection,
+                session_id,
+                call_id.clone(),
+                protocol::ToolCallUpdateFields::new().raw_output(
+                    serde_json::json!({"imageResource": {
+                        "callId":call_id,"sha256":image.sha256,"mimeType":image.mime_type,
+                        "width":image.width,"height":image.height
+                    }}),
+                ),
+                revision,
+            )
+        }
         AppEvent::ImageGenerated { call_id, image } => send_tool_update(
             connection,
             session_id,
@@ -2277,6 +2556,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_preparation_is_progress_and_withholds_the_previous_identity() {
+        let status = extension_account_switching(17);
+        assert_eq!(status.state, ExtensionAccountState::Starting);
+        assert_eq!(
+            status.preparation_phase,
+            Some(extension::AccountPreparationPhase::SwitchingAccount)
+        );
+        assert_eq!(status.revision, 17);
+        assert!(status.account.is_none());
+        assert!(status.session.is_none());
+        assert!(status.detail.is_none());
+    }
+
+    #[test]
     fn independently_paged_accounting_requires_timeline_version_two() {
         let state = ExtensionState::new();
         let mut features = FeatureVersions::all();
@@ -2339,6 +2632,30 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn tool_call_drafting_is_negotiated_display_progress_without_call_details() {
+        let turn_id = TurnId::new();
+        let event = extension_activity(&AppEvent::ToolCallDrafting {
+            turn_id: turn_id.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({"kind": "tool_call_drafting", "turnId": turn_id.to_string()})
+        );
+        let state = ExtensionState::new();
+        let mut features = FeatureVersions::all();
+        features.activity = 1;
+        features.image_resources = 1;
+        state.negotiate(Some(features));
+        assert!(state.feature_enabled(ExtensionFeature::Activity));
+        assert!(!state.feature_enabled(ExtensionFeature::ToolCallDrafting));
+        assert!(!state.feature_enabled(ExtensionFeature::ImageResolution));
+        state.negotiate(Some(FeatureVersions::all()));
+        assert!(state.feature_enabled(ExtensionFeature::ToolCallDrafting));
+        assert!(state.feature_enabled(ExtensionFeature::ImageResolution));
     }
 
     #[tokio::test]
@@ -2687,6 +3004,53 @@ mod tests {
             assert!(
                 extension_security_evidence(crate::app::SecurityStatus::Verified, invalid,)
                     .is_err()
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn signed_direct_chutes_report_keeps_policy_sequence_separate_from_relay_generation() {
+        let evidence = axiom_secure_client::SecurityEvidence {
+            state: axiom_secure_client::SecurityState::Verified,
+            provider_id: "chutes-preview".into(),
+            model_id: "chutes-preview:qwen3.8-27b".into(),
+            attestation_protocol: "chutes-tdx-nvidia-release-v1".into(),
+            e2ee_protocol: "chutes-mlkem768-desktop-v1".into(),
+            e2ee_encryption_version: 1,
+            trust_policy_version: "signed-staging-release-authority".into(),
+            verified_at_unix_seconds: 1,
+            attestation_generation: None,
+            hard_expires_at_unix_seconds: Some(121),
+            model_key_fingerprint: "00".repeat(32),
+            tls_spki_fingerprint: None,
+            checks: vec![axiom_secure_client::EvidenceCheck {
+                id: "release_authorization".into(),
+                label: "Repository release authorization".into(),
+                status: "verified".into(),
+                passed: true,
+            }],
+            provider_claims: vec![axiom_secure_client::EvidenceClaim {
+                name: "release_authority_fingerprint".into(),
+                value: "ab".repeat(32),
+            }],
+            workload_manifest: None,
+        };
+        let projected =
+            extension_security_evidence(crate::app::SecurityStatus::Verified, evidence.clone())
+                .unwrap();
+        assert_eq!(projected.attestation_generation, None);
+        for mutation in 0..5 {
+            let mut changed = evidence.clone();
+            match mutation {
+                0 => changed.attestation_protocol = "unrecognized".into(),
+                1 => changed.checks[0].passed = false,
+                2 => changed.provider_claims.clear(),
+                3 => changed.attestation_generation = Some(0),
+                _ => changed.hard_expires_at_unix_seconds = None,
+            }
+            assert!(
+                extension_security_evidence(crate::app::SecurityStatus::Verified, changed).is_err()
             );
         }
     }

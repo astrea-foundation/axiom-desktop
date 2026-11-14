@@ -5,13 +5,14 @@
   "files": {
     "Cargo.toml": "c415435be296a3dd5f5adb4d6a58fabe038974d9881d8166f385d40e2aa32a77",
     "src/attestation.rs": "fb9c069ce1608ef6dc6477bd81f3bea48259c60050251d724150d1a6d0e5f4bc",
-    "src/direct.rs": "2b202b234ef36eff7efa237ea022697059f5ad2757fb6e3b82a9250be740d93d",
-    "src/lib.rs": "55a49e1fbb1d1577564a14093286d3c9aa7ba727340c0ddd3e8a4ad7ba7cdee4",
+    "src/direct.rs": "2f634bcf7c88f6071d06b7f1ef97e1c33f8ff0f81b047c5ea693003e589ae893",
+    "src/lib.rs": "ed7f4df51c74b3b08cf9e520bfbdbacc4ec25f902880c891165560bd5bef7120",
     "examples/direct-account.rs": "f0407181db302ca5161c8f058f34d8a7a20d97d73be35d5dfc7706898f4dacaa",
     "examples/direct-latency.rs": "9aa5da933aac3d70d8e5b9cc56cd0857e25cf21d841940228641f3e83fa188eb",
     "examples/direct-vision.rs": "d93beb955622b5239c88a75651e5add6d745051ea9c73a5d3dc89ad69d039afd",
-    "examples/direct.rs": "268b3a17de56f620caf47514e208b3153d9ad9d6f1870272f2b0afb5a4762a95",
+    "examples/direct.rs": "c82c3175b019ebb5645a33767c3aa34a575a4f98b0ff41ddde138d2305c69123",
     "examples/direct_capacity.rs": "7eedc3cfeaa475b18e7847eda1ce2ee2b8a6ce0e7135c1a57ab41f5d16b1539b",
     "examples/smoke.rs": "bc8c408f00bc598b2175ad62eed0f67bdca2bc268417ad4250258a70f9d38fe4"
-  }
+  },
+  "canonical_revision": "4d85c5c8aa002663db164e7b39393c58abc9bf40"
 }

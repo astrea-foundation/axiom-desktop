@@ -16,7 +16,7 @@ import {
 import { AcpError } from "../src/errors.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const binary = resolve(
+const binary = process.env.AXIOMCLI_TEST_BINARY ?? resolve(
   here,
   "../../../target/debug",
   process.platform === "win32" ? "axiomcli.exe" : "axiomcli",
@@ -158,6 +158,30 @@ test("production client negotiates, streams, and controls standard ACP settings"
   } finally {
     await client.close();
   }
+});
+
+test("SDK prompt text remains literal and application commands require an explicit call", async () => {
+  const { client, workspace } = await fixture();
+  try {
+    const created = await client.newSession(workspace);
+    const sent: Array<{ method: string; params: unknown }> = [];
+    const request = client.process.request.bind(client.process);
+    client.process.request = async <T>(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
+      if (method === "session/prompt" || method === "_axiom/session/command") sent.push({ method, params });
+      return request<T>(method, params, timeoutMs, signal);
+    };
+    await client.prompt(created.sessionId, "/logout", "literal-slash");
+    assert.equal(sent[0]?.method, "session/prompt");
+    assert.ok(client.getState().sessions[created.sessionId]?.timeline.some((item) => item.kind === "user" && item.text === "/logout"));
+    await client.invokeCommand(created.sessionId, "/help");
+    assert.deepEqual(sent[1], { method: "_axiom/session/command", params: { sessionId: created.sessionId, command: "/help" } });
+    await assert.rejects(client.invokeCommand(created.sessionId, "ordinary text"), /explicit slash command/);
+    // Older sidecars still interpret leading slashes in session/prompt. Fail
+    // before dispatch rather than letting a version mismatch run a command.
+    (client as unknown as { supportsCommandInvocation: boolean }).supportsCommandInvocation = false;
+    await assert.rejects(client.prompt(created.sessionId, "/logout", "legacy-sidecar"), /Restart Axiom/);
+    assert.equal(sent.length, 2);
+  } finally { await client.close(); }
 });
 
 test("every SDK prompt sends a strict explicit web choice without inheriting previous consent", async () => {
@@ -913,8 +937,14 @@ test("desktop Agent settings own per-thread workspaces and persist permissions a
     client = new AxiomAcpClient(options);
     await client.initialize();
     await client.bootstrapDesktop();
+    const replayed: unknown[] = [];
+    client.process.on("notification", (notification) => {
+      if (JSON.stringify(notification).includes("hello from desktop profile")) replayed.push(notification);
+    });
     await client.loadChat(created.sessionId);
+    assert.deepEqual(replayed, [], "Desktop restores history from its authoritative timeline once");
     const restored = client.getState().sessions[created.sessionId]!;
+    assert.ok(restored.timeline.some((item) => item.kind === "user" && item.text === "hello from desktop profile"));
     assert.equal(restored.cwd, customCwd);
     assert.equal(restored.currentModeId, "confirm");
     assert.deepEqual(restored.desktopAgent, configured.agent);
@@ -1389,4 +1419,40 @@ test("crypto operations discard replies after account switches and validate requ
   await assert.rejects(client.cryptoInvoiceAction({invoiceId: request.id, action: "refresh"}), /Invalid invoice action/);
   await assert.rejects(client.cryptoInvoiceAction({invoiceId: request.id, action: "cancel", id: request.id}), /Invalid invoice action/);
   assert(!JSON.stringify(client.getState()).includes("old-account-address"));
+});
+
+test("native legacy payload import omits damaged media, keeps healthy bytes and retries without overwriting edits", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "axiom-legacy-local-import-"));
+  const options = { command: binary, args: ["acp", "--frontend", "desktop-chat"], env: {
+    AXIOMCLI_TEST_RUNNER: "echo", XDG_CONFIG_HOME: resolve(root, "config"), XDG_DATA_HOME: resolve(root, "data"),
+  } };
+  let client = new AxiomAcpClient(options);
+  const identity = { accountId: "local-test-account", id: "legacy-draft" };
+  const healthy = { kind: "image", name: "healthy.png", image: { mimeType: "image/png", data: readFileSync(new URL("../../../apps/axiomcli/src/session/fixtures/storage-original.png", import.meta.url)).toString("base64") } };
+  const source = { version: 1, kind: "prompt", payload: { text: "original typed source", attachments: [
+    { kind: "image", name: "bad.png", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } }, healthy,
+  ] } };
+  const normalized = { ...source, payload: { text: source.payload.text, attachments: [healthy] } };
+  try {
+    await client.initialize();
+    client.state.setAccount({ revision: 1000, state: "valid", account: { id: identity.accountId, linkedMethods: ["passkey"] } });
+    await client.bootstrapDesktop();
+    await assert.rejects(client.localPayload({ ...identity, action: { kind: "put", value: source } }), error => error instanceof AcpError && /saved image cannot be decoded/.test(JSON.stringify(error.data)));
+    const preview = await client.localPayload({ ...identity, action: { kind: "import_legacy", value: source, preview: true } });
+    assert.equal(preview.omittedMedia, 1);
+    assert.deepEqual(preview.value, normalized);
+    assert.equal((await client.localPayload({ ...identity, action: { kind: "get" } })).value, undefined);
+    assert.deepEqual(await client.localPayload({ ...identity, action: { kind: "import_legacy", value: source } }), { value: normalized, omittedMedia: 1 });
+    const edited = { version: 1, kind: "prompt", payload: { text: "newer native text", attachments: [] } };
+    await client.localPayload({ ...identity, action: { kind: "put", value: edited } });
+    assert.deepEqual((await client.localPayload({ ...identity, action: { kind: "import_legacy", value: source } })).value, normalized);
+    assert.deepEqual((await client.localPayload({ ...identity, action: { kind: "get" } })).value, edited);
+    await client.close(); client = new AxiomAcpClient(options);
+    await client.initialize();
+    client.state.setAccount({ revision: 1000, state: "valid", account: { id: identity.accountId, linkedMethods: ["passkey"] } });
+    await client.bootstrapDesktop();
+    assert.deepEqual((await client.localPayload({ ...identity, action: { kind: "get" } })).value, edited);
+    await client.localPayload({ ...identity, action: { kind: "remove" } });
+    assert.equal((await client.localPayload({ ...identity, action: { kind: "get" } })).value, undefined);
+  } finally { await client.close(); }
 });

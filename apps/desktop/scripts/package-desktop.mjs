@@ -64,7 +64,7 @@ if (unsigned) {
   builder.push('--config.forceCodeSigning=false');
   // The unsigned option is explicit; production defaults still require signing.
   if (platform === '--win') builder.push('--config.win.signExecutable=false');
-  if (platform === '--mac') builder.push('--config.mac.identity=-', '--config.mac.notarize=false', '--config.dmg.sign=false', '--config.mac.entitlements=build/entitlements.unsigned.plist', '--config.mac.entitlementsInherit=build/entitlements.unsigned.plist');
+  if (platform === '--mac') builder.push('--config.mac.identity=-', '--config.dmg.sign=false', '--config.mac.entitlements=build/entitlements.unsigned.plist', '--config.mac.entitlementsInherit=build/entitlements.unsigned.plist');
 }
 if (unpacked) {
   run('pnpm', ['exec', 'electron-builder', ...builder, '--dir', '--config.extraMetadata.axiomUpdateFormat=exe'], env);

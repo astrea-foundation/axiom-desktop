@@ -12,7 +12,7 @@ async function yieldToUi(): Promise<void> {
 export async function decodeGeneratedPng(data: string, signal?: AbortSignal): Promise<{
   blob: Blob; width: number; height: number;
 } | null> {
-  if (!data || data.length > 14_000_000 || data.length % 4) return null;
+  if (!data || data.length > 28_000_000 || data.length % 4) return null;
   const parts: Uint8Array<ArrayBuffer>[] = [];
   let total = 0, width = 0, height = 0;
   try {
@@ -23,13 +23,13 @@ export async function decodeGeneratedPng(data: string, signal?: AbortSignal): Pr
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       total += bytes.length;
-      if (total > 10 * 1024 * 1024) return null;
+      if (total > 20 * 1024 * 1024) return null;
       if (offset === 0) {
         if (bytes.length < 24 || !SIGNATURE.every((n, i) => bytes[i] === n)) return null;
         const view = new DataView(bytes.buffer);
         width = view.getUint32(16); height = view.getUint32(20);
         if (width < 256 || height < 256 || width > 8192 || height > 8192
-          || width % 32 || height % 32 || width * height > 1536 * 1536) return null;
+          || width % 32 || height % 32 || width * height > 2048 * 2048) return null;
       }
       parts.push(bytes);
     }

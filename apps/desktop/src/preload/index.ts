@@ -6,9 +6,11 @@ import type { UpdatesApi } from "../shared/updates";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
+  factoryReset: (confirmation: string) => Promise<void>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;
+  onBeforeLocalStateChange: (flush: (reason: "close" | "account") => Promise<void>, release: () => void) => () => void;
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   isFullScreen: () => Promise<boolean>;
@@ -16,6 +18,9 @@ export type DesktopApi = {
   isFocused: () => Promise<boolean>;
   onActiveChange: (callback: (active: boolean) => void) => () => void;
   setTheme: (preference: "light" | "dark" | "system", resolved: "light" | "dark") => void;
+  astreaBanner: {
+    claim: () => Promise<boolean>;
+  };
   agent: AgentApi;
   proxy: ProxyApi;
   updates: UpdatesApi;
@@ -26,6 +31,10 @@ const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".lengt
 
 const api: DesktopApi = {
   platform: previewPlatform ?? process.platform,
+  astreaBanner: {
+    claim: () => ipcRenderer.invoke("astrea-banner:claim"),
+  },
+  factoryReset: (confirmation) => ipcRenderer.invoke("app:factory-reset", confirmation),
   minimize: () => {
     ipcRenderer.send("window:minimize");
   },
@@ -34,6 +43,18 @@ const api: DesktopApi = {
   },
   close: () => {
     ipcRenderer.send("window:close");
+  },
+  onBeforeLocalStateChange: (flush, release) => {
+    const prepare = (_event: unknown, token: string, reason: "close" | "account") => {
+      void flush(reason).then(() => ipcRenderer.send("local-state:flushed", token, null), () => ipcRenderer.send("local-state:flushed", token, true));
+    };
+    ipcRenderer.on("local-state:prepare", prepare);
+    ipcRenderer.on("local-state:release", release);
+    ipcRenderer.send("local-state:ready");
+    return () => {
+      ipcRenderer.removeListener("local-state:prepare", prepare);
+      ipcRenderer.removeListener("local-state:release", release);
+    };
   },
   isMaximized: () => ipcRenderer.invoke("window:isMaximized"),
   onMaximizedChange: (callback) => {

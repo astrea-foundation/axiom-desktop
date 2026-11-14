@@ -1,4 +1,4 @@
-import { LogIn, LogOut, RefreshCw } from "lucide-react";
+import { ArrowUpRight, LogIn, LogOut, RefreshCw, UserRound } from "lucide-react";
 import { useId, useState } from "react";
 import type { AccountStatus } from "@axiom/axiom-acp-client";
 import { useTheme, type ThemePreference } from "../lib/theme";
@@ -10,6 +10,8 @@ import { ApiKeysPanel } from "./ApiKeysPanel";
 import { UpdatesPanel } from "./UpdatesPanel";
 import type { DesktopUpdates } from "../useDesktopUpdates";
 import { accountAvatar } from "../lib/accountAvatar";
+import { FactoryResetPanel } from "./FactoryResetPanel";
+import { accountPresentation } from "../signInFlow";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
   { value: "light", label: "Light" },
@@ -46,14 +48,12 @@ export function SettingsSheet({
   const id = useId();
   const theme = useTheme();
   const signedIn = account?.state === "valid";
+  const accountView = accountPresentation(connected, true, account);
+  const preparingAccount = accountView.kind === "starting";
   const avatar = accountAvatar(account?.account?.displayName);
   const accountLabel = signedIn
     ? (account.account?.displayName || account.account?.verifiedEmail || "Connected Axiom account")
-    : account?.state === "unavailable"
-      ? (account.detail || "Account status unavailable")
-      : account?.state === "expired"
-        ? (account.detail || "Your session expired")
-        : "Not signed in";
+    : accountView.title;
   const linkedMethods = account?.account?.linkedMethods?.map((method) => ({
     passkey: "Passkey",
     google: "Google",
@@ -109,55 +109,80 @@ export function SettingsSheet({
           </SettingsPanel>
 
           <SettingsPanel category="account" active={category} idPrefix={id}>
-            <div className="rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4">
-            <div className="flex items-center justify-between gap-2">
-              {signedIn && <span className="mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[14px] font-medium"
-                style={{background: avatar.background, color: avatar.color}} aria-hidden="true">{avatar.initials}</span>}
-              <div className="min-w-0">
-                <div className="break-words text-[13.5px] font-medium text-[var(--color-text-primary)]">{connected ? accountLabel : "AxiomCLI disconnected"}</div>
-                {signedIn && account?.account?.displayName && account.account.verifiedEmail ? <p className="mt-1 break-all text-[12px] text-[var(--color-text-secondary)]">{account.account.verifiedEmail}</p> : null}
-                <div className="mt-0.5 text-[12px] text-[var(--color-text-tertiary)]">
-                  {signedIn ? "Signed in" : "Sign in to load models"}
+            <div className="max-w-[560px]">
+              <div className="overflow-hidden rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)]">
+                <div className="flex items-start gap-3.5 p-4">
+                  {signedIn ? (
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[14px] font-medium"
+                      style={{background: avatar.background, color: avatar.color}} aria-hidden="true">{avatar.initials}</span>
+                  ) : (
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--wash-chip)] text-[var(--color-text-tertiary)]" aria-hidden="true">
+                      <UserRound size={18} />
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="break-words text-[15px] font-medium leading-5 tracking-[-0.01em] text-[var(--color-text-primary)]">{connected ? accountLabel : "AxiomCLI disconnected"}</div>
+                    {signedIn && account?.account?.displayName && account.account.verifiedEmail ? <p className="mt-0.5 break-all text-[12.5px] leading-[18px] text-[var(--color-text-secondary)]">{account.account.verifiedEmail}</p> : null}
+                    <div className="mt-1.5 flex items-start gap-1.5 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]">
+                      {signedIn || account?.state === "expired" || accountView.kind === "unavailable" ? (
+                        <span className={`mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full ${signedIn ? "bg-[var(--color-success)]" : "bg-[var(--color-warning)]"}`} aria-hidden="true" />
+                      ) : null}
+                      <span className="min-w-0 break-words">{signedIn ? "Signed in" : accountView.detail}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onRefreshAccount}
+                    disabled={!connected || preparingAccount}
+                    className="-mr-1 -mt-1 shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-35"
+                    aria-label="Refresh account"
+                  >
+                    <RefreshCw size={14} />
+                  </button>
                 </div>
                 {signedIn && linkedMethods.length > 0 ? (
-                  <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                    {linkedMethods.join(", ")}
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-[var(--color-border)] px-4 py-3 text-[12px] leading-[18px]">
+                    <span className="text-[var(--color-text-tertiary)]">Sign-in methods</span>
+                    <span className="text-[var(--color-text-secondary)]">{linkedMethods.join(", ")}</span>
                   </div>
                 ) : null}
+                <div className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] px-4 py-3">
+                  {signedIn ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={onManageAccount}
+                        className="flex items-center gap-1.5 rounded-md border border-[var(--color-border-strong)] bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[12.5px] font-medium text-[var(--color-text-primary)] transition-[background-color,border-color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-[var(--surface-button-secondary-hover)] active:scale-[0.97]"
+                      >
+                        Manage account
+                        <ArrowUpRight size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!connected || preparingAccount}
+                        onClick={onLogout}
+                        className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-colors duration-150 enabled:hover:bg-[var(--wash-hover)] enabled:hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                      >
+                        <LogOut size={13} />
+                        Sign out
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={!connected || preparingAccount}
+                      onClick={onLogin}
+                      className="flex items-center gap-1.5 rounded-md bg-[var(--color-cherry)] px-3 py-1.5 text-[12.5px] font-medium text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] duration-150 enabled:hover:bg-[var(--color-cherry-bright)] enabled:active:scale-[0.97] disabled:opacity-50"
+                    >
+                      <LogIn size={13} />
+                      {preparingAccount ? "Getting ready…" : account?.state === "expired" ? "Sign in again" : "Sign in"}
+                    </button>
+                  )}
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={onRefreshAccount}
-                disabled={!connected}
-                className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-35"
-                aria-label="Refresh account"
-              >
-                <RefreshCw size={14} />
-              </button>
+              <p className="mt-3 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Your sign-in is shared with AxiomCLI on this device.</p>
+              {category === "account" ? <FactoryResetPanel /> : null}
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {signedIn ? (
-                <button
-                  type="button"
-                  onClick={onManageAccount}
-                  className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-[var(--surface-button-secondary-hover)] hover:text-[var(--color-text-primary)] active:scale-[0.97]"
-                >
-                  <LogIn size={13} />
-                  Manage account
-                </button>
-              ) : null}
-              <button
-                type="button"
-                disabled={!connected}
-                onClick={signedIn ? onLogout : onLogin}
-                className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-[var(--surface-button-secondary-hover)] hover:text-[var(--color-text-primary)] active:scale-[0.97] disabled:opacity-50"
-              >
-                {signedIn ? <LogOut size={13} /> : <LogIn size={13} />}
-                {signedIn ? "Sign out" : account?.state === "expired" ? "Sign in again" : "Sign in"}
-              </button>
-            </div>
-            </div>
-            <p className="mt-4 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Your sign-in is shared with AxiomCLI on this device.</p>
           </SettingsPanel>
 
 
@@ -170,7 +195,7 @@ export function SettingsSheet({
             /> : null}
           </SettingsPanel>
           <SettingsPanel category="mcp" active={category} idPrefix={id}>
-            {category === "mcp" ? connected && signedIn ? <McpConnectionsPanel key={`${runtimeInstanceId}:${account.account?.id}`} /> : <p>Sign in and connect to manage local MCP servers.</p> : null}
+            {category === "mcp" ? connected && signedIn ? <McpConnectionsPanel key={`${runtimeInstanceId}:${account.account?.id}`} /> : <p>Sign in and connect to manage MCP connections.</p> : null}
           </SettingsPanel>
           <SettingsPanel category="api-keys" active={category} idPrefix={id}>
             {category === "api-keys" && (connected && signedIn && account.account ? <ApiKeysPanel

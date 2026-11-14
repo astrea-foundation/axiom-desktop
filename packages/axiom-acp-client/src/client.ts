@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
+import { validateCreditBalances } from "@axiom/chat-core/creditBalances";
 import type {
   AccountStatusResponse,
+  LocalPayloadRequest,
+  LocalPayloadResponse,
   PromptAttachment,
   GetAttachmentsResponse,
   AssignThreadCollectionResponse,
@@ -27,6 +30,8 @@ import type {
   ConfigureDesktopAgentResponse,
   EventNotification,
   GetThreadTimelineResponse,
+  ReadImageResponse,
+  ResolveImageResponse,
   ListModelsResponse,
   ListThreadsRequest,
   ListThreadsResponse,
@@ -65,18 +70,21 @@ const EXTENSION_CAPABILITIES = {
     collections: 1,
     desktopChat: 1,
     desktopAgent: 1,
-    desktopMcp: 1,
+    desktopMcp: 2,
+    localPayload: 2,
     account: 2,
-    billing: 5,
+    billing: 7,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
     imageGeneration: 4,
+    imageResources: 2,
     steering: 1,
     messageRevision: 1,
     attachments: 2,
     compaction: 1,
-    activity: 1,
+    activity: 2,
+    commandInvocation: 1,
   },
 } as const;
 
@@ -162,10 +170,16 @@ export class AxiomAcpClient extends EventEmitter {
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
+  private supportsCommandInvocation = false;
   private supportsMcp = false;
+  private supportsLocalPayload = false;
+  private supportsLegacyPayloadImport = false;
   private supportsImageGeneration = false;
   private supportsImageRegeneration = false;
+  private supportsImageResources = false;
+  private supportsImageResolution = false;
   private supportsCryptoInvoices = false;
+  private supportsCreditBilling = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -242,12 +256,18 @@ export class AxiomAcpClient extends EventEmitter {
     // user starts a chat. Publish the handshake identity first so that event
     // cannot masquerade as a restart and invalidate an in-flight submission.
     this.state.initializeRuntime(meta?.runtimeInstanceId);
+    this.supportsCommandInvocation = (meta?.features?.commandInvocation ?? 0) >= 1;
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
+    this.supportsLocalPayload = (meta?.features?.localPayload ?? 0) >= 1;
+    this.supportsLegacyPayloadImport = (meta?.features?.localPayload ?? 0) >= 2;
     this.supportsImageGeneration = (meta?.features?.imageGeneration ?? 0) >= 3;
     this.supportsImageRegeneration = (meta?.features?.imageGeneration ?? 0) >= 4;
+    this.supportsImageResources = (meta?.features?.imageResources ?? 0) >= 1;
+    this.supportsImageResolution = (meta?.features?.imageResources ?? 0) >= 2;
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
+    this.supportsCreditBilling = (meta?.features?.billing ?? 0) >= 7;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -308,6 +328,20 @@ export class AxiomAcpClient extends EventEmitter {
     return this.loadSession(threadId, page.thread.cwd);
   }
 
+  async localPayload(request: LocalPayloadRequest): Promise<LocalPayloadResponse> {
+    this.assertInitialized();
+    if (!this.supportsLocalPayload) throw new ProtocolError("Restart Axiom with the updated native app to save encrypted drafts.");
+    if (request.action.kind === "import_legacy" && !this.supportsLegacyPayloadImport) throw new ProtocolError("Restart Axiom with the updated native app to import legacy drafts safely. Your original local data was kept.");
+    const state = this.state.snapshot();
+    if (!state.connected || state.account?.state !== "valid" || state.account.account?.id !== request.accountId) {
+      throw new ProtocolError("The account changed. Local data was not accessed.");
+    }
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<LocalPayloadResponse>("_axiom/desktop/local-payload", request);
+    this.assertAccountContext(context);
+    return result;
+  }
+
   async desktopMcp(request: DesktopMcpRequest): Promise<DesktopMcpResponse> {
     this.assertInitialized();
     if (!this.supportsMcp) throw new ProtocolError("Restart Axiom with the updated native app to use MCP connections.");
@@ -352,7 +386,13 @@ export class AxiomAcpClient extends EventEmitter {
   async loadSession(threadId: string, cwd: string): Promise<SessionStartResult> {
     this.assertInitialized();
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<SessionStartResult>("session/load", { sessionId: threadId, cwd, mcpServers: [] });
+    const result = await this.process.request<SessionStartResult>("session/load", {
+      sessionId: threadId, cwd, mcpServers: [],
+      // Desktop atomically restores the authoritative timeline below. Replaying
+      // every saved event first transfers all generated images a second time
+      // and publishes a growing state snapshot for each historical event.
+      ...(this.desktopBootstrap ? { _meta: { axiom: { skipHistoryReplay: true } } } : {}),
+    });
     this.assertAccountContext(accountContext);
     this.state.addSession(threadId, cwd);
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
@@ -362,7 +402,22 @@ export class AxiomAcpClient extends EventEmitter {
     return { ...result, sessionId: threadId };
   }
 
+  /** Invoke a deliberately selected application control. Never route pasted prompt text here. */
+  async invokeCommand(threadId: string, command: string): Promise<PromptResult> {
+    if (!this.supportsCommandInvocation) throw new ProtocolError("Restart Axiom to enable explicit commands.");
+    if (!command.trimStart().startsWith("/") || Buffer.byteLength(command, "utf8") > 4 * 1024 * 1024) {
+      throw new ProtocolError("Expected an explicit slash command");
+    }
+    const accountContext = this.state.accountContextToken();
+    const result = await this.process.request<PromptResult>("_axiom/session/command", { sessionId: threadId, command }, 0);
+    this.assertAccountContext(accountContext);
+    return result;
+  }
+
   async prompt(threadId: string, text: string, clientItemId: string, webEnabled = false, agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0, revision?: { userItemId: string; expectedRevision: number }, attachments: PromptAttachment[] = [], mcpRevision?: number): Promise<PromptResult> {
+    if (!this.supportsCommandInvocation && text.trimStart().startsWith("/")) {
+      throw new ProtocolError("Restart Axiom before sending literal text beginning with a slash.");
+    }
     if (revision && (!this.supportsMessageRevision || !revision.userItemId || revision.userItemId.length > 512
       || !Number.isSafeInteger(revision.expectedRevision) || revision.expectedRevision < 0)) {
       throw new ProtocolError("Restart Axiom before editing or regenerating messages.");
@@ -434,6 +489,32 @@ export class AxiomAcpClient extends EventEmitter {
     const context = this.state.accountContextToken();
     const result = await this.process.request<GetAttachmentsResponse>("_axiom/thread/attachments", { threadId, userItemId });
     this.assertAccountContext(context);
+    return result;
+  }
+
+  async readImage(threadId: string, callId: string, sha256: string): Promise<ReadImageResponse> {
+    if (!this.supportsImageResources) throw new ProtocolError("Restart Axiom to load saved images.");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ReadImageResponse>("_axiom/image/read", { threadId, callId, sha256 });
+    this.assertAccountContext(context);
+    if (result.sha256 !== sha256 || result.mimeType !== "image/png" || typeof result.data !== "string" || result.data.length > 28_000_000) {
+      throw new ProtocolError("Saved image identity differs");
+    }
+    return result;
+  }
+
+  /** Resolve a conversation-local `img_…` ID to the exact image image tools see. */
+  async resolveImage(threadId: string, imageId: string): Promise<ResolveImageResponse> {
+    if (!this.supportsImageResolution) throw new ProtocolError("Restart Axiom to show conversation images.");
+    if (!threadId || threadId.length > 128 || !/^img_[0-9a-f]{32}$/.test(imageId)) throw new ProtocolError("Invalid image identity");
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<ResolveImageResponse>("_axiom/image/resolve", { threadId, imageId });
+    this.assertAccountContext(context);
+    if (result.imageId !== imageId || !/^image\/(?:png|jpeg|webp|gif)$/.test(result.mimeType)
+      || typeof result.data !== "string" || result.data.length > 28_000_000
+      || !["uploaded", "generated", "edited"].includes(result.origin) || typeof result.name !== "string") {
+      throw new ProtocolError("Conversation image identity differs");
+    }
     return result;
   }
 
@@ -684,9 +765,13 @@ export class AxiomAcpClient extends EventEmitter {
     // Startup, the account menu and the balance/deposit screens can all request
     // the same balance at once. Share only in-flight work for this exact account
     // generation; never cache a settled balance or join an old owner's request.
-    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then((result) => {
+    const promise = this.process.request<BillingStatusResponse>("_axiom/billing/status", {}).then(async (result) => {
       this.assertAccountContext(accountContext);
       this.state.setBilling(result.status);
+      if (this.supportsCreditBilling) {
+        await this.creditBilling({kind: "summary"}).catch(() => undefined);
+        this.assertAccountContext(accountContext);
+      }
       return result;
     }).finally(() => {
       // An old account's completion must not detach a newer account's request.
@@ -694,6 +779,24 @@ export class AxiomAcpClient extends EventEmitter {
     });
     this.billingRefresh = { context: accountContext, promise };
     return promise;
+  }
+
+  async creditBilling(action: import("./generated/protocol.js").CreditBillingAction): Promise<import("./generated/protocol.js").CreditBillingResponse> {
+    if (!this.supportsCreditBilling) throw new ProtocolError("Restart Axiom with the updated native app to manage subscriptions and credits.");
+    const { validateCreditAction } = await import("./credit-billing.js");
+    validateCreditAction(action);
+    const context = this.state.accountContextToken();
+    const result = await this.process.request<import("./generated/protocol.js").CreditBillingResponse>("_axiom/billing/credits", {action});
+    this.assertAccountContext(context);
+    if (result.result.kind === "summary") {
+      const summary: unknown = result.result.value;
+      if (summary === null) this.state.setCreditBalances(null);
+      else {
+        validateCreditBalances(summary);
+        this.state.setCreditBalances(summary);
+      }
+    }
+    return result;
   }
 
   async cryptoOptions(): Promise<CryptoOptionsResponse> {
@@ -792,6 +895,38 @@ export class AxiomAcpClient extends EventEmitter {
     this.securityWarmups.set(modelId, entry);
     this.runBackground(entry.promise);
     return entry.promise;
+  }
+
+  /** Renew the displayed report through the native reusable proof cache.
+   * Explicit verifySecurity remains the only path that forces fresh attestation. */
+  async ensureSecurity(threadId: string): Promise<VerifySecurityResponse> {
+    const accountContext = this.state.accountContextToken();
+    const context = this.state.securityContextToken(threadId);
+    const session = this.state.snapshot().sessions[threadId];
+    const modelId = session?.settings?.model;
+    if (!context || !modelId) throw new ProtocolError("Load this thread before verifying its model");
+    if (session.running) throw new ProtocolError("Wait for the current reply before refreshing verification");
+    const existing = this.securityVerifications.get(threadId);
+    if (existing?.context === context) return existing.promise;
+    const cached = this.securityWarmups.get(modelId);
+    if (cached?.context === accountContext && !cached.pending && cached.validUntil > 0
+      && cached.validUntil <= Date.now() + 30_000) {
+      // Re-read native cached material near expiry. This drops only the JS
+      // report, never the provider proof, pinned transport or retry backoff.
+      this.securityWarmups.delete(modelId);
+    }
+    const result = await this.prewarmSecurity(modelId);
+    const current = this.state.snapshot().sessions[threadId];
+    if (this.state.accountContextToken() !== accountContext || this.state.securityContextToken(threadId) !== context
+      || !current || current.running || this.securityVerifications.has(threadId)) {
+      throw new ProtocolError("The verification context changed; refresh the selected model");
+    }
+    const evidence = publicSecurityEvidence(result, modelId);
+    if (!evidence || evidence.hardExpiresAtUnixSeconds * 1000 <= Date.now()) throw new ProtocolError("Verification returned no fresh evidence");
+    // Cached warmups may predate this thread. Apply the public report only to
+    // its still-idle, unchanged model/account/runtime; keep the original expiry.
+    this.state.setSecurityVerification(threadId, { pending: false, evidence, status: result.status });
+    return { status: result.status, evidence };
   }
 
   verifySecurity(threadId: string, acceptOutdatedTee = false, expectedModelId?: string): Promise<VerifySecurityResponse> {

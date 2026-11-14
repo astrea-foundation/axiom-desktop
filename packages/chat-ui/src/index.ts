@@ -13,6 +13,7 @@ export type { ModelTag, ModelTagTone, ProviderModel, ReasoningEffort } from "./t
 
 export * from "./ChatComposer";
 export * from "./WelcomeView";
+export * from "./ChatPreparationScreen";
 export * from "./ChatView";
 export * from "./PreparingThreadView";
 export * from "./TimelineView";

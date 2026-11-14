@@ -13,6 +13,42 @@ handles passkey, Google, password and wallet authentication. Native login creden
 outside the renderer. Signing out closes the active account store and invalidates
 pending account operations.
 
+Startup replaces the composer with an integrated preparation screen. A large
+heading names the native operation: checking the saved sign-in, updating the
+local account, unlocking the saved key, or **Decrypting your chats**. Decryption
+is reported only after obtaining the key and immediately before opening an
+existing encrypted database. Fresh stores and legacy migrations do not report
+that decryption stage. The screen shows only stages actually observed, with a
+subtle activity sweep and reduced-motion support; it invents no percentages,
+counts or completion times.
+
+The textbox, model picker, Web, Agent and Send controls are absent during
+preparation. Drafts remain in local state and return with the composer when the
+account is ready. Readiness does not steal focus from Settings or the sidebar.
+The account control mirrors progress and keeps Settings accessible. A genuine
+preparation failure stays in the same screen with **Try again**, **Open Settings**
+and expandable diagnostics. Older storage migrations retain their dedicated
+progress screen and only show counts actually reported by the native runtime.
+
+The **Runs on Astrea** sidebar introduction appears once per local app profile,
+after the account is ready. Dismissing it, reloading a window, changing accounts,
+updating Axiom or relaunching cannot show it again. Leaving it open also limits
+it to its first session. A fresh profile or factory reset resets this preference.
+
+Open **Settings → Account → Factory reset Axiom…** to start fresh on this
+computer. The control is also available while signed out or disconnected. Type
+`RESET` and confirm to stop active work, delete local chats and managed files,
+settings, cached app data, and saved Axiom/MCP credentials, then restart for a
+fresh sign-in. This also removes local data shared with AxiomCLI. Online accounts,
+balances, hosted API keys and files outside Axiom are kept. Close other CLI
+windows first. See [recovery and deletion scope](troubleshooting.md#completely-reset-local-data).
+
+The Account pane keeps the avatar, name, email and current status together in a
+compact column. Linked sign-in methods have their own row. **Manage account**
+opens the hosted account app; **Sign out** stays available as a separate action.
+Factory reset is below the identity card. Settings tabs keep keyboard focus
+inside their selected shape so the scrolling navigation does not clip it.
+
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Rename and Delete use in-app dialogs; batch deletion is confirmed against
 the exact native selection. Deleting a conversation does not remove workspace files.
@@ -34,11 +70,25 @@ draft; navigation, reselecting a thread and reload preserve them. An anonymous
 draft can follow the first sign-in. Pending first-message setup has its own
 identity, so navigating away does not silently discard or redirect it.
 
+Saved generated images load as they approach the viewport. Loading failures show
+**Retry loading image** without blocking messages or the rest of the thread.
+Image reads and cache memory are bounded; reopening a conversation no longer
+replays all saved image bytes before loading its timeline.
+
 ## Balance and payments
 
-Open the account menu and choose **Balance** to view credit and top up with mainnet
-Zcash. **5% off** means $9.50 of Zcash buys $10 of credit, using the rate at
-confirmation. The reusable address stays available.
+Open the account menu and choose **Billing** to view weekly and purchased credits,
+manage a subscription, or add credits with Card or Crypto. Capabilities depend on
+the selected account/server. See [credits and subscriptions](billing.md) for plan,
+auto top-up and reset behavior. Direct Zcash remains available within Crypto;
+its reusable address and confirmation-time valuation are retained.
+
+When there is too little available credit to start a request, chat and image
+errors say **Insufficient balance. Top up your Axiom balance to continue.**
+Open **Billing** to add credit or redeem a gift code. Existing request holds can
+reduce available credit even when the displayed account balance is positive.
+The CLI gives `/topup`, `/redeem` and `/balance` guidance for the same failure;
+the local proxy returns HTTP 402 with `insufficient_credit` and the top-up message.
 
 When there is too little available credit to start a request, chat and image
 errors say **Insufficient balance. Top up your Axiom balance to continue.**
@@ -84,7 +134,7 @@ The discount applies to Zcash only. Crypto availability requires backend setup.
 
 Automatic and manual balance refreshes preserve an entered gift code.
 **Redeem a gift code** adds its USD value to the signed-in account. Code
-entry is masked and cleared on success, closing the screen, disconnect or account
+entry is visible and cleared on success, closing the screen, disconnect or account
 change. It is never a chat message or saved draft. A failed/uncertain request can
 be retried with the same code without duplicate credit; a code already redeemed
 by this account reports that result and refreshes the balance.
@@ -99,17 +149,26 @@ sidecar negotiate `billing@4`; older sidecars must be updated together.
 
 ## Agent and Web controls
 
-New threads start with Agent **off**, a separate managed working directory and
-Web **off**. Agent settings let the user enable local tools, choose **Approve
-commands** or **Full access**, and select an existing absolute directory using
-the native picker or reset to the managed thread directory.
+New threads start with Agent **Off**, a separate managed working directory and
+Web **off**. Agent settings offer three access levels: **Off** disables local
+commands and file changes, **Ask for permission** asks before each local tool
+action, and **Full access** runs local tools without routine approval prompts.
+Select an existing absolute working directory using the native picker or reset
+to the managed thread directory.
 
-Agent settings persist atomically. Save requires an idle thread; the renderer
+Changes to the access level, working directory and MCP selection save when the
+dialog closes using its close button, Escape, or a click on the backdrop. There
+are no Save or Cancel buttons. The dialog waits for save acknowledgement; a
+failed save keeps the choices and offers **Try again** or **Discard changes**.
+Closing unchanged settings makes no write. Account or runtime changes dismiss
+the old dialog without saving its draft into the replacement context.
+
+Agent settings persist atomically. Saving requires an idle thread; the renderer
 also requires an empty queue. Prompts and steering carry the saved settings
 revision, so queued text cannot silently inherit a different permission/directory
 configuration. A change clears cached policy grants and file-change tracking.
-Desktop supports explicitly configured [local MCP connections](mcp.md). The
-Agent menu selects MCP tools per thread independently of shell/filesystem
+Desktop supports explicitly configured [MCP connections](mcp.md). The
+Agent dialog selects MCP tools per conversation independently of shell/filesystem
 permissions; MCP can be used while Agent is off. Settings provides connection
 management, testing, tool inspection and configuration import.
 
@@ -145,6 +204,10 @@ available during this wait, and another message waits in the FIFO queue until
 the active request finishes. This applies to existing chats, first messages,
 retries and queued messages when their turn arrives.
 During a response, Enter adds input to the same FIFO queue.
+The model picker is disabled while a message is being sent or a response is
+running, including tool calls. An open picker closes when generation starts.
+Wait for the response to finish or stop it before changing models. Other idle
+threads and the new-chat screen keep their own model selection available.
 **Send now** stops the current reply, waits for its cleanup, then sends the
 selected message as a new turn. Its text, attachments, Web choice and Agent
 settings are preserved. Other queued messages retain their order. The cancel
@@ -154,32 +217,54 @@ has been sent, use Stop on its reply.
 
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
-Queues hold at most 32 messages and 64 MiB of payloads, scoped to the account.
-Large payloads commit to local IndexedDB before the draft is cleared; localStorage
-holds only the outbox manifest. Stable
+New queue reservations allow at most 32 messages and 64 MiB of payloads, scoped to
+the account. Importing legacy saved preparations can restore more entries so
+existing drafts survive migration; new reservations retain the normal bounds.
+Payloads and outbox metadata commit to encrypted native storage before the draft
+is cleared. Images/documents are encrypted external files, referenced by the
+database. Existing localStorage/IndexedDB payloads import on account unlock,
+with acknowledgement before removal. Recovered conflicts appear as saved
+preparations requiring explicit review. Stable
 client IDs reconcile delivery with the native transcript. Stop pauses automatic
 queue delivery. Restored or uncertain submissions require review; disconnect,
 restart or account changes never justify silently resending them. A fresh prompt
 after Stop can start normally when no older queued message needs review.
+Normal window close, quit and explicit account changes wait for pending native
+draft/outbox writes. A failed save keeps Axiom open for retry. Text edits are
+debounced; an abrupt process kill or raw page reload before acknowledgement can
+lose an uncommitted edit.
+
+A new window whose application never mounted has no in-memory draft writer and
+can close immediately. Once the app registers its writer, it must acknowledge
+saves even after a renderer failure or reload; losing the renderer cannot bypass
+that protection.
 
 ## Images and files
 
-Image creation and editing are automatically available to vision-capable chat
-models when the native image service is installed. There is no Images toggle.
+Image creation and editing are automatically available to tool-capable chat
+models when the native image service is installed and passes its verified
+capability preflight. Generation does not require the chat model to support
+vision. There is no Images toggle, and no MCP connection, Agent mode or Web
+setting is needed.
 Ask the model to create an image or edit an uploaded or earlier generated image;
 an upload or request to describe it does not by itself request generation.
 The model uses `generate` for both operations, with up to five optional reference
 images. It refers to them as `<image1>`, `<image2>`, etc. in the order supplied
 to the tool. The image service uses ComfyUI inside the encrypted worker.
-With AstreaAI installed, vision-capable NEAR and Tinfoil chats use that same
+With AstreaAI installed, NEAR and Tinfoil chats use that same
 attested image service while keeping their selected chat model. Image receipts
 and billing identify the AstreaAI worker; saved image provenance retains the
 originating chat model for regeneration.
 Images from chat models with the catalog's **Uncensored** tag (such as the
 abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
-LoRA at strength 0.9; other chat models use the base image model. The model can optionally call
-`view_image` to inspect an uploaded or generated result before finishing its
-turn, including deciding whether a correction is needed. Click a generated or edited
+LoRA at strength 0.9; other chat models use the base image model. Vision-capable
+chat models can optionally call `view_image` to inspect an uploaded or generated
+result before finishing a turn, including deciding whether a correction is
+needed. Its row names the
+inspected image ID; expand it to see that image. Expand an image request to see
+its prompt, aspect ratio, output size and any reference images as cards labelled
+`<image1>`, `<image2>`, etc., above the result. While the model is writing a
+tool call, a "Writing tool call…" row appears until the call itself is shown. Click a generated or edited
 image to view it in the larger viewer; Escape, the close button or a backdrop
 click closes it. Click the image to zoom in, scroll to move around the larger
 image, and click again to fit it in the viewer. Enter or Space on the image
@@ -189,8 +274,17 @@ to select a destination. Generated images are attributed to AstreaAI beneath the
 Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
 live percentage and progress bar. Queued work displays 0%; finishing stays at
-99% until the verified result is ready; the percentage and bar then disappear. Nonvision
-models cannot use image tools or accept new image uploads.
+99% until the verified result is ready; the percentage and bar then disappear.
+Chat models without vision can create images and edit earlier generated images
+by their conversation-local IDs, but cannot inspect results or accept new image
+uploads. A failed image-service preflight withholds image tools and supplies
+the native diagnostic to the chat model, so it can explain the service failure.
+
+Opening an image-heavy conversation loads its messages and image dimensions
+first. Original generated images load as they approach the visible part of the
+conversation. Reserved image space keeps scrolling stable, and recently viewed
+images are cached within a bounded memory budget. A failed read offers
+**Retry loading image**. Viewing and saving use the original image.
 
 Each generated image has its own Regenerate button. It reruns only that image's
 stored prompt, reference images in their original order, output dimensions,
@@ -203,13 +297,22 @@ failure or account/runtime change.
 The default policy lets the model choose `aspect_ratio` from `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`,
 `16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **1:1**.
 Native code selects the largest exact ratio on the supported 32-pixel grid,
-within 2,359,296 pixels. This gives 1536×1536 for 1:1, 1216×1824 for 2:3, and
-2048×1152 for 16:9. Without a ratio, reference-based requests use the same
+within 4,194,304 pixels. This gives 2048×2048 for 1:1, 1664×2496 for 2:3, and
+2560×1440 for 16:9. Without a ratio, reference-based requests use the same
 default size.
 
 The installed AstreaAI client supplies the current default, ratio list and
 reference limit. The native tool definition is updated for each turn; generic
 model instructions defer to it.
+
+Generation references use their own 2048² pixel budget. The tool passes stored
+images directly to the provider instead of using `view_image` thumbnails. The
+provider normalizes them once onto the 32-pixel grid using Lanczos3 in linear
+light with premultiplied alpha, writes lossless PNG, and passes their dimensions
+through Comfy without another forced 1024 resize. Browser attachment preparation
+uses high quality canvas resampling and lossless PNG on that grid. Viewing copies
+remain bounded to one megapixel; display and Save retain the original output.
+2K RGBA outputs may be up to 20 MiB. The Turbo sampler and LoRA policy are unchanged.
 
 Copy and Regenerate appear after the full response turn finishes, including any
 tool calls; an introductory message or completed tool-call segment does not
@@ -232,8 +335,8 @@ OCR, conversion or rasterization. Document processing belongs to the attested
 provider. Unsupported files remain visible in the draft and block sending until
 you remove them or select a model that supports them.
 
-A message can contain eight attachments, up to 5 MiB per image, 10 MiB per file,
-and 16 MiB of text plus base64-encoded attachment payloads. Text remains bounded
+A message can contain ten attachments, up to 20 MiB per image, 10 MiB per file,
+and 144 MiB of text plus base64-encoded attachment payloads. Text remains bounded
 to 4 MiB. Model context and native budgets still apply; inputs are never silently
 truncated. Audio/video and remote URLs are unsupported.
 
@@ -252,6 +355,10 @@ readable in saved history but cannot be submitted as new uploads.
 
 ## Edit, regenerate and compaction
 
+Each user message has a **Regenerate** action next to **Edit**. Regenerate resends
+that message with its original text and attachments, including attachment-only
+messages, through the same replacement confirmation as editing and sending.
+
 Edit and Regenerate use the negotiated `messageRevision@1` flow. The client
 submits the original user item ID and expected thread revision. AxiomCLI
 atomically truncates that turn and later local history, preserves request
@@ -261,21 +368,29 @@ rejected. Regeneration after steering targets the turn's original prompt.
 Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
-Automatic compaction follows the selected model's advertised capacity and local
-limits. The byte limit includes encoded attachments and can trigger compaction
-while the last reported token count is below the token threshold. The runtime
-budgets native image/file inputs as well as text in each summary stage, leaving
-room for previous summaries and output, including reasoning. It summarizes older
-history in bounded stages and keeps a usable recent tail; summaries persist for
-resume. Cancellation never marks unfinished
+Automatic compaction is triggered only by context tokens, at the selected model's
+advertised threshold capped by local token limits. Uploaded images and successful
+`view_image` observations contribute visual tokens; generated images contribute
+only when viewed. Provider-reported usage takes precedence over estimates for
+existing context. Only new material is estimated until the next provider report.
+Image counts and encoded attachment sizes do not trigger compaction. The runtime
+uses one summary request whenever the conversation fits with room for summary
+output, reasoning and a safety margin. It passes historical messages and native
+image/file inputs together, preserving their order and association. Historical
+system notes cannot override the summarizer's instructions; unsupported reasoning
+fields and refusal details remain available as historical text.
+When token or provider request limits require multiple requests, consecutive
+fragments are grouped into as few passes as the budgets allow. Each pass reserves
+space for the previous summary and new output. A usable recent tail is retained
+verbatim, and summaries persist for resume. Cancellation never marks unfinished
 compaction successful. Compaction is model-generated and is not a guarantee of
 perfect recall. The original local journal remains available independently of
 the compacted model context.
 
-If automatic pre-turn summarization fails, the runtime keeps the complete new
-message and continues with a short, partial text excerpt of older context. A
-notice explains that older context and media were omitted. Cancellation still
-stops the turn. Original saved messages remain separate from this model context.
+If automatic pre-turn summarization fails, the turn reports an error and retains
+the original conversation and media for retrying compaction or choosing a model
+with a larger context. Cancellation stops the turn. Original saved messages remain
+separate from the compacted model context.
 On restore, missing or invalid old attachments and image details are omitted
 instead of blocking the entire conversation. Interrupted tool calls receive an
 unknown-outcome marker; recovery does not execute them. Older file formats that
@@ -298,10 +413,11 @@ compaction threshold. The 85% threshold controls when history is compacted.
 New uploads and successful `view_image` observations count toward the next
 request's context; the meter updates when the provider reports that request.
 Image generation alone does not add visual input to the chat model. Encoded
-image/file bytes also have an independent native memory limit, which can cause
-compaction before the displayed token threshold is reached. New uploads also
-compact existing images when needed to stay within the selected chat model's
-image context cap, including AstreaAI's eight-image limit.
+image/file data has per-message native size limits. These transport limits are
+independent of compaction. Ten attachments is a per-message upload limit: later
+messages can add ten more, and image views and generation have no conversation
+count limit. Compaction preserves saved assets and their reference IDs for later
+use.
 Tinfoil uses upstream's remaining-context generation default. Other protocols
 use the advertised output ceiling and estimated remaining request space (including
 tools/images and a margin). Exact tokenization and final context enforcement belong
@@ -312,6 +428,13 @@ survive reload, and model switches do not rescale old counts against a new model
 No report is shown as unknown, rather than fabricated zero usage.
 
 Hover, focus or click the meter to see context use and the compaction threshold.
+Request records are selected by their start timestamps, independent of the random
+request IDs used for accounting pagination. During compaction, a spinner shows
+cumulative generated tokens and the current pass when multiple passes are needed.
+A `~` marks counts estimated from
+streamed summary text and available reasoning; provider output-token reports
+replace those estimates when available. Counts describe work completed, not a
+percentage or a promise of the final summary length.
 Expand **Usage details** for input/output counts, turn totals, cache and reasoning
 subsets, settlement state, elapsed time and other thread charges. Tab reaches the
 disclosure; Escape closes the panel and returns focus to the meter. Partial or
@@ -341,6 +464,12 @@ runs at a time; failures retry with backoff from thirty seconds to five minutes.
 Verification waits for an active reply to finish and for a disconnected thread
 to synchronize. An outdated TEE still requires explicit user consent; automatic
 refresh never accepts that warning. Manual **Refresh** remains available.
+Automatic renewal reuses the native provider's still-fresh, model-bound proof
+and pinned connection. It does not force a new hardware appraisal or discard
+the image service's prepared session. A valid badge remains visible while that
+renewal is pending; actual hard expiry still changes its status. Explicit
+**Refresh** requests new attestation. Cached warmup reports can populate newly
+loaded idle threads, while account, runtime and model changes fence late results.
 
 Editing a nonempty message while signed in also starts verification for the
 selected model, including on the welcome screen before a thread exists. Only the
@@ -390,6 +519,15 @@ flow does not expose the native access/refresh token or accept an API key as a
 Desktop login credential.
 
 ## Presentation and local integrations
+
+A compact horizontal black **RUNS ON Astrea** banner sits above the account area
+in the left sidebar, with small, muted JetBrains Mono Medium text and a branded
+Astrea lockup on one line. It eases into view and stays visible until closed.
+The field bumper loops continuously with the camera orbiting the 3D field;
+the text and logo stay steady. The Astrea logo and wordmark open `astrea.systems`
+in the system browser. The × hides it until Axiom quits and launches again,
+including across renderer reloads and closing/reopening the window. Reduced
+motion disables the video and animated transitions.
 
 Tool activity appears at its execution point between assistant segments, with
 stable IDs for live/snapshot reconciliation. Markdown, code and KaTeX render

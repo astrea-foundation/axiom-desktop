@@ -103,6 +103,7 @@ impl SessionStore {
                 .filter(|old| {
                     state.servers.get(&old.name).is_none_or(|new| {
                         new.command != old.command
+                            || new.remote != old.remote
                             || new.args != old.args
                             || new.enabled != old.enabled
                             || new.credential_id != old.credential_id

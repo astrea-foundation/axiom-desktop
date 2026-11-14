@@ -17,7 +17,9 @@ use crate::{
         AppEvent, FileDiff, PermissionProfile, QuestionRequest, QuestionSpec, SessionId, TaskItem,
     },
     planning::PlanArtifact,
-    policy::{Effect, ToolAccess, normalized_executable_name},
+    policy::{
+        DenyDynamicEffects, Effect, EffectAuthorizer, ToolAccess, normalized_executable_name,
+    },
     provider::{FunctionDefinition, ToolDefinition},
     web::{SafeFetcher, SearchProvider},
     workspace::{EditIntent, ProcessManager, ProcessRequest, StructuredPatch, Workspace},
@@ -95,6 +97,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
+    fn mcp_source(&self) -> Option<axiom_acp_extension::McpToolSource> {
+        None
+    }
     fn access(&self) -> ToolAccess {
         ToolAccess::Write
     }
@@ -106,6 +111,16 @@ pub trait Tool: Send + Sync {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult>;
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        _authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
+        self.execute(context, arguments, cancellation).await
+    }
 
     /// Stop any native resources owned by this tool before its front end
     /// disconnects. Most tools are stateless; process-backed adapters override
@@ -132,9 +147,81 @@ struct SessionDiff {
     baseline: BTreeMap<PathBuf, String>,
     baseline_truncated: bool,
     paths: BTreeSet<PathBuf>,
-    patches: Vec<String>,
+    patches: Vec<SessionPatch>,
     retained_bytes: usize,
     truncated: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SessionPatch {
+    paths: Vec<PathBuf>,
+    content: String,
+}
+
+/// One aggregate invocation checks each canonical file once. Explicit ask
+/// rules are checked again for the next invocation, including retained data.
+struct FileReadScope<'a> {
+    workspace: Workspace,
+    authorization: &'a dyn EffectAuthorizer,
+    cancellation: CancellationToken,
+    decisions: BTreeMap<PathBuf, bool>,
+    request_approval: bool,
+}
+
+impl<'a> FileReadScope<'a> {
+    fn new(
+        context: &ToolContext,
+        authorization: &'a dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<Self> {
+        Ok(Self {
+            workspace: workspace(context)?,
+            authorization,
+            cancellation,
+            decisions: BTreeMap::new(),
+            request_approval: true,
+        })
+    }
+
+    fn noninteractive(
+        context: &ToolContext,
+        authorization: &'a dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<Self> {
+        let mut scope = Self::new(context, authorization, cancellation)?;
+        scope.request_approval = false;
+        Ok(scope)
+    }
+
+    async fn resolve(&mut self, path: &std::path::Path) -> Result<Option<PathBuf>> {
+        if self.cancellation.is_cancelled() {
+            return Err(AxiomError::Cancelled);
+        }
+        let path = match self.workspace.resolve_for_write(path) {
+            Ok(path) => path,
+            Err(AxiomError::OutsideWorkspace(_) | AxiomError::Io(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if let Some(allowed) = self.decisions.get(&path) {
+            return Ok(allowed.then_some(path));
+        }
+        let effect = Effect::FileRead { path: path.clone() };
+        let allowed = if self.request_approval {
+            match self
+                .authorization
+                .authorize(effect, self.cancellation.clone())
+                .await
+            {
+                Ok(()) => true,
+                Err(AxiomError::PermissionDenied(_)) => false,
+                Err(error) => return Err(error),
+            }
+        } else {
+            self.authorization.immediately_allows(effect)
+        };
+        self.decisions.insert(path.clone(), allowed);
+        Ok(allowed.then_some(path))
+    }
 }
 
 impl SessionChanges {
@@ -163,51 +250,94 @@ impl SessionChanges {
             }
             let (patch, truncated) = truncate_tool_text(diff, remaining);
             state.retained_bytes = state.retained_bytes.saturating_add(patch.len());
-            state.patches.push(patch);
+            state.patches.push(SessionPatch {
+                paths: result.changed_paths.clone(),
+                content: patch,
+            });
             state.truncated |= truncated || result.truncated;
         }
     }
 
-    fn ensure_baseline(&self, context: &ToolContext) {
-        let mut sessions = self
+    async fn ensure_baseline(
+        &self,
+        context: &ToolContext,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        let mut scope = FileReadScope::noninteractive(context, authorization, cancellation)?;
+        self.capture_baseline(context, &mut scope).await
+    }
+
+    async fn capture_baseline(
+        &self,
+        context: &ToolContext,
+        scope: &mut FileReadScope<'_>,
+    ) -> Result<()> {
+        if self
             .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if sessions.contains_key(&context.session_id) {
-            return;
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&context.session_id)
+        {
+            return Ok(());
         }
-        let (baseline, truncated) = snapshot_workspace(&context.cwd);
-        sessions.insert(
-            context.session_id.clone(),
-            SessionDiff {
+        let (baseline, truncated) = snapshot_workspace(scope).await?;
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(context.session_id.clone())
+            .or_insert_with(|| SessionDiff {
                 root: Some(context.cwd.clone()),
                 baseline,
                 baseline_truncated: truncated,
                 ..SessionDiff::default()
-            },
-        );
+            });
+        Ok(())
     }
 
-    fn render(&self, context: &ToolContext) -> (Vec<PathBuf>, String, bool) {
-        let sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(state) = sessions.get(&context.session_id).cloned() else {
-            return (Vec::new(), String::new(), false);
+    async fn render(
+        &self,
+        context: &ToolContext,
+        authorization: &dyn EffectAuthorizer,
+        cancellation: CancellationToken,
+    ) -> Result<(Vec<PathBuf>, String, bool)> {
+        let state = {
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&context.session_id)
+                .cloned()
         };
-        drop(sessions);
-        let root_matches = state.root.as_deref() == Some(context.cwd.as_path());
-        let (current, current_truncated) = snapshot_workspace(&context.cwd);
-        let mut paths = state.paths;
+        let Some(state) = state else {
+            // An explicit diff inspection retains normal foreground approvals,
+            // including its first snapshot. Eager pre-edit capture never asks.
+            let mut scope = FileReadScope::new(context, authorization, cancellation)?;
+            self.capture_baseline(context, &mut scope).await?;
+            return Ok((Vec::new(), String::new(), false));
+        };
+        if state.root.as_deref() != Some(context.cwd.as_path()) {
+            return Ok((Vec::new(), String::new(), true));
+        }
+        let mut scope = FileReadScope::new(context, authorization, cancellation)?;
+        let (current, current_truncated) = snapshot_workspace(&mut scope).await?;
+        let mut paths = BTreeSet::new();
         let mut diff = String::new();
         let candidates: BTreeSet<_> = state
             .baseline
             .keys()
             .chain(current.keys())
+            .chain(&state.paths)
             .cloned()
             .collect();
         for path in candidates {
+            // Recheck retained baselines as well: denial must not look like a
+            // deletion whose patch reveals the previously captured content.
+            if scope.resolve(&path).await?.is_none() {
+                continue;
+            }
+            if state.paths.contains(&path) {
+                paths.insert(path.clone());
+            }
             let before = state.baseline.get(&path).map(String::as_str);
             let after = current.get(&path).map(String::as_str);
             if before == after {
@@ -219,44 +349,67 @@ impl SessionChanges {
                 break;
             }
         }
-        if diff.is_empty() && !state.patches.is_empty() {
-            diff = state.patches.join("\n");
+        if diff.is_empty() {
+            for patch in state.patches {
+                // A transaction patch may contain several files. Omit the
+                // whole fallback if any constituent file cannot be read.
+                let mut allowed = !patch.paths.is_empty();
+                for path in &patch.paths {
+                    if scope.resolve(path).await?.is_none() {
+                        allowed = false;
+                        break;
+                    }
+                }
+                if allowed {
+                    diff.push_str(&patch.content);
+                    diff.push('\n');
+                }
+                if diff.len() > self.maximum_bytes {
+                    break;
+                }
+            }
         }
         let (diff, output_truncated) = truncate_tool_text(&diff, self.maximum_bytes);
-        (
+        Ok((
             paths.into_iter().collect(),
             diff,
-            state.truncated
-                || state.baseline_truncated
-                || current_truncated
-                || output_truncated
-                || !root_matches,
-        )
+            state.truncated || state.baseline_truncated || current_truncated || output_truncated,
+        ))
     }
 }
 
-fn snapshot_workspace(root: &std::path::Path) -> (BTreeMap<PathBuf, String>, bool) {
+async fn snapshot_workspace(
+    scope: &mut FileReadScope<'_>,
+) -> Result<(BTreeMap<PathBuf, String>, bool)> {
     const MAX_FILES: usize = 10_000;
     const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
     const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
-    let Ok(workspace) = Workspace::new(root) else {
-        return (BTreeMap::new(), true);
-    };
-    let Ok(paths) = workspace.glob("**/*", MAX_FILES.saturating_add(1), false) else {
-        return (BTreeMap::new(), true);
-    };
+    let paths = scope
+        .workspace
+        .glob("**/*", MAX_FILES.saturating_add(1), false)?;
     let mut snapshot = BTreeMap::new();
     let mut total = 0_usize;
     let mut truncated = paths.len() > MAX_FILES;
     for path in paths.into_iter().take(MAX_FILES) {
-        let Ok(metadata) = workspace.metadata(&path) else {
-            truncated = true;
+        // metadata() classifies content by reading its prefix; use filesystem
+        // metadata here so no bytes are opened before policy authorization.
+        let Ok(metadata) = std::fs::metadata(scope.workspace.root().join(&path)) else {
             continue;
         };
-        if metadata.kind != "file" || metadata.size_bytes > MAX_FILE_BYTES as u64 {
+        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES as u64 {
             continue;
         }
-        let Ok(read) = workspace.read(&path, 1, usize::MAX, MAX_FILE_BYTES) else {
+        let Some(resolved) = scope.resolve(&path).await? else {
+            continue;
+        };
+        let canonical_relative = resolved
+            .strip_prefix(scope.workspace.root())
+            .map_err(|_| AxiomError::OutsideWorkspace(resolved.clone()))?
+            .to_path_buf();
+        let Ok(read) = scope
+            .workspace
+            .read_resolved(&resolved, 1, usize::MAX, MAX_FILE_BYTES)
+        else {
             continue;
         };
         if read.truncated || total.saturating_add(read.content.len()) > MAX_TOTAL_BYTES {
@@ -264,9 +417,9 @@ fn snapshot_workspace(root: &std::path::Path) -> (BTreeMap<PathBuf, String>, boo
             continue;
         }
         total = total.saturating_add(read.content.len());
-        snapshot.insert(path, read.content);
+        snapshot.insert(canonical_relative, read.content);
     }
-    (snapshot, truncated)
+    Ok((snapshot, truncated))
 }
 
 fn session_file_diff(path: &std::path::Path, before: Option<&str>, after: Option<&str>) -> String {
@@ -322,6 +475,10 @@ impl std::fmt::Debug for ToolRegistry {
 }
 
 impl ToolRegistry {
+    #[must_use]
+    pub fn mcp_source(&self, name: &str) -> Option<axiom_acp_extension::McpToolSource> {
+        self.tools.get(name).and_then(|tool| tool.mcp_source())
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -437,12 +594,26 @@ impl ToolRegistry {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(name, context, arguments, cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    pub async fn execute_authorized(
+        &self,
+        name: &str,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         if tracks_workspace_changes(name) {
-            self.changes.ensure_baseline(context);
+            self.changes
+                .ensure_baseline(context, authorization, cancellation.clone())
+                .await?;
         }
         let result = self
             .tool(name)?
-            .execute(context, arguments, cancellation)
+            .execute_authorized(context, arguments, cancellation, authorization)
             .await?;
         self.changes.record(&context.session_id, &result);
         Ok(result)
@@ -513,7 +684,6 @@ fn tracks_workspace_changes(name: &str) -> bool {
             | "run_command"
             | "run_shell"
             | "start_background"
-            | "view_session_diff"
             | "plan_create"
             | "plan_revise"
             | "plan_propose"
@@ -869,12 +1039,27 @@ impl Tool for SelectContext {
         arguments: Value,
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, _cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: ContextArgs = parse(self.name(), arguments)?;
-        let ranges = workspace(context)?.select_context(
-            &args.query,
-            args.max_files.clamp(1, 32),
-            self.max_bytes,
-        )?;
+        let ranges = workspace(context)?
+            .select_context(
+                &args.query,
+                args.max_files.clamp(1, 32),
+                self.max_bytes,
+                authorization,
+                cancellation,
+            )
+            .await?;
         Ok(ToolResult::success(serde_json::to_string_pretty(&ranges)?))
     }
 }
@@ -936,12 +1121,27 @@ impl Tool for InspectGit {
         arguments: Value,
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, _cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: GitArgs = parse(self.name(), arguments)?;
-        let inspection = workspace(context)?.inspect_git(
-            args.max_status.clamp(1, 2000),
-            args.max_commits.min(100),
-            self.max_bytes,
-        )?;
+        let inspection = workspace(context)?
+            .inspect_git(
+                args.max_status.clamp(1, 2000),
+                args.max_commits.min(100),
+                self.max_bytes,
+                authorization,
+                cancellation,
+            )
+            .await?;
         Ok(ToolResult {
             images: Vec::new(),
             content: serde_json::to_string_pretty(&inspection)?,
@@ -991,8 +1191,22 @@ impl Tool for ViewSessionDiff {
         arguments: Value,
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, _cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let _: BTreeMap<String, Value> = parse(self.name(), arguments)?;
-        let (paths, diff, truncated) = self.changes.render(context);
+        let (paths, diff, truncated) = self
+            .changes
+            .render(context, authorization, cancellation)
+            .await?;
         Ok(ToolResult {
             images: Vec::new(),
             content: serde_json::to_string_pretty(&json!({
@@ -1050,10 +1264,28 @@ impl Tool for SearchText {
         arguments: Value,
         _cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, _cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: SearchArgs = parse(self.name(), arguments)?;
         Ok(ToolResult::success(
             workspace(context)?
-                .search(&args.query, 200, 2 * 1024 * 1024)?
+                .search(
+                    &args.query,
+                    200,
+                    2 * 1024 * 1024,
+                    authorization,
+                    cancellation,
+                )
+                .await?
                 .join("\n"),
         ))
     }
@@ -1904,8 +2136,22 @@ impl Tool for FetchUrl {
         arguments: Value,
         cancellation: CancellationToken,
     ) -> Result<ToolResult> {
+        self.execute_authorized(_context, arguments, cancellation, &DenyDynamicEffects)
+            .await
+    }
+
+    async fn execute_authorized(
+        &self,
+        _context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
         let args: FetchArgs = parse(self.name(), arguments)?;
-        let result = self.fetcher.fetch(&args.url, cancellation).await?;
+        let result = self
+            .fetcher
+            .fetch_after_preflight(&args.url, cancellation, authorization)
+            .await?;
         Ok(ToolResult {
             images: Vec::new(),
             content: serde_json::to_string_pretty(&result)?,
@@ -2441,22 +2687,30 @@ mod tests {
             progress: None,
         };
         let registry = test_registry(4096).expect("registry");
+        let authorization = crate::policy::ExecutionAuthorizer {
+            policy: PolicyEngine::for_workspace(root.path()).unwrap(),
+            profile: PermissionProfile::FullAccess,
+            approval: None,
+            events: None,
+        };
         let read = registry
-            .execute(
+            .execute_authorized(
                 "read_file",
                 &context,
                 json!({"path":"hello.txt"}),
                 CancellationToken::new(),
+                &authorization,
             )
             .await
             .expect("read");
         assert!(read.content.contains("hello"));
         let edited = registry
-            .execute(
+            .execute_authorized(
                 "replace_text",
                 &context,
                 json!({"path":"hello.txt", "old":"hello", "new":"cherry"}),
                 CancellationToken::new(),
+                &authorization,
             )
             .await
             .expect("edit");
@@ -2466,11 +2720,12 @@ mod tests {
             "cherry\n"
         );
         let session_diff = registry
-            .execute(
+            .execute_authorized(
                 "view_session_diff",
                 &context,
                 json!({}),
                 CancellationToken::new(),
+                &authorization,
             )
             .await
             .expect("session diff");
@@ -2482,11 +2737,12 @@ mod tests {
             ..context.clone()
         };
         let empty = registry
-            .execute(
+            .execute_authorized(
                 "view_session_diff",
                 &other_session,
                 json!({}),
                 CancellationToken::new(),
+                &authorization,
             )
             .await
             .expect("isolated session diff");
@@ -2497,11 +2753,12 @@ mod tests {
         )
         .expect("simulated process change");
         let detected = registry
-            .execute(
+            .execute_authorized(
                 "view_session_diff",
                 &other_session,
                 json!({}),
                 CancellationToken::new(),
+                &authorization,
             )
             .await
             .expect("detected process diff");
@@ -2639,6 +2896,384 @@ mod tests {
             [AppEvent::TaskListUpdated { items }, AppEvent::ProgressUpdated { completed: Some(1), total: Some(2), .. }]
                 if items.len() == 2
         ));
+    }
+
+    #[derive(Default)]
+    struct FileApproval {
+        paths: Mutex<Vec<PathBuf>>,
+    }
+
+    #[async_trait]
+    impl crate::policy::ApprovalHandler for FileApproval {
+        async fn request(
+            &self,
+            request: crate::policy::ApprovalRequest,
+            _: CancellationToken,
+        ) -> Result<crate::policy::ApprovalResponse> {
+            if let Effect::FileRead { path } = request.effect {
+                self.paths.lock().unwrap().push(path);
+            }
+            assert!(
+                !request.allow_session_grants,
+                "explicit ask cannot be cached"
+            );
+            Ok(crate::policy::ApprovalResponse {
+                choice: crate::policy::ApprovalChoice::AllowOnce,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn file_policy_covers_direct_search_and_context_reads() {
+        use crate::policy::{
+            EffectAuthorizer, EffectClass, ExecutionAuthorizer, PolicyRule, RuleAction,
+        };
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("ordinary.txt"), "unique protected needle").unwrap();
+        std::fs::write(root.path().join("allowed.txt"), "public needle").unwrap();
+        let protected = root.path().canonicalize().unwrap().join("ordinary.txt");
+        let registry = test_registry(4096).unwrap();
+        for profile in [
+            PermissionProfile::Observe,
+            PermissionProfile::Confirm,
+            PermissionProfile::FullAccess,
+        ] {
+            let context = ToolContext {
+                model_id: "test-model".into(),
+                session_id: SessionId::new(),
+                cwd: root.path().into(),
+                permission_profile: profile,
+                images: crate::image_tool::ImageCatalog::default(),
+                progress: None,
+            };
+            for action in [RuleAction::Deny, RuleAction::Ask] {
+                let approvals = Arc::new(FileApproval::default());
+                let authorization = ExecutionAuthorizer {
+                    policy: PolicyEngine::for_workspace_with_rules(
+                        root.path(),
+                        vec![PolicyRule {
+                            action,
+                            effect: Some(EffectClass::FileRead),
+                            resource_prefix: Some(protected.to_string_lossy().into()),
+                            reason: None,
+                        }],
+                    )
+                    .unwrap(),
+                    profile,
+                    approval: Some(approvals.clone()),
+                    events: None,
+                };
+                for (name, args) in [
+                    ("read_file", json!({"path":"ordinary.txt"})),
+                    ("search_text", json!({"query":"needle"})),
+                    ("select_context", json!({"query":"needle"})),
+                ] {
+                    // Mirror the agent's preflight, then use the same policy for
+                    // resources that become known only inside aggregate tools.
+                    let mut preflight = Ok(());
+                    for effect in registry.effects(name, &context, &args).unwrap() {
+                        if let Err(error) = authorization
+                            .authorize(effect, CancellationToken::new())
+                            .await
+                        {
+                            preflight = Err(error);
+                            break;
+                        }
+                    }
+                    let result = match preflight {
+                        Ok(()) => {
+                            registry
+                                .execute_authorized(
+                                    name,
+                                    &context,
+                                    args,
+                                    CancellationToken::new(),
+                                    &authorization,
+                                )
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if action == RuleAction::Deny {
+                        if name == "read_file" {
+                            assert!(result.is_err());
+                        } else {
+                            let result = result.unwrap();
+                            assert!(!result.content.contains("unique protected"));
+                            assert!(result.content.contains("public needle"));
+                        }
+                    } else {
+                        assert!(
+                            result.unwrap().content.contains("unique protected"),
+                            "{name}"
+                        );
+                    }
+                }
+                let paths = approvals.paths.lock().unwrap();
+                assert_eq!(paths.len(), if action == RuleAction::Ask { 3 } else { 0 });
+                assert!(paths.iter().all(|path| path == &protected));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn eager_baseline_skips_unrelated_ask_file_without_prompting() {
+        use crate::policy::{
+            EffectAuthorizer, EffectClass, ExecutionAuthorizer, PolicyRule, RuleAction,
+        };
+        for profile in [PermissionProfile::Confirm, PermissionProfile::FullAccess] {
+            let root = tempdir().unwrap();
+            std::fs::write(root.path().join("public.txt"), "public before\n").unwrap();
+            std::fs::write(
+                root.path().join("private.txt"),
+                "private content must not enter eager baseline\n",
+            )
+            .unwrap();
+            let protected = root.path().canonicalize().unwrap().join("private.txt");
+            let context = ToolContext {
+                model_id: "test-model".into(),
+                session_id: SessionId::new(),
+                cwd: root.path().into(),
+                permission_profile: profile,
+                images: crate::image_tool::ImageCatalog::default(),
+                progress: None,
+            };
+            let approval = Arc::new(FileApproval::default());
+            let authorization = ExecutionAuthorizer {
+                policy: PolicyEngine::for_workspace_with_rules(
+                    root.path(),
+                    vec![PolicyRule {
+                        action: RuleAction::Ask,
+                        effect: Some(EffectClass::FileRead),
+                        resource_prefix: Some(protected.to_string_lossy().into()),
+                        reason: None,
+                    }],
+                )
+                .unwrap(),
+                profile,
+                approval: Some(approval.clone()),
+                events: None,
+            };
+            let registry = test_registry(4096).unwrap();
+            let edited = registry
+                .execute_authorized(
+                    "replace_text",
+                    &context,
+                    json!({"path":"public.txt","old":"public before","new":"public after"}),
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            assert!(edited.success);
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("public.txt")).unwrap(),
+                "public after\n"
+            );
+            assert!(
+                approval.paths.lock().unwrap().is_empty(),
+                "background capture must never request private-file approval"
+            );
+            {
+                let sessions = registry.changes.sessions.lock().unwrap();
+                let baseline = &sessions[&context.session_id].baseline;
+                assert_eq!(
+                    baseline
+                        .get(std::path::Path::new("public.txt"))
+                        .map(String::as_str),
+                    Some("public before")
+                );
+                assert!(!baseline.contains_key(std::path::Path::new("private.txt")));
+                assert!(
+                    baseline
+                        .values()
+                        .all(|content| !content.contains("private content"))
+                );
+            }
+            // The ordinary foreground read still goes through its declared
+            // FileRead effect and receives the explicit ask approval.
+            let args = json!({"path":"private.txt"});
+            for effect in registry.effects("read_file", &context, &args).unwrap() {
+                authorization
+                    .authorize(effect, CancellationToken::new())
+                    .await
+                    .unwrap();
+            }
+            let read = registry
+                .execute_authorized(
+                    "read_file",
+                    &context,
+                    args,
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            assert!(read.content.contains("private content"));
+            assert_eq!(*approval.paths.lock().unwrap(), vec![protected]);
+            assert!(
+                !registry.changes.sessions.lock().unwrap()[&context.session_id]
+                    .baseline
+                    .contains_key(std::path::Path::new("private.txt")),
+                "foreground approval must not silently backfill skipped baseline content"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_policy_covers_git_and_session_diffs_before_any_content_read() {
+        use crate::policy::{EffectClass, ExecutionAuthorizer, PolicyRule, RuleAction};
+        for action in [RuleAction::Deny, RuleAction::Ask] {
+            let root = tempdir().unwrap();
+            let repository = git2::Repository::init(root.path()).unwrap();
+            std::fs::write(root.path().join("ordinary.txt"), "protected baseline\n").unwrap();
+            std::fs::write(root.path().join("allowed.txt"), "public baseline\n").unwrap();
+            let mut index = repository.index().unwrap();
+            index
+                .add_path(std::path::Path::new("ordinary.txt"))
+                .unwrap();
+            index.add_path(std::path::Path::new("allowed.txt")).unwrap();
+            let tree_id = index.write_tree().unwrap();
+            index.write().unwrap();
+            let tree = repository.find_tree(tree_id).unwrap();
+            let signature = git2::Signature::now("fixture", "fixture@example.invalid").unwrap();
+            repository
+                .commit(Some("HEAD"), &signature, &signature, "base", &tree, &[])
+                .unwrap();
+            let protected = root.path().canonicalize().unwrap().join("ordinary.txt");
+            let context = ToolContext {
+                model_id: "test-model".into(),
+                session_id: SessionId::new(),
+                cwd: root.path().into(),
+                permission_profile: PermissionProfile::FullAccess,
+                images: crate::image_tool::ImageCatalog::default(),
+                progress: None,
+            };
+            let approval = Arc::new(FileApproval::default());
+            let rule = |action| PolicyRule {
+                action,
+                effect: Some(EffectClass::FileRead),
+                resource_prefix: Some(protected.to_string_lossy().into()),
+                reason: None,
+            };
+            let authorization = ExecutionAuthorizer {
+                policy: PolicyEngine::for_workspace_with_rules(root.path(), vec![rule(action)])
+                    .unwrap(),
+                profile: PermissionProfile::FullAccess,
+                approval: Some(approval.clone()),
+                events: None,
+            };
+            let registry = test_registry(4096).unwrap();
+            std::fs::write(&protected, "protected before git inspection\n").unwrap();
+            std::fs::write(
+                root.path().join("allowed.txt"),
+                "public before git inspection\n",
+            )
+            .unwrap();
+            let git = registry
+                .execute_authorized(
+                    "inspect_git",
+                    &context,
+                    json!({}),
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            assert!(git.content.contains("public before git inspection"));
+            assert_eq!(
+                git.content.contains("protected before git inspection"),
+                action == RuleAction::Ask
+            );
+            assert_eq!(
+                approval.paths.lock().unwrap().len(),
+                usize::from(action == RuleAction::Ask)
+            );
+
+            registry
+                .execute_authorized(
+                    "view_session_diff",
+                    &context,
+                    json!({}),
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            {
+                let sessions = registry.changes.sessions.lock().unwrap();
+                assert_eq!(
+                    sessions[&context.session_id]
+                        .baseline
+                        .contains_key(std::path::Path::new("ordinary.txt")),
+                    action == RuleAction::Ask,
+                    "denied content must never enter a foreground baseline"
+                );
+            }
+            std::fs::write(&protected, "protected after session baseline\n").unwrap();
+            std::fs::write(
+                root.path().join("allowed.txt"),
+                "public after session baseline\n",
+            )
+            .unwrap();
+            let diff = registry
+                .execute_authorized(
+                    "view_session_diff",
+                    &context,
+                    json!({}),
+                    CancellationToken::new(),
+                    &authorization,
+                )
+                .await
+                .unwrap();
+            assert!(diff.content.contains("public after session baseline"));
+            assert_eq!(
+                diff.content.contains("protected after session baseline"),
+                action == RuleAction::Ask
+            );
+            assert_eq!(
+                approval.paths.lock().unwrap().len(),
+                if action == RuleAction::Ask { 3 } else { 0 }
+            );
+
+            // Retained authorized baselines and transaction fallback patches
+            // must not bypass a later denial on the same ordinary file.
+            let denied = ExecutionAuthorizer {
+                policy: PolicyEngine::for_workspace_with_rules(
+                    root.path(),
+                    vec![rule(RuleAction::Deny)],
+                )
+                .unwrap(),
+                profile: PermissionProfile::FullAccess,
+                approval: None,
+                events: None,
+            };
+            std::fs::write(
+                root.path().join("allowed.txt"),
+                "public before git inspection\n",
+            )
+            .unwrap();
+            registry.changes.record(
+                &context.session_id,
+                &ToolResult {
+                    changed_paths: vec![PathBuf::from("ordinary.txt")],
+                    diff: Some("protected fallback patch".into()),
+                    ..ToolResult::success("")
+                },
+            );
+            let hidden = registry
+                .execute_authorized(
+                    "view_session_diff",
+                    &context,
+                    json!({}),
+                    CancellationToken::new(),
+                    &denied,
+                )
+                .await
+                .unwrap();
+            assert!(!hidden.content.contains("protected"), "{}", hidden.content);
+            assert!(!hidden.content.contains("ordinary.txt"));
+        }
     }
 
     #[test]

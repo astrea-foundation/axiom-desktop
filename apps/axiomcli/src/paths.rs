@@ -59,7 +59,6 @@ impl AxiomPaths {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn from_roots(config_root: PathBuf, data_root: PathBuf) -> Self {
         Self {
             config_root,
@@ -171,8 +170,27 @@ impl AxiomPaths {
         frontend: FrontendKind,
     ) -> Result<Vec<PathBuf>> {
         let directory = self.account_frontend_data_dir(account_id, frontend)?;
-        if !directory.exists() {
-            return Ok(Vec::new());
+        match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let database = directory.join("state.sqlite3");
+                let restore = crate::local_storage::restore_marker_for_database(&database);
+                return match fs::symlink_metadata(&restore) {
+                    Ok(metadata) => {
+                        if !metadata.is_file() || metadata.file_type().is_symlink() {
+                            return Err(AxiomError::Storage("invalid local restore marker".into()));
+                        }
+                        ensure_directory(&self.data_root)?;
+                        ensure_directory(&self.data_root.join("accounts"))?;
+                        ensure_directory(&self.account_data_dir(account_id)?)?;
+                        fs::remove_file(&restore)?;
+                        Ok(vec![restore])
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                    Err(error) => Err(error.into()),
+                };
+            }
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
         }
         ensure_directory(&self.data_root)?;
         ensure_directory(&self.data_root.join("accounts"))?;
@@ -185,6 +203,10 @@ impl AxiomPaths {
             database.with_file_name("state.sqlite3-wal"),
             database.with_file_name("state.sqlite3-shm"),
             database.with_file_name("state.sqlite3-journal"),
+            database.with_file_name("state.sqlite3.encrypted-migration"),
+            database.with_file_name("state.sqlite3.plaintext-migration"),
+            database.with_file_name("state.sqlite3.encryption-migration"),
+            database.with_file_name("state.sqlite3.encryption-marker-new"),
         ] {
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.is_dir() => {
@@ -200,6 +222,46 @@ impl AxiomPaths {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
+        }
+        let assets = crate::session::asset_directory_for_database(&database);
+        match fs::symlink_metadata(&assets) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::FileTypeExt as _;
+                    if metadata.file_type().is_symlink_dir() {
+                        fs::remove_dir(&assets)?;
+                    } else {
+                        fs::remove_file(&assets)?;
+                    }
+                }
+                #[cfg(not(windows))]
+                fs::remove_file(&assets)?;
+                removed.push(assets);
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                fs::remove_dir_all(&assets)?;
+                removed.push(assets);
+            }
+            Ok(_) => {
+                return Err(AxiomError::Storage(
+                    "local asset path is unexpectedly a file".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let restore = crate::local_storage::restore_marker_for_database(&database);
+        match fs::symlink_metadata(&restore) {
+            Ok(metadata) => {
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err(AxiomError::Storage("invalid local restore marker".into()));
+                }
+                fs::remove_file(&restore)?;
+                removed.push(restore);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         Ok(removed)
     }
@@ -449,6 +511,103 @@ mod tests {
         assert!(!cli.exists());
         assert!(desktop.exists());
         assert!(account_state.exists());
+    }
+
+    #[test]
+    fn reset_removes_external_assets_and_interrupted_migrations_only_for_its_store() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().unwrap();
+        paths.prepare_account("account-a").unwrap();
+        let database = paths
+            .account_state_database("account-a", FrontendKind::Cli)
+            .unwrap();
+        let other = paths
+            .account_state_database("account-a", FrontendKind::DesktopChat)
+            .unwrap();
+        fs::write(&database, b"synthetic database").unwrap();
+        fs::write(&other, b"other frontend").unwrap();
+        let assets = crate::session::asset_directory_for_database(&database);
+        fs::create_dir(&assets).unwrap();
+        fs::write(assets.join("opaque-asset"), b"synthetic ciphertext").unwrap();
+        let pending = database.with_file_name("state.sqlite3.plaintext-migration");
+        fs::write(&pending, b"synthetic previous state").unwrap();
+        let restore = crate::local_storage::restore_marker_for_database(&database);
+        fs::write(&restore, b"synthetic restore marker").unwrap();
+        paths
+            .reset_account_frontend_state("account-a", FrontendKind::Cli)
+            .unwrap();
+        assert!(!database.exists() && !assets.exists() && !pending.exists() && !restore.exists());
+        assert_eq!(fs::read(other).unwrap(), b"other frontend");
+    }
+
+    #[test]
+    fn reset_clears_interrupted_restore_even_when_the_frontend_directory_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().unwrap();
+        paths.prepare_account("account-a").unwrap();
+        let database = paths
+            .account_state_database("account-a", FrontendKind::Cli)
+            .unwrap();
+        fs::remove_dir(database.parent().unwrap()).unwrap();
+        let marker = crate::local_storage::restore_marker_for_database(&database);
+        fs::write(&marker, b"interrupted restore").unwrap();
+        let removed = paths
+            .reset_account_frontend_state("account-a", FrontendKind::Cli)
+            .unwrap();
+        assert_eq!(removed, vec![marker.clone()]);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reset_rejects_a_dangling_restore_marker_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().unwrap();
+        paths.prepare_account("account-a").unwrap();
+        let database = paths
+            .account_state_database("account-a", FrontendKind::Cli)
+            .unwrap();
+        fs::remove_dir(database.parent().unwrap()).unwrap();
+        let marker = crate::local_storage::restore_marker_for_database(&database);
+        std::os::unix::fs::symlink(root.path().join("missing"), &marker).unwrap();
+        assert!(
+            paths
+                .reset_account_frontend_state("account-a", FrontendKind::Cli)
+                .is_err()
+        );
+        assert!(
+            fs::symlink_metadata(marker)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reset_removes_an_asset_symlink_without_following_it() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AxiomPaths::from_roots(root.path().join("config"), root.path().join("data"));
+        paths.prepare().unwrap();
+        paths.prepare_account("account-a").unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), b"outside data").unwrap();
+        let database = paths
+            .account_state_database("account-a", FrontendKind::Cli)
+            .unwrap();
+        std::os::unix::fs::symlink(
+            &outside,
+            crate::session::asset_directory_for_database(&database),
+        )
+        .unwrap();
+        paths
+            .reset_account_frontend_state("account-a", FrontendKind::Cli)
+            .unwrap();
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"outside data");
     }
 
     #[cfg(unix)]
