@@ -90,9 +90,11 @@ re-vendored with this picker.
 ## Direct uploads and compatibility
 
 Images and original documents go through the registered provider's E2EE path.
+NEAR and Tinfoil prepare bounded lossy WebP vision copies without changing stored
+assets or image-generation references (see [image preparation](configuration.md#image-generation-and-editing)).
 NEAR encrypts the complete JSON image-content array. Tinfoil encrypts inline image
 and file parts inside EHBP; its attested services handle document processing.
-The native client does no local extraction, OCR or format conversion. General
+The native client does no local document extraction, OCR or format conversion. General
 NEAR documents, remote URLs, audio/video and realtime WebSockets are unsupported.
 See [Desktop limits](desktop.md#images-and-files), [proxy input](proxy.md) and
 [ACP attachments version 2](acp-compatibility.md).

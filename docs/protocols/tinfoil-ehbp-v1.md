@@ -52,11 +52,15 @@ Chat models and their tools, images, reasoning and file capabilities come from t
 native driver still pins the protocol and router endpoint. A new model can appear
 without a native release only if its advertised contract is already supported.
 
-Original images use inline `image_url` parts; files use
+Bounded lossy WebP vision copies use inline `image_url` parts; files use
 `{"type":"file","file":{"filename":"…","file_data":"data:<mime>;base64,…"}}`.
 Both are inside the EHBP-encrypted body, including original filenames. The router
-processes documents through attested services. Axiom performs no extraction or
-conversion. Audio, video, remote URLs and realtime WebSocket traffic are excluded.
+processes documents through attested services. Axiom performs no document extraction
+or conversion. Vision copies retain at most one megapixel and 512 KiB each, with
+an aggregate image budget of one quarter of the configured relay-byte limit.
+The client checks the serialized body plus EHBP overhead before dispatch. Original
+local image assets remain available for generation and saving. Audio, video,
+remote URLs and realtime WebSocket traffic are excluded.
 
 The backend publishes current API context windows and token prices. The former Axiom-only 8,192-token cap is removed. An explicit upstream output
 limit is preserved when advertised; otherwise the joint context window is the

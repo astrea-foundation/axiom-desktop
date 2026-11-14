@@ -26,6 +26,7 @@ futures-util = "0.3.31"
 fs2 = "0.4.3"
 hex = "0.4.3"
 hkdf = "0.12.4"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 p384 = { version = "0.13.1", features = ["ecdsa", "pkcs8"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
@@ -40,6 +41,7 @@ tinfoil = { version = "0.2.0", git = "https://github.com/tinfoilsh/tinfoil-rs", 
 tinfoil-ehbp = { version = "0.3.1", git = "https://github.com/tinfoilsh/encrypted-http-body-protocol", rev = "93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0", default-features = false, features = ["rustls-no-provider"] }
 tracing = "0.1.44"
 url = "2.5.7"
+webp = { version = "0.3.1", default-features = false }
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 x509-parser = { version = "0.17.0", features = ["verify"] }
 zeroize = "1.8.2"

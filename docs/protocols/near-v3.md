@@ -67,6 +67,18 @@ admission or change the client-authenticated hash. Legacy clients retain the
 previous reconstruction contract. The backend looks up the account-owned session rather than
 the model's latest lease. Expired/mismatched sessions fail before provider dispatch.
 
+Before field encryption, the native adapter prepares lossy WebP vision copies
+for all request images, including restored uploads and `view_image` observations.
+Copies are bounded to one megapixel and 512 KiB each; all images share one
+sixteenth of the configured relay-byte limit (4 MiB at the 64 MiB default).
+Original local assets remain available for display, saving and generation.
+The adapter bounds the exact upstream JSON to 32 MiB and the full relay envelope
+to its configured limit before sending it. The base64 image data, hex ciphertext
+and base64 exact-request copy can expand binary image bytes by approximately
+6.2×. Both local byte rejections and HTTP 413 produce actionable upload-limit
+advice without automatically replaying inference. These checks do not change
+the exact serialized bytes used for request hashes or receipt verification.
+
 A bounded in-process connection cache is only an optimization. Another API process
 can load the snapshot and reconnect, but every TLS handshake must match its SPKI
 before HTTP headers or ciphertext are written. A public preflight GET checks the

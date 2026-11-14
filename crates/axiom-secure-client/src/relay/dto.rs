@@ -155,19 +155,7 @@ pub(crate) struct RelayChatRequest {
 
 impl RelayChatRequest {
     pub(crate) fn serialize_bounded(&self, limit: usize) -> Result<Vec<u8>> {
-        let bytes = serde_json::to_vec(self).map_err(|_| {
-            SecureClientError::new(
-                axiom_inference::ProviderFailureKind::InvalidRequest,
-                "relay request could not be serialized",
-            )
-        })?;
-        if bytes.len() > limit {
-            return Err(SecureClientError::new(
-                axiom_inference::ProviderFailureKind::InvalidRequest,
-                "relay request exceeds the configured limit",
-            ));
-        }
-        Ok(bytes)
+        crate::request::serialize_bounded(self, limit)
     }
 }
 

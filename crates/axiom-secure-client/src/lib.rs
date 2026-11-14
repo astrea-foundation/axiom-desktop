@@ -12,7 +12,9 @@ mod lease;
 mod provider;
 mod providers;
 mod relay;
+mod request;
 mod security;
+mod vision;
 
 pub use client::SecureClient;
 pub use config::{EndpointPolicy, SecureClientConfig, SecureClientLimits};
@@ -22,6 +24,7 @@ pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
 pub use providers::images::GeneratedImage;
 pub use providers::pool::{PoolClientConfig, PoolOffering};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};
+pub use vision::vision_image;
 
 /// Select the application's bundled model policy from an exact native model ID.
 #[must_use]

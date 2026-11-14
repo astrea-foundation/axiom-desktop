@@ -9,7 +9,7 @@ use crate::{
 use async_trait::async_trait;
 use axiom_inference::{ImageContent, PromptAttachment};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, imageops::FilterType};
+use image::ImageReader;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -253,49 +253,8 @@ impl ImageCatalog {
 }
 
 fn vision_copy(source: &ImageContent) -> Result<ImageContent> {
-    let invalid = || AxiomError::Tool("This image could not be decoded for viewing.".into());
-    let raw = STANDARD.decode(&source.data).map_err(|_| invalid())?;
-    let format = ImageFormat::from_mime_type(&source.mime_type).ok_or_else(invalid)?;
-    let mut reader = ImageReader::with_format(Cursor::new(raw), format);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let mut decoder = reader.into_decoder().map_err(|_| invalid())?;
-    let (width, height) = decoder.dimensions();
-    if u64::from(width) * u64::from(height) > 16 * 1024 * 1024 {
-        return Err(AxiomError::Tool(
-            "This image exceeds the viewing size limit.".into(),
-        ));
-    }
-    let orientation = decoder.orientation().map_err(|_| invalid())?;
-    let mut raster = DynamicImage::from_decoder(decoder).map_err(|_| invalid())?;
-    raster.apply_orientation(orientation);
-    let pixels = u64::from(raster.width()) * u64::from(raster.height());
-    if pixels > 1_048_576 {
-        let root = pixels.isqrt();
-        let divisor = root + u64::from(root * root < pixels);
-        let width = u32::try_from(u64::from(raster.width()) * 1024 / divisor)
-            .map_err(|_| invalid())?
-            .max(1);
-        let height = u32::try_from(u64::from(raster.height()) * 1024 / divisor)
-            .map_err(|_| invalid())?
-            .max(1);
-        raster = raster.resize_exact(width, height, FilterType::Triangle);
-    }
-    // Eight-bit RGBA bounds even incompressible PNG output below 5 MiB and
-    // keeps transparency. Re-encoding also strips private source metadata.
-    let mut output = Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(raster.to_rgba8())
-        .write_to(&mut output, ImageFormat::Png)
-        .map_err(|_| invalid())?;
-    let image = ImageContent {
-        mime_type: "image/png".into(),
-        data: STANDARD.encode(output.into_inner()),
-    };
-    image.validate().map_err(|_| invalid())?;
-    Ok(image)
+    axiom_secure_client::vision_image(source)
+        .map_err(|_| AxiomError::Tool("This image could not be prepared for viewing.".into()))
 }
 
 #[async_trait]
@@ -667,6 +626,7 @@ pub(crate) fn valid_image_id(id: &str) -> bool {
 pub(crate) mod tests {
     use super::*;
     use crate::app::{PermissionProfile, SessionId};
+    use image::{DynamicImage, ImageFormat};
     use std::{
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
@@ -969,9 +929,17 @@ pub(crate) mod tests {
             );
             let viewed = &result.images[0];
             viewed.validate().unwrap();
+            assert_eq!(viewed.mime_type, "image/webp");
             let decoded = image::load_from_memory(&STANDARD.decode(&viewed.data).unwrap()).unwrap();
             assert_eq!((decoded.width(), decoded.height()), dimensions);
-            assert_eq!(decoded.to_rgba8().get_pixel(0, 0).0, [20, 80, 140, 128]);
+            let pixel = decoded.to_rgba8().get_pixel(0, 0).0;
+            assert_eq!(pixel[3], 128);
+            assert!(
+                pixel[..3]
+                    .iter()
+                    .zip([20_u8, 80, 140])
+                    .all(|(a, b)| a.abs_diff(b) <= 8)
+            );
             assert!(!result.content.contains(&viewed.data));
             assert!(!format!("{result:?}").contains(&viewed.data));
         }
@@ -1077,8 +1045,11 @@ pub(crate) mod tests {
             .unwrap();
         let viewed = vision_copy(&source).unwrap();
         viewed.validate().unwrap();
-        let decoded = image::load_from_memory(&STANDARD.decode(viewed.data).unwrap()).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (1024, 1024));
+        assert_eq!(viewed.mime_type, "image/webp");
+        let raw = STANDARD.decode(viewed.data).unwrap();
+        assert!(raw.len() <= 512 * 1024);
+        let decoded = image::load_from_memory(&raw).unwrap();
+        assert!(u64::from(decoded.width()) * u64::from(decoded.height()) <= 1024 * 1024);
     }
 
     fn upload() -> PromptAttachment {

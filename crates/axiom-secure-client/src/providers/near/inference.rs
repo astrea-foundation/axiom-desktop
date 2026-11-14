@@ -57,6 +57,15 @@ pub(crate) async fn complete(
         binding,
         worker_session_id,
     } = context;
+    let request = crate::vision::prepare_request(
+        request,
+        // Base64 image content, hex ciphertext and the exact-request copy
+        // together expand image bytes by about 6.2×. Leave room for history,
+        // tools and relay metadata instead of filling the entire wire budget.
+        config.limits.serialized_relay_request_bytes / 16,
+        cancellation,
+    )
+    .await?;
     let (identity, mut relay_request, request_hash) = build_request(
         model,
         model_key,
@@ -96,6 +105,12 @@ pub(crate) async fn stream(
         binding,
         worker_session_id,
     } = context;
+    let request = crate::vision::prepare_request(
+        request,
+        config.limits.serialized_relay_request_bytes / 16,
+        cancellation,
+    )
+    .await?;
     let (identity, mut relay_request, request_hash) = build_request(
         model,
         model_key,
@@ -514,8 +529,9 @@ fn near_upstream_request_bytes(model: &ModelInfo, relay: &RelayChatRequest) -> R
         tool_choice,
         parallel_tool_calls: relay.parallel_tool_calls,
     };
-    serde_json::to_vec(&request)
-        .map_err(|_| invalid_request("NEAR upstream request could not be serialized"))
+    // The relay accepts at most 32 MiB of exact provider request bytes,
+    // independently of the larger envelope carrying its base64 copy.
+    crate::request::serialize_bounded(&request, 32 * 1024 * 1024)
 }
 
 fn public_response_format(format: &ResponseFormat) -> Result<Option<serde_json::Value>> {
@@ -1911,6 +1927,99 @@ mod tests {
                 .decrypt_hex(encrypted.encrypted_content.as_ref().unwrap().as_str())
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn webp_requests_fit_the_relay_for_five_uploads_and_after_viewing_an_image() {
+        let source = crate::vision::tests::noisy_png(1024, 768);
+        let worker = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&worker.public_key_hex()).unwrap();
+        let mut offered = model();
+        offered.supports_images = true;
+        let limits = crate::SecureClientLimits::default();
+        let signer = response_signer().1;
+        for after_view in [false, true] {
+            let mut message = ChatMessage::text(ChatRole::User, "Compose these references.");
+            message.images = vec![source.clone(); if after_view { 2 } else { 5 }];
+            let mut messages = vec![message];
+            if after_view {
+                messages.push(ChatMessage::text(ChatRole::Assistant, "Created an image."));
+                let mut viewed = ChatMessage::text(ChatRole::User, "Viewed generated image.");
+                viewed.images.push(source.clone());
+                messages.push(viewed);
+            }
+            let original = InferenceRequest::streaming(&offered.id, messages, vec![]);
+            let (_, oversized, _) =
+                build_request(&offered, key, &signer, &binding(), &original, true).unwrap();
+            // The five-upload case exceeds Desktop's former 64 MiB check;
+            // viewing adds enough context to exceed production's 32 MiB cap.
+            let rejected_limit = if after_view {
+                32 * 1024 * 1024
+            } else {
+                limits.serialized_relay_request_bytes
+            };
+            assert_eq!(
+                oversized
+                    .serialize_bounded(rejected_limit)
+                    .unwrap_err()
+                    .safe_detail(),
+                crate::request::REQUEST_TOO_LARGE
+            );
+            if after_view {
+                assert!(
+                    oversized
+                        .serialize_bounded(limits.serialized_relay_request_bytes)
+                        .is_ok()
+                );
+            }
+            drop(oversized);
+            let prepared = crate::vision::prepare_request(
+                original.clone(),
+                limits.serialized_relay_request_bytes / 16,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let (_, relay, hash) =
+                build_request(&offered, key, &signer, &binding(), &prepared, true).unwrap();
+            let wire = relay.serialize_bounded(32 * 1024 * 1024).unwrap();
+            eprintln!(
+                "NEAR {}: encoded request {} bytes (fits both 32 and 64 MiB)",
+                if after_view {
+                    "after view_image"
+                } else {
+                    "five uploads"
+                },
+                wire.len()
+            );
+            let context = relay.provider_e2ee_context.as_ref().unwrap();
+            let exact = general_purpose::STANDARD
+                .decode(context["request_body_base64"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(hex::encode(Sha256::digest(exact)), hash);
+            let plaintext = worker
+                .decrypt_hex(
+                    relay.encrypted_messages[0]
+                        .encrypted_content
+                        .as_ref()
+                        .unwrap()
+                        .as_str(),
+                )
+                .unwrap();
+            let parts: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+            assert_eq!(
+                parts.as_array().unwrap().len(),
+                1 + original.messages[0].images.len()
+            );
+            assert!(
+                parts[1]["image_url"]["url"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/webp;base64,")
+            );
+            assert_eq!(original.messages[0].images[0], source);
+            assert_eq!(prepared.messages.len(), original.messages.len());
+        }
     }
 
     #[test]

@@ -496,6 +496,10 @@ pub(crate) fn error_for_status(status: StatusCode) -> SecureClientError {
             ProviderFailureKind::ModelUnavailable,
             "selected model is unavailable",
         ),
+        413 => (
+            ProviderFailureKind::InvalidRequest,
+            crate::request::REQUEST_TOO_LARGE,
+        ),
         408 | 425 | 500..=504 => (
             ProviderFailureKind::Transient,
             "Axiom service is temporarily unavailable",

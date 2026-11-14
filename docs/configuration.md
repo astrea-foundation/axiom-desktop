@@ -198,9 +198,14 @@ explicit Web consent independently of Agent permissions. See [Desktop](desktop.m
 Vision uploads accept up to ten images per submitted user message. Later messages
 can each add ten more; chat history has no separate image-count limit. Model
 token/context and encoded request-byte budgets still apply.
-Desktop resizes each image
-locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
-before encryption. The unified image tool accepts optional `width` and `height`
+Desktop retains generation references at up to 2048² pixels. Before encryption,
+NEAR and Tinfoil prepare separate lossy WebP vision copies at up to 1,048,576
+pixels and 512 KiB each, preserving aspect ratio and transparency. The encoder
+starts at quality 85, tries 70 and 55 if needed, then reduces resolution to meet
+the byte budget. NEAR shares one sixteenth of its relay-byte budget across all
+images in the request, including history and image views; Tinfoil shares one
+quarter. AstreaAI retains its installed PNG/JPEG vision contract. Stored assets
+and generation references are not replaced by these viewing copies. The unified image tool accepts optional `width` and `height`
 together for saved legacy calls. New model calls use `aspect_ratio`; the native
 client chooses the largest exact match on a 32-pixel grid within 2,359,296 pixels.
 New images default to **1:1 square (1536×1536)**. The supported ratios are

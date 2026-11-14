@@ -80,6 +80,14 @@ visible if only deposit provisioning is temporarily unavailable; the address
 stays pending until it can be validated. Billing and inference have separate
 limits, so a balance error alone does not identify the cause of a chat rejection.
 
+**This encrypted request exceeds the provider upload limit** means the encoded
+request is too large locally or the server returned HTTP 413. Image preparation
+reduces chat-model copies while keeping detailed generation references locally,
+but text, tools and earlier attachments also consume the request budget. Reduce
+attachments or start a new conversation before retrying. If this happens after
+a completed image generation and `view_image`, the generated image can still
+be saved. Repeating the same oversized request does not resolve the limit.
+
 ## Completely reset local data
 
 Reinstalling keeps Axiom's account data. To erase it, open **Settings → Account →

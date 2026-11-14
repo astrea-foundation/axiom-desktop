@@ -313,8 +313,11 @@ images directly to the provider instead of using `view_image` thumbnails. The
 provider normalizes them once onto the 32-pixel grid using Lanczos3 in linear
 light with premultiplied alpha, writes lossless PNG, and passes their dimensions
 through Comfy without another forced 1024 resize. Browser attachment preparation
-uses high quality canvas resampling and lossless PNG on that grid. Viewing copies
-remain bounded to one megapixel; display and Save retain the original output.
+uses high quality canvas resampling and lossless PNG on that grid. `view_image`
+returns a separate lossy WebP bounded to one megapixel and 512 KiB. NEAR and
+Tinfoil also prepare these smaller copies for uploaded images before encryption,
+sharing a request-wide image budget across uploads and earlier image views.
+Display, Save and generation references retain their detailed local assets.
 2K RGBA outputs may be up to 20 MiB. The Turbo sampler and LoRA policy are unchanged.
 
 Copy and Regenerate appear after the full response turn finishes, including any
@@ -330,10 +333,10 @@ the accessible label for their meaning. The picker can filter by catalog tag,
 host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
 for tags, refreshes and unavailable models.
 
-Images are original PNG/JPEG/WebP/GIF bytes. File-capable Tinfoil models accept
+Image uploads accept PNG/JPEG/WebP/GIF. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files
 (DOCX/PPTX/XLSX). NEAR supports images where advertised, but currently advertises
-no general document uploads. Axiom reads original bytes without extraction,
+no general document uploads. Axiom reads original document bytes without extraction,
 OCR, conversion or rasterization. Document processing belongs to the attested
 provider. Unsupported files remain visible in the draft and block sending until
 you remove them or select a model that supports them.
@@ -343,16 +346,16 @@ and 144 MiB of text plus base64-encoded attachment payloads. Text remains bounde
 to 4 MiB. Model context and native budgets still apply; inputs are never silently
 truncated. Audio/video and remote URLs are unsupported.
 
-Original bytes and filenames reach the provider inside its authenticated E2EE
-request. Attachments remain in account-local history, survive edit/regeneration,
+Original document bytes, image vision copies and filenames reach the chat provider
+inside its authenticated E2EE request. Attachments remain in account-local history, survive edit/regeneration,
 and appear as wrapping cards in the draft, queue, and transcript. Image cards
 show local previews. Click an image card to view the full image in a larger
 overlay; close it with Escape, the close button, or a click outside the viewer.
 Sending retains these cards through thread setup and native
 acknowledgement, without waiting for the provider or reloading the original
 files. Saved image previews load from local history as they come into view.
-Compaction sends original image/file
-parts to a capable model and retains a textual successor summary; it never
+Compaction sends image/file parts through the same provider preparation to a
+capable model and retains a textual successor summary; it never
 inserts encoded file bytes as message text. Older extracted-text attachments are
 readable in saved history but cannot be submitted as new uploads.
 
