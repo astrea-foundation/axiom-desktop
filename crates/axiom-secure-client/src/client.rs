@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub struct SecureClient {
+    vision_cache: Arc<crate::VisionCache>,
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     providers: ProviderRegistry,
@@ -73,6 +74,7 @@ impl SecureClient {
         let providers = ProviderRegistry::production(config.clone(), Arc::clone(&credential))?;
         let trust_policy = load_initial_policy(&config)?;
         Ok(Self {
+            vision_cache: Arc::default(),
             config,
             credential,
             providers,
@@ -82,6 +84,21 @@ impl SecureClient {
                 refreshed_at: None,
             }),
         })
+    }
+
+    pub async fn prepare_vision_request(
+        &self,
+        model: &axiom_inference::ModelInfo,
+        request: axiom_inference::InferenceRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<axiom_inference::InferenceRequest> {
+        crate::vision::prepare_near_request(
+            model,
+            request,
+            Arc::clone(&self.vision_cache),
+            cancellation,
+        )
+        .await
     }
 
     pub async fn request_accounting(

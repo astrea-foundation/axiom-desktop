@@ -261,7 +261,11 @@ impl<'a> RelayClient<'a> {
         let body = request.serialize_bounded(self.config.limits.serialized_relay_request_bytes)?;
         let endpoint = relay_endpoint(
             &self.config.relay_base_url,
-            "/api/v1/relay/chat/completions",
+            if request.exact_request_body.is_some() {
+                "/api/v1/relay/near/chat/completions"
+            } else {
+                "/api/v1/relay/chat/completions"
+            },
         )?;
         let client = relay_client(
             self.config,
@@ -283,7 +287,7 @@ impl<'a> RelayClient<'a> {
                 } else {
                     "application/json"
                 })
-                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_TYPE, if request.exact_request_body.is_some() { "application/vnd.axiom.near-request.v2" } else { "application/json" })
                 .bearer_auth(self.credential.expose())
                 .body(body)
                 .send() => response.map_err(|_| SecureClientError::new(

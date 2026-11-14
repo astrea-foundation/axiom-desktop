@@ -388,8 +388,24 @@ refusal fields on a model without reasoning replay. A fitting history containing
 110 images uses one summary request. Fallback fixtures verify splitting a
 token-limited interleaved history into two requests, reserving summary output
 space, and splitting encoded payloads at the provider request byte ceiling.
-Request planning has no aggregate image-count cap; byte bounds do not trigger
-automatic compaction.
+Request planning has no aggregate image-count cap. NEAR's shared byte estimator
+also triggers automatic compaction before dispatch. Native fixtures cover 100
+large historical WebP copies summarized in bounded batches without reducing
+their quality, older history compacted before a new upload, adaptive preparation
+of ten current uploads, recent unique preview retention with byte/token headroom,
+and an image loaded again after its pixels are compacted away. Redundant views
+reuse inline uploads or generated previews across persistence and restoration.
+
+Single-copy NEAR fixtures verify negotiation, exact request hash preservation,
+one ciphertext copy, bounded metadata/serialization, JSON type and duplicate-key
+rejection, authenticated route admission and legacy compatibility. The 32 MiB
+exact-provider and 64 MiB outer hard bounds remain; native planning uses 10 MiB
+until the deployed provider's larger capacity is established. Before release,
+qualify both negotiated and legacy requests against the matching deployed relay,
+including a large image history, fresh attestation and authenticated streaming
+completion. A browser rollout also requires an updated shared-client pin and a
+newly measured gateway build. Offline fixtures do not establish live-provider,
+packaged Desktop or gateway deployment acceptance.
 
 Compaction progress checks cover cumulative streamed summary/reasoning estimates,
 replacement with provider token counts, pass totals, spinner rendering and cleanup

@@ -201,11 +201,32 @@ token/context and encoded request-byte budgets still apply.
 Desktop retains generation references at up to 2048² pixels. Before encryption,
 NEAR and Tinfoil prepare separate lossy WebP vision copies at up to 1,048,576
 pixels and 512 KiB each, preserving aspect ratio and transparency. The encoder
-starts at quality 85, tries 70 and 55 if needed, then reduces resolution to meet
-the byte budget. NEAR shares one sixteenth of its relay-byte budget across all
-images in the request, including history and image views; Tinfoil shares one
-quarter. AstreaAI retains its installed PNG/JPEG vision contract. Stored assets
-and generation references are not replaced by these viewing copies. The unified image tool accepts optional `width` and `height`
+starts at quality 85, tries 70, then reduces resolution only while retaining at
+least 65,536 pixels (or the source's smaller prepared area). A request that cannot
+fit at this floor fails locally. Tinfoil shares one quarter of its relay-byte
+budget across request images. AstreaAI retains its installed PNG/JPEG vision
+contract. Stored assets and generation references are not replaced by these
+viewing copies.
+
+NEAR plans against a conservative 10 MiB encrypted provider-request budget,
+including JSON content-array escaping, field encryption, hex encoding, text and
+tool definitions. Recent uploads receive the remaining allowance after their
+actual text/tool overhead; small images leave more room for larger ones. Older
+images keep their useful variants and trigger bounded history compaction when
+necessary. Summaries preserve observed details, source order and conversation
+image IDs. During an active tool loop the engine also keeps recent unique
+previews within three quarters of the byte and context budgets, leaving room for
+the next step. Original assets remain available by ID after compaction.
+
+Vision variants are cached in memory by source content and encoding profile,
+within each account client or conversation catalog. Each cache holds at most
+16 MiB of encoded copies and 64 entries. Clean, bounded static WebP copies are
+reused without another lossy encoding. Account/client replacement and catalog
+disposal drop their caches; no plaintext image variants are stored on the relay.
+NEAR's negotiated single-copy request transport is described in
+[the protocol guide](protocols/near-v3.md#routing-and-lifetime).
+
+The unified image tool accepts optional `width` and `height`
 together for saved legacy calls. New model calls use `aspect_ratio`; the native
 client chooses the largest exact match on a 32-pixel grid within 2,359,296 pixels.
 New images default to **1:1 square (1536×1536)**. The supported ratios are
@@ -231,7 +252,12 @@ image to vision-capable chat models on their next step, after all replies in the
 tool-call batch. The model can inspect that result without a separate
 `view_image` call. `view_image` accepts an exact conversation-owned `image_id`
 for an image absent from the current visual context, for example after
-compaction. Viewing is optional and does not create or edit an image.
+compaction. Its description and model guidance forbid calling it for images
+already inline in the current model input, including uploads, generated previews
+and earlier successful views. A redundant call receives an acknowledgement
+without duplicate pixels. An image visible only in the user's UI may still need
+viewing if its pixels are absent from the model input. Viewing is optional and
+does not create or edit an image.
 Vision copies preserve aspect ratio and transparency, correct orientation,
 and fit within 1,048,576 pixels; originals
 remain available for editing, viewing and saving. Viewed images consume model
@@ -290,8 +316,9 @@ Provider request timeouts do not expire human approval/question cards. Those
 waits end on an answer, cancellation/disconnect, or an enabled whole-turn limit.
 
 Automatic compaction is based on 85% of the selected model's advertised context
-capacity, capped by local token limits. Image counts and payload sizes never
-trigger compaction. The independent `max_context_bytes` guard bounds conversation
+capacity, capped by local token limits. NEAR also compacts history when the
+prepared encrypted request would exceed its 10 MiB operating budget. Image
+counts alone do not trigger compaction. The independent `max_context_bytes` guard bounds conversation
 text, reasoning and tool arguments; encoded image/file data has separate
 per-message limits. Exceeding a memory or provider transport limit returns an
 error while preserving the conversation. Base64 byte length is not a text-token

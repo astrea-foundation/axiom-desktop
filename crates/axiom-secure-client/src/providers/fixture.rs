@@ -136,6 +136,8 @@ impl VerifiedSession for FixtureSession {
     ) -> Result<InferenceResponse> {
         inference::complete(
             inference::NearInferenceContext {
+                single_copy: false,
+                vision_cache: Arc::default(),
                 config: &self.config,
                 credential: &self.credential,
                 model: &self.model,
@@ -158,6 +160,8 @@ impl VerifiedSession for FixtureSession {
     ) -> Result<InferenceResponse> {
         inference::stream(
             inference::NearInferenceContext {
+                single_copy: false,
+                vision_cache: Arc::default(),
                 config: &self.config,
                 credential: &self.credential,
                 model: &self.model,

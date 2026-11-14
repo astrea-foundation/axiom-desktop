@@ -60,6 +60,12 @@ impl InferenceProvider for ContextProvider {
             assert!(request.messages.len() <= 4096);
             assert!(serialized_message_bytes(&request.messages)? < 36 * 1024 * 1024);
         }
+        if self.model.provider_id == "near" {
+            assert!(
+                axiom_secure_client::near_request_bytes(&self.model, &request).unwrap()
+                    <= axiom_secure_client::NEAR_REQUEST_BUDGET_BYTES
+            );
+        }
         let compacting = is_compaction(&request);
         let reasoning_exhausts_output = compacting
             && request.max_output_tokens.unwrap_or(0) <= self.compaction_reasoning_tokens;
@@ -165,14 +171,18 @@ async fn compact_fixture(
         engine.update_context_tokens(&id, tokens).await;
     }
     let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let drain = tokio::spawn(async move {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    });
     engine
         .compact(&id, None, tx, CancellationToken::new())
         .await
         .unwrap();
-    let mut events = Vec::new();
-    while let Ok(event) = rx.try_recv() {
-        events.push(event);
-    }
+    let events = drain.await.unwrap();
     (provider, events)
 }
 
@@ -508,7 +518,7 @@ async fn new_uploads_compact_existing_images_when_the_token_budget_requires_it()
 }
 
 #[tokio::test]
-async fn astreaai_viewing_after_ten_uploads_reaches_the_provider() {
+async fn astreaai_reuses_an_inline_image_after_ten_uploads() {
     use crate::image_tool::{ImageCatalog, ImageGenerationTool, ViewImageTool};
     let mut provider = ContextProvider::new("direct:qwen3.8-27b");
     let catalog = ImageCatalog::default();
@@ -558,7 +568,7 @@ async fn astreaai_viewing_after_ten_uploads_reaches_the_provider() {
         .unwrap();
     let requests = provider.requests.lock().await;
     assert_eq!(requests.len(), 2);
-    for (request, expected) in requests.iter().zip([10, 11]) {
+    for (request, expected) in requests.iter().zip([10, 10]) {
         assert_eq!(
             request
                 .messages
@@ -1562,5 +1572,209 @@ async fn local_token_estimates_choose_conservative_fragments_without_a_rejection
             .iter()
             .flat_map(|r| &r.messages)
             .any(|m| m.content.contains("conversation-fragment"))
+    );
+}
+
+fn near_large_preview() -> ImageContent {
+    near_seeded_preview(0x0123_4567)
+}
+
+fn near_seeded_preview(seed: u32) -> ImageContent {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use image::{ExtendedColorType, ImageEncoder as _, codecs::png::PngEncoder};
+    let mut state = seed;
+    let pixels = (0..1024 * 768 * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect::<Vec<_>>();
+    let mut raw = Vec::new();
+    PngEncoder::new(&mut raw)
+        .write_image(&pixels, 1024, 768, ExtendedColorType::Rgb8)
+        .unwrap();
+    axiom_secure_client::vision_image(&ImageContent {
+        mime_type: "image/png".into(),
+        data: STANDARD.encode(raw),
+    })
+    .unwrap()
+}
+
+fn near_context_provider() -> ContextProvider {
+    let mut provider = ContextProvider::new("near-vision");
+    provider.model.provider_id = "near".into();
+    provider.model.upstream_model = "provider/vision".into();
+    provider.model.context_window_tokens = 1_048_576;
+    provider
+}
+
+#[test]
+fn near_compaction_keeps_recent_unique_previews_with_room_for_the_next_step() {
+    let model = near_context_provider().model;
+    let images = (1..=8).map(near_seeded_preview).collect::<Vec<_>>();
+    let mut group = ChatMessage::text(ChatRole::User, "Earlier references in order.");
+    group.images = images.clone();
+    let mut newest = ChatMessage::text(ChatRole::User, "Newest duplicate reference.");
+    newest.images.push(images.last().unwrap().clone());
+    let original = vec![group, newest];
+    let summary = vec![ChatMessage::text(
+        ChatRole::System,
+        "Summary with saved image IDs.",
+    )];
+    let mut retained = summary.clone();
+    retain_near_visual_context(
+        &model,
+        &original,
+        &mut retained,
+        &[],
+        ThinkingLevel::default(),
+        Some(100_000),
+    )
+    .unwrap();
+    let copies = retained
+        .iter()
+        .flat_map(|message| &message.images)
+        .collect::<Vec<_>>();
+    assert!(!copies.is_empty() && copies.len() < images.len());
+    assert!(
+        copies
+            .iter()
+            .all(|copy| images.iter().any(|image| image == *copy))
+    );
+    assert_eq!(
+        copies
+            .iter()
+            .filter(|copy| ***copy == *images.last().unwrap())
+            .count(),
+        1
+    );
+    assert!(
+        retained
+            .last()
+            .unwrap()
+            .content
+            .contains("Newest duplicate reference")
+    );
+    let request = InferenceRequest::streaming(&model.id, retained, vec![]);
+    assert!(
+        axiom_secure_client::near_request_bytes(&model, &request).unwrap()
+            <= axiom_secure_client::NEAR_REQUEST_BUDGET_BYTES * 3 / 4
+    );
+    let mut retained = summary;
+    let small_limit = usize::try_from(model_context_tokens(&model, &original[1..])).unwrap() * 2;
+    retain_near_visual_context(
+        &model,
+        &original,
+        &mut retained,
+        &[],
+        ThinkingLevel::default(),
+        Some(small_limit),
+    )
+    .unwrap();
+    assert!(model_context_tokens(&model, &retained) <= small_limit as u64 * 3 / 4);
+    assert!(retained.iter().any(|message| !message.images.is_empty()));
+}
+
+#[tokio::test]
+async fn near_many_images_compact_in_bounded_batches_without_shrinking_them() {
+    let image = near_large_preview();
+    let provider = near_context_provider();
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    for index in 0..25 {
+        let mut message = ChatMessage::text(
+            ChatRole::User,
+            format!("Preserve native image IDs for group {index}."),
+        );
+        message.images = vec![image.clone(); 4];
+        history.push(message);
+    }
+    let request = InferenceRequest::streaming(&provider.model.id, history.clone(), vec![]);
+    assert!(!provider_request_fits(&provider.model, &request).unwrap());
+    let (provider, _) = compact_fixture(provider, history, None).await;
+    let requests = provider.requests.lock().await;
+    assert!(requests.len() > 1);
+    assert!(
+        requests
+            .iter()
+            .all(|request| provider_request_fits(&provider.model, request).unwrap())
+    );
+    let images = requests
+        .iter()
+        .flat_map(|r| &r.messages)
+        .flat_map(|m| &m.images)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        images.len(),
+        100,
+        "every historical image must be summarized"
+    );
+    assert!(
+        images.into_iter().all(|copy| copy == &image),
+        "compaction must retain the useful preview quality"
+    );
+}
+
+#[tokio::test]
+async fn near_byte_pressure_compacts_old_images_before_adding_the_current_upload() {
+    let image = near_large_preview();
+    let provider = Arc::new(near_context_provider());
+    let mut limits = AgentLimits::development(4);
+    limits.max_context_tokens = 1_048_576;
+    let engine = AgentEngine::with_limits(
+        provider.clone(),
+        Arc::new(ToolRegistry::new()),
+        &provider.model.id,
+        limits,
+    );
+    let mut ctx = context();
+    ctx.attachments = vec![PromptAttachment::Image {
+        name: "current.webp".into(),
+        image: image.clone(),
+    }];
+    let mut history = vec![ChatMessage::text(ChatRole::System, "system")];
+    for index in 0..5 {
+        let mut message = ChatMessage::text(ChatRole::User, format!("Earlier group {index}"));
+        message.images = vec![image.clone(); 4];
+        history.push(message);
+    }
+    engine
+        .histories
+        .lock()
+        .await
+        .insert(ctx.session_id.clone(), history);
+    let (tx, mut rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    let drain = tokio::spawn(async move {
+        let mut compacted = false;
+        while let Some(event) = rx.recv().await {
+            compacted |= matches!(event, AppEvent::ContextCompacted { .. });
+        }
+        compacted
+    });
+    engine
+        .run(
+            ctx,
+            "Inspect the current image".into(),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(drain.await.unwrap());
+    let requests = provider.requests.lock().await;
+    assert!(requests[..requests.len() - 1].iter().all(is_compaction));
+    let last = requests.last().unwrap();
+    let active = last
+        .messages
+        .iter()
+        .flat_map(|message| &message.images)
+        .collect::<Vec<_>>();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0], &image);
+    assert!(
+        last.messages
+            .iter()
+            .any(|message| message.content.contains("Native image references"))
     );
 }

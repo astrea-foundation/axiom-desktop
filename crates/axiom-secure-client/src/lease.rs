@@ -176,6 +176,7 @@ mod tests {
 
     fn wire(key: &str) -> ProviderKeyLease {
         ProviderKeyLease {
+            relay_request_wire_versions: vec![],
             model_id: "model-id".into(),
             model: "upstream/model".into(),
             base_url: "https://model.example/v1".into(),

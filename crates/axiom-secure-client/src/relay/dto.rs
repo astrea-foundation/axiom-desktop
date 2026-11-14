@@ -118,6 +118,9 @@ pub(crate) struct EncryptedMessage {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RelayChatRequest {
+    /// Present only for the negotiated single-copy transport; never JSON data.
+    #[serde(skip)]
+    pub exact_request_body: Option<ExactRequestBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_request_id: Option<String>,
     pub provider_id: String,
@@ -155,12 +158,88 @@ pub(crate) struct RelayChatRequest {
 
 impl RelayChatRequest {
     pub(crate) fn serialize_bounded(&self, limit: usize) -> Result<Vec<u8>> {
+        if let Some(exact) = &self.exact_request_body {
+            #[derive(Serialize)]
+            struct Metadata<'a> {
+                client_request_id: &'a Option<String>,
+                provider_id: &'a str,
+                inference_encryption: &'a str,
+                model_id: &'a str,
+                encryption_version: u16,
+                e2ee_protocol: &'a str,
+                client_public_key_hex: &'a str,
+                model_public_key_hex: &'a str,
+                encrypt_all_fields: bool,
+                attestation_generation: u64,
+                verified_key_fingerprint: &'a str,
+                verified_keyset_digest: &'a Option<String>,
+                provider_e2ee_context: &'a Option<serde_json::Value>,
+            }
+            let exact = exact.as_ref();
+            let metadata = crate::request::serialize_bounded(
+                &Metadata {
+                    client_request_id: &self.client_request_id,
+                    provider_id: &self.provider_id,
+                    inference_encryption: self.inference_encryption,
+                    model_id: &self.model_id,
+                    encryption_version: self.encryption_version,
+                    e2ee_protocol: &self.e2ee_protocol,
+                    client_public_key_hex: &self.client_public_key_hex,
+                    model_public_key_hex: &self.model_public_key_hex,
+                    encrypt_all_fields: self.encrypt_all_fields,
+                    attestation_generation: self.attestation_generation,
+                    verified_key_fingerprint: &self.verified_key_fingerprint,
+                    verified_keyset_digest: &self.verified_keyset_digest,
+                    provider_e2ee_context: &self.provider_e2ee_context,
+                },
+                16 * 1024,
+            )?;
+            let size = 12_usize
+                .saturating_add(metadata.len())
+                .saturating_add(exact.len());
+            if size > limit {
+                return Err(SecureClientError::new(
+                    axiom_inference::ProviderFailureKind::InvalidRequest,
+                    crate::request::REQUEST_TOO_LARGE,
+                ));
+            }
+            let mut bytes = Vec::with_capacity(size);
+            bytes.extend_from_slice(b"AXNEAR02");
+            bytes.extend_from_slice(
+                &u32::try_from(metadata.len())
+                    .expect("bounded metadata")
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(&metadata);
+            bytes.extend_from_slice(exact);
+            return Ok(bytes);
+        }
         crate::request::serialize_bounded(self, limit)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ExactRequestBody(Vec<u8>);
+impl From<Vec<u8>> for ExactRequestBody {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+impl AsRef<[u8]> for ExactRequestBody {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl std::fmt::Debug for ExactRequestBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ExactRequestBody([CIPHERTEXT])")
     }
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ProviderKeyLease {
+    #[serde(default)]
+    pub relay_request_wire_versions: Vec<u8>,
     pub model_id: String,
     pub model: String,
     pub base_url: String,

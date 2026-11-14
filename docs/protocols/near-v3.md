@@ -58,8 +58,8 @@ to its own policy and cache lifetime too. Different sessions for one model coexi
 a new worker never overwrites another client's accepted recipient.
 
 The relay context binds `request_body_hash`, `response_signing_address`,
-and `worker_session_id`. New clients also send `request_body_base64` and
-`response_wire_version: 1`. The backend decodes and structurally compares the
+and `worker_session_id`. Exact-request clients also select
+`response_wire_version: 1`. The backend structurally compares the
 exact JSON to the admitted encrypted fields, model, stream mode and token cap,
 rejects duplicate keys and type substitutions, then forwards those bytes without
 reserializing. Number spelling, whitespace and Unicode escaping do not affect
@@ -67,10 +67,32 @@ admission or change the client-authenticated hash. Legacy clients retain the
 previous reconstruction contract. The backend looks up the account-owned session rather than
 the model's latest lease. Expired/mismatched sessions fail before provider dispatch.
 
+The attestation lease advertises `relay_request_wire_versions: [2]` when the
+backend supports single-copy requests. A compatible client sends
+`POST /api/v1/relay/near/chat/completions` with content type
+`application/vnd.axiom.near-request.v2`: eight bytes `AXNEAR02`, a four-byte
+big-endian metadata length, up to 16 KiB of routing/key JSON, then the exact
+encrypted provider JSON once. Context selects `request_wire_version: 2`.
+Message/tool ciphertext and generation controls are admitted directly from that
+exact body; no duplicate encrypted-message array or base64 transcript is sent.
+The metadata contains no message content. Receipt hashing, worker/session
+ownership, fresh local verification and response authentication are unchanged.
+
+Without that lease capability, clients choose the existing JSON endpoint and
+`request_body_base64` before dispatch. There is no retry or format fallback after
+an inference POST. Deploy the compatible relay before enabling this path in a
+native or newly measured enclave gateway release.
+
 Before field encryption, the native adapter prepares lossy WebP vision copies
 for all request images, including restored uploads and `view_image` observations.
-Copies are bounded to one megapixel and 512 KiB each; all images share one
-sixteenth of the configured relay-byte limit (4 MiB at the 64 MiB default).
+Copies are bounded to one megapixel and 512 KiB each, with a useful quality floor
+and bounded account-local caches. The shared native planner budgets the actual
+encrypted representation at 10 MiB, matching NEAR's published proxy default.
+Older history is summarized in bounded batches; growing history does not divide
+every image into progressively smaller variants. See
+[image preparation and compaction](../configuration.md#image-generation-and-editing).
+The exact-provider hard bound remains 32 MiB and the outer relay hard bound
+64 MiB. These safety bounds do not establish a provider deployment's capacity.
 Original local assets remain available for display, saving and generation.
 The adapter bounds the exact upstream JSON to 32 MiB and the full relay envelope
 to its configured limit before sending it. The base64 image data, hex ciphertext
@@ -201,7 +223,7 @@ and documents [worker-local signature records](https://docs.near.ai/cloud/verifi
 
 ## Direct image inputs
 
-For discovered image-capable models, text and original inline image data URLs
+For discovered image-capable models, text and prepared inline image data URLs
 are serialized as an OpenAI content array and then encrypted together inside
 NEAR's ordinary content field. The attested enclave decrypts and restores the
 array. Request/response signatures still cover the exact encrypted transcript.

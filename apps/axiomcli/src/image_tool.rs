@@ -69,7 +69,10 @@ pub(crate) fn configure_runtime_definition(
 /// This catalog belongs to exactly one account runtime and conversation. Tool
 /// arguments can select its IDs, never a path, URL, database row or other thread.
 #[derive(Clone, Default)]
-pub struct ImageCatalog(Arc<Mutex<BTreeMap<String, LocalImage>>>);
+pub struct ImageCatalog(
+    Arc<Mutex<BTreeMap<String, LocalImage>>>,
+    Arc<axiom_secure_client::VisionCache>,
+);
 
 #[derive(Clone)]
 pub struct LocalImage {
@@ -232,13 +235,84 @@ impl ImageCatalog {
     /// display and saving. No file paths or remote URLs are resolved here.
     pub async fn view(&self, id: &str, cancellation: CancellationToken) -> Result<ImageContent> {
         let source = self.resolve(id)?;
+        let cache = Arc::clone(&self.1);
         tokio::select! {
             biased;
             () = cancellation.cancelled() => Err(AxiomError::Cancelled),
-            result = tokio::task::spawn_blocking(move || vision_copy(&source.image)) => {
+            result = tokio::task::spawn_blocking(move || cache.prepare(&source.image)) => {
                 result.map_err(|_| AxiomError::Tool("Could not prepare the image for viewing.".into()))?
+                    .map_err(|_| AxiomError::Tool("Could not prepare the image for viewing.".into()))
             }
         }
+    }
+
+    pub fn annotate_uploads(&self, message: &mut axiom_inference::ChatMessage) -> Result<()> {
+        if message.images.is_empty()
+            || message
+                .content
+                .contains("\n[Native image references (data): ")
+        {
+            return Ok(());
+        }
+        let catalog = self
+            .0
+            .lock()
+            .map_err(|_| AxiomError::Storage("image catalog unavailable".into()))?;
+        let references = message
+            .images
+            .iter()
+            .enumerate()
+            .filter_map(|(index, image)| {
+                let references = catalog
+                    .values()
+                    .filter(move |asset| asset.image.as_ref() == image)
+                    .map(|asset| json!({"image_id": asset.id, "name": asset.name}))
+                    .collect::<Vec<_>>();
+                (!references.is_empty())
+                    .then(|| json!({"image_index": index + 1, "references": references}))
+            })
+            .collect::<Vec<_>>();
+        if !references.is_empty() {
+            let annotation = format!(
+                "\n[Native image references (data): {}]",
+                serde_json::to_string(&references)?
+            );
+            if !message.content.contains(&annotation)
+                && message.content.len() + annotation.len()
+                    <= axiom_inference::MAX_MESSAGE_TEXT_BYTES
+            {
+                message.content.push_str(&annotation);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn already_inline(
+        &self,
+        id: &str,
+        messages: &[axiom_inference::ChatMessage],
+        pending: &[axiom_inference::ChatMessage],
+        cancel: CancellationToken,
+    ) -> bool {
+        let Ok(source) = self.resolve(id) else {
+            return false;
+        };
+        if messages
+            .iter()
+            .chain(pending)
+            .flat_map(|m| &m.images)
+            .any(|image| image == source.image.as_ref())
+        {
+            return true;
+        }
+        let Ok(copy) = self.view(id, cancel).await else {
+            return false;
+        };
+        messages
+            .iter()
+            .chain(pending)
+            .flat_map(|m| &m.images)
+            .any(|image| image == &copy)
     }
 
     pub fn manifest(&self) -> Result<String> {
@@ -252,6 +326,7 @@ impl ImageCatalog {
     }
 }
 
+#[cfg(test)]
 fn vision_copy(source: &ImageContent) -> Result<ImageContent> {
     axiom_secure_client::vision_image(source)
         .map_err(|_| AxiomError::Tool("This image could not be prepared for viewing.".into()))
@@ -263,7 +338,7 @@ impl Tool for ViewImageTool {
         "view_image"
     }
     fn description(&self) -> &'static str {
-        "Inspect an uploaded or earlier generated image from this conversation using its exact image_id. Newly generated and edited images already include a visual preview; use that preview directly. Use view_image when an image is not in your current visual context, for example after compaction. Viewing does not create or modify an image and does not require a separate user request for image creation."
+        "Inspect an uploaded or earlier generated image from this conversation using its exact image_id. Do not use this tool if the image is already displayed inline in your current visual context: an uploaded image, an automatic generated/edited preview, or an earlier view whose pixels remain in context. Inspect that inline image directly. Use view_image only when its pixels are absent from your current model input, for example after compaction. An image visible only in the user's interface is not proof that you received its pixels. Viewing does not create or modify an image and does not require a separate user request for image creation."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -725,6 +800,57 @@ pub(crate) mod tests {
             mime_type: "image/png".into(),
             data: STANDARD.encode(output.into_inner()),
         }
+    }
+
+    #[tokio::test]
+    async fn inline_images_are_reused_but_compacted_images_can_be_viewed_again() {
+        use axiom_inference::{ChatMessage, ChatRole};
+        let catalog = ImageCatalog::default();
+        let original = png(768, 512);
+        catalog
+            .add_uploads(
+                "session",
+                "turn",
+                &[PromptAttachment::Image {
+                    name: "reference.png".into(),
+                    image: original.clone(),
+                }],
+            )
+            .unwrap();
+        let id = catalog.0.lock().unwrap().keys().next().unwrap().clone();
+        let cancellation = CancellationToken::new();
+        let preview = catalog.view(&id, cancellation.clone()).await.unwrap();
+        let mut inline = ChatMessage::text(ChatRole::User, "Inspect this reference.");
+        inline.images.push(preview.clone());
+        assert!(
+            catalog
+                .already_inline(
+                    &id,
+                    std::slice::from_ref(&inline),
+                    &[],
+                    cancellation.clone()
+                )
+                .await
+        );
+        assert!(
+            catalog
+                .already_inline(&id, &[], &[inline], cancellation.clone())
+                .await
+        );
+        let compacted =
+            ChatMessage::text(ChatRole::User, format!("Summary retained image ID {id}."));
+        assert!(
+            !catalog
+                .already_inline(&id, &[compacted], &[], cancellation.clone())
+                .await
+        );
+        assert_eq!(catalog.view(&id, cancellation).await.unwrap(), preview);
+        assert_eq!(*catalog.resolve(&id).unwrap().image, original);
+        assert!(
+            ViewImageTool
+                .description()
+                .contains("already displayed inline")
+        );
     }
 
     pub(crate) fn generated_fixture() -> axiom_secure_client::GeneratedImage {

@@ -315,9 +315,13 @@ provider normalizes them once onto the 32-pixel grid using Lanczos3 in linear
 light with premultiplied alpha, writes lossless PNG, and passes their dimensions
 through Comfy without another forced 1024 resize. Browser attachment preparation
 uses high quality canvas resampling and lossless PNG on that grid. `view_image`
-returns a separate lossy WebP bounded to one megapixel and 512 KiB. NEAR and
-Tinfoil also prepare these smaller copies for uploaded images before encryption,
-sharing a request-wide image budget across uploads and earlier image views.
+returns a separate cached lossy WebP bounded to one megapixel and 512 KiB, with
+a quality and resolution floor. NEAR and Tinfoil also prepare these smaller
+copies for uploaded images before encryption. NEAR reserves actual text and tool
+overhead, sizes current uploads within its encrypted request budget, and compacts
+older image history while keeping originals by ID. The model is instructed to
+inspect pixels already inline; redundant `view_image` calls acknowledge the
+existing image without adding another copy. See [configuration](configuration.md#image-generation-and-editing).
 Display, Save and generation references retain their detailed local assets.
 2K RGBA outputs may be up to 20 MiB. The Turbo sampler and LoRA policy are unchanged.
 
@@ -375,13 +379,14 @@ rejected. Regeneration after steering targets the turn's original prompt.
 Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
-Automatic compaction is triggered only by context tokens, at the selected model's
-advertised threshold capped by local token limits. Uploaded images, automatic
+Automatic compaction follows context tokens at the selected model's advertised
+threshold capped by local token limits. NEAR also compacts prepared history
+before its encrypted request would exceed the 10 MiB operating budget. Uploaded images, automatic
 generated previews and successful `view_image` observations contribute visual
 tokens for vision-capable models. Provider-reported usage takes precedence over
 estimates for existing context. Only new material is estimated until the next
 provider report.
-Image counts and encoded attachment sizes do not trigger compaction. The runtime
+Image counts alone do not trigger compaction. The runtime
 uses one summary request whenever the conversation fits with room for summary
 output, reasoning and a safety margin. It passes historical messages and native
 image/file inputs together, preserving their order and association. Historical
@@ -405,10 +410,9 @@ unknown-outcome marker; recovery does not execute them. Older file formats that
 the newly selected model cannot read are omitted from context while their text
 remains available. New uploads still require a compatible model.
 
-The image tools keep a bounded catalog of recent conversation references. Older
-references expire as new images arrive, allowing further generation in the same
-thread. Saved images remain in local history; an expired reference may need to
-be attached again for another edit. A completed or cancelled response refreshes
+The image tools keep conversation-owned references independently of the bounded
+vision-copy cache. Compaction and cache eviction preserve original assets and
+their IDs for later viewing or editing. A completed or cancelled response refreshes
 thread state after any older timeline fetch, so a stale running snapshot cannot
 leave the composer waiting indefinitely.
 Late generated titles update the sidebar without reopening an unloaded thread.
@@ -423,7 +427,7 @@ count toward the next request's context; the meter updates when the provider
 reports that request.
 Generated previews enter vision-capable models' context automatically. Encoded
 image/file data has per-message native size limits. These transport limits are
-independent of compaction. Ten attachments is a per-message upload limit: later
+enforced alongside compaction. Ten attachments is a per-message upload limit: later
 messages can add ten more, and image views and generation have no conversation
 count limit. Compaction preserves saved assets and their reference IDs for later
 use.

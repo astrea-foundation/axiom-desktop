@@ -41,6 +41,8 @@ pub(crate) struct NearInferenceContext<'a> {
     pub(crate) response_signing_address: &'a str,
     pub(crate) binding: &'a AttestationBinding,
     pub(crate) worker_session_id: &'a str,
+    pub(crate) single_copy: bool,
+    pub(crate) vision_cache: std::sync::Arc<crate::VisionCache>,
 }
 
 pub(crate) async fn complete(
@@ -56,23 +58,20 @@ pub(crate) async fn complete(
         response_signing_address,
         binding,
         worker_session_id,
+        single_copy,
+        vision_cache,
     } = context;
-    let request = crate::vision::prepare_request(
-        request,
-        // Base64 image content, hex ciphertext and the exact-request copy
-        // together expand image bytes by about 6.2×. Leave room for history,
-        // tools and relay metadata instead of filling the entire wire budget.
-        config.limits.serialized_relay_request_bytes / 16,
-        cancellation,
-    )
-    .await?;
-    let (identity, mut relay_request, request_hash) = build_request(
+    let request =
+        crate::vision::prepare_near_request(model, request, vision_cache, cancellation).await?;
+    preflight(model, &request)?;
+    let (identity, mut relay_request, request_hash) = build_request_with_wire(
         model,
         model_key,
         response_signing_address,
         binding,
         &request,
         false,
+        single_copy,
     )?;
     relay_request
         .provider_e2ee_context
@@ -104,20 +103,20 @@ pub(crate) async fn stream(
         response_signing_address,
         binding,
         worker_session_id,
+        single_copy,
+        vision_cache,
     } = context;
-    let request = crate::vision::prepare_request(
-        request,
-        config.limits.serialized_relay_request_bytes / 16,
-        cancellation,
-    )
-    .await?;
-    let (identity, mut relay_request, request_hash) = build_request(
+    let request =
+        crate::vision::prepare_near_request(model, request, vision_cache, cancellation).await?;
+    preflight(model, &request)?;
+    let (identity, mut relay_request, request_hash) = build_request_with_wire(
         model,
         model_key,
         response_signing_address,
         binding,
         &request,
         true,
+        single_copy,
     )?;
     relay_request
         .provider_e2ee_context
@@ -166,6 +165,14 @@ pub(crate) async fn stream(
     Ok(response)
 }
 
+fn preflight(model: &ModelInfo, request: &InferenceRequest) -> Result<()> {
+    if crate::near_request_bytes(model, request)? > crate::NEAR_REQUEST_BUDGET_BYTES {
+        return Err(invalid_request(crate::request::REQUEST_TOO_LARGE));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn build_request(
     model: &ModelInfo,
     model_key: crypto::Ed25519PublicKey,
@@ -173,6 +180,26 @@ fn build_request(
     binding: &AttestationBinding,
     request: &InferenceRequest,
     stream: bool,
+) -> Result<(crypto::ClientIdentity, RelayChatRequest, String)> {
+    build_request_with_wire(
+        model,
+        model_key,
+        response_signing_address,
+        binding,
+        request,
+        stream,
+        false,
+    )
+}
+
+fn build_request_with_wire(
+    model: &ModelInfo,
+    model_key: crypto::Ed25519PublicKey,
+    response_signing_address: &str,
+    binding: &AttestationBinding,
+    request: &InferenceRequest,
+    stream: bool,
+    single_copy: bool,
 ) -> Result<(crypto::ClientIdentity, RelayChatRequest, String)> {
     request
         .validate()
@@ -292,6 +319,7 @@ fn build_request(
         })
         .transpose()?;
     let mut relay = RelayChatRequest {
+        exact_request_body: None,
         client_request_id: request.request_id.clone(),
         provider_id: model.provider_id.clone(),
         inference_encryption: INFERENCE_ENCRYPTION,
@@ -322,10 +350,19 @@ fn build_request(
     let request_hash = hex::encode(Sha256::digest(&request_body));
     relay.provider_e2ee_context = Some(serde_json::json!({
         "request_body_hash": request_hash,
-        "request_body_base64": general_purpose::STANDARD.encode(request_body),
         "response_wire_version": 1,
         "response_signing_address": response_signing_address,
     }));
+    let context = relay
+        .provider_e2ee_context
+        .as_mut()
+        .expect("request context");
+    if single_copy {
+        context["request_wire_version"] = 2.into();
+        relay.exact_request_body = Some(request_body.into());
+    } else {
+        context["request_body_base64"] = general_purpose::STANDARD.encode(request_body).into();
+    }
     Ok((identity, relay, request_hash))
 }
 
@@ -1973,30 +2010,22 @@ mod tests {
                 );
             }
             drop(oversized);
-            let prepared = crate::vision::prepare_request(
+            let prepared = crate::vision::prepare_near_request(
+                &offered,
                 original.clone(),
-                limits.serialized_relay_request_bytes / 16,
+                std::sync::Arc::default(),
                 &CancellationToken::new(),
             )
             .await
             .unwrap();
-            let (_, relay, hash) =
+            let (_, mut relay, hash) =
                 build_request(&offered, key, &signer, &binding(), &prepared, true).unwrap();
             let wire = relay.serialize_bounded(32 * 1024 * 1024).unwrap();
-            eprintln!(
-                "NEAR {}: encoded request {} bytes (fits both 32 and 64 MiB)",
-                if after_view {
-                    "after view_image"
-                } else {
-                    "five uploads"
-                },
-                wire.len()
-            );
             let context = relay.provider_e2ee_context.as_ref().unwrap();
             let exact = general_purpose::STANDARD
                 .decode(context["request_body_base64"].as_str().unwrap())
                 .unwrap();
-            assert_eq!(hex::encode(Sha256::digest(exact)), hash);
+            assert_eq!(hex::encode(Sha256::digest(&exact)), hash);
             let plaintext = worker
                 .decrypt_hex(
                     relay.encrypted_messages[0]
@@ -2019,6 +2048,29 @@ mod tests {
             );
             assert_eq!(original.messages[0].images[0], source);
             assert_eq!(prepared.messages.len(), original.messages.len());
+            let context = relay
+                .provider_e2ee_context
+                .as_mut()
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            context.remove("request_body_base64");
+            context.insert("request_wire_version".into(), 2.into());
+            relay.exact_request_body = Some(exact.into());
+            let single_copy = relay
+                .serialize_bounded(crate::NEAR_REQUEST_BUDGET_BYTES)
+                .unwrap();
+            eprintln!(
+                "NEAR {}: legacy {} bytes; single-copy {} bytes; unchanged request hash",
+                if after_view {
+                    "after view_image"
+                } else {
+                    "five uploads"
+                },
+                wire.len(),
+                single_copy.len()
+            );
+            assert!(single_copy.len() * 2 < wire.len());
         }
     }
 
@@ -2046,6 +2098,102 @@ mod tests {
             let raw = format!("data: {chunk}\n\ndata: [DONE]\n\n");
             assert!(parse_raw_stream(raw.as_bytes(), &identity).is_err());
         }
+    }
+
+    #[test]
+    fn single_copy_frames_preserve_hashes_ciphertext_and_bounded_metadata() {
+        let worker = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&worker.public_key_hex()).unwrap();
+        let mut offered = model();
+        offered.provider_id = "near".into();
+        offered.e2ee_protocol = "near-v3".into();
+        offered.e2ee_encryption_version = 2;
+        let request = InferenceRequest::streaming(
+            "secure-model",
+            vec![ChatMessage::text(ChatRole::User, "café 😀\n\\\"private")],
+            vec![],
+        );
+        let (_, mut relay, hash) = build_request_with_wire(
+            &offered,
+            key,
+            &response_signer().1,
+            &binding(),
+            &request,
+            true,
+            true,
+        )
+        .unwrap();
+        relay.provider_e2ee_context.as_mut().unwrap()["worker_session_id"] = "ef".repeat(16).into();
+        let wire = relay
+            .serialize_bounded(crate::NEAR_REQUEST_BUDGET_BYTES)
+            .unwrap();
+        if let Ok(path) = std::env::var("AXIOM_TEST_NEAR_WIRE_OUT") {
+            std::fs::write(path, &wire).unwrap();
+        }
+        assert_eq!(&wire[..8], b"AXNEAR02");
+        let length = u32::from_be_bytes(wire[8..12].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value = serde_json::from_slice(&wire[12..12 + length]).unwrap();
+        assert!(length <= 16 * 1024);
+        assert!(metadata.get("encrypted_messages").is_none());
+        assert!(
+            metadata["provider_e2ee_context"]
+                .get("request_body_base64")
+                .is_none()
+        );
+        assert_eq!(metadata["provider_e2ee_context"]["request_wire_version"], 2);
+        let exact = &wire[12 + length..];
+        assert_eq!(hex::encode(Sha256::digest(exact)), hash);
+        assert_eq!(
+            exact,
+            near_upstream_request_bytes(&offered, &relay).unwrap()
+        );
+        let encrypted = relay.encrypted_messages[0]
+            .encrypted_content
+            .as_ref()
+            .unwrap()
+            .as_str();
+        assert_eq!(
+            wire.windows(encrypted.len())
+                .filter(|bytes| *bytes == encrypted.as_bytes())
+                .count(),
+            1
+        );
+        assert!(crate::near_request_bytes(&offered, &request).unwrap() >= exact.len());
+        assert!(relay.serialize_bounded(wire.len() - 1).is_err());
+        assert!(!format!("{relay:?}").contains(encrypted));
+    }
+
+    #[test]
+    fn byte_planning_bounds_tool_metadata_and_unicode_encrypted_fields() {
+        let worker = crypto::ClientIdentity::generate();
+        let key = crypto::Ed25519PublicKey::from_hex(&worker.public_key_hex()).unwrap();
+        let mut assistant = ChatMessage::text(ChatRole::Assistant, "escaped \"content\"\n\\");
+        assistant.name = Some("assistant".into());
+        assistant.reasoning_content = Some("reasoning with 😀".into());
+        assistant.refusal = Some("refusal".into());
+        assistant.tool_calls = (0..64)
+            .map(|index| axiom_inference::ToolCall {
+                id: format!("{}{index}", "x".repeat(254)),
+                kind: "function".into(),
+                function: axiom_inference::FunctionCall {
+                    name: "inspect".into(),
+                    arguments: "{\"name\":\"café 😀\"}".into(),
+                },
+            })
+            .collect();
+        let request = InferenceRequest::streaming("secure-model", vec![assistant], vec![]);
+        let (_, relay, _) = build_request_with_wire(
+            &model(),
+            key,
+            &response_signer().1,
+            &binding(),
+            &request,
+            true,
+            true,
+        )
+        .unwrap();
+        let exact = relay.exact_request_body.as_ref().unwrap().as_ref();
+        assert!(crate::near_request_bytes(&model(), &request).unwrap() >= exact.len());
     }
 
     #[test]
@@ -2118,6 +2266,7 @@ mod tests {
         offered_model.max_output_tokens = 8_192;
         let ciphertext = "ab".repeat(72);
         let mut relay = RelayChatRequest {
+            exact_request_body: None,
             client_request_id: None,
             thinking_mode: None,
             provider_id: offered_model.provider_id.clone(),
@@ -2197,6 +2346,7 @@ mod tests {
         offered_model.upstream_model = "deepseek-ai/DeepSeek-V4-Flash".into();
         offered_model.max_output_tokens = 8_192;
         let relay = RelayChatRequest {
+            exact_request_body: None,
             client_request_id: None,
             thinking_mode: None,
             provider_id: offered_model.provider_id.clone(),
