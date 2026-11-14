@@ -9,6 +9,13 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
   const evidence = result.evidence;
   if (result.status.state !== "verified" && result.status.state !== "degraded") return null;
   const degraded = result.status.state === "degraded";
+  const acceptedOutdatedCheck = (check: { name: string; detail: string; passed: boolean }) =>
+    degraded && evidence?.providerId === "near" && evidence.e2eeProtocol === "near-v3"
+    && ["near-tdx-nvidia-v2", "near-tdx-nvidia-gateway-v1", "near-tdx-nvidia-gateway-v2"].includes(evidence.attestationProtocol)
+    && (check.name === "Intel TDX"
+      || (evidence.attestationProtocol.startsWith("near-tdx-nvidia-gateway-") && check.name === "NEAR gateway (Intel TDX)")
+      || (evidence.attestationProtocol === "near-tdx-nvidia-gateway-v2" && /^Worker (?:[2-9]|1[0-6]) \(Intel TDX\)$/.test(check.name)))
+    && check.detail === "OutOfDate" && check.passed === false;
   const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
   const positive = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
   const fingerprint = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
@@ -48,10 +55,8 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
     ? directTinfoil || directPreview || directRelease : positive(evidence.attestationGeneration);
   if (!evidence || evidence.status.state !== result.status.state || evidence.modelId !== modelId
     || (["chutes-preview", "chutes"].includes(evidence.providerId) && !directPreview && !directRelease)
-    || (degraded && !directPreview && (evidence.providerId !== "near" || evidence.e2eeProtocol !== "near-v3"
-      || evidence.attestationProtocol !== "near-tdx-nvidia-v2"
-      || !Array.isArray(evidence.checks)
-      || !evidence.checks.some((check) => check.name === "Intel TDX" && check.detail === "OutOfDate" && check.passed === false)))
+    || (degraded && !directPreview && (!Array.isArray(evidence.checks)
+      || !evidence.checks.some(acceptedOutdatedCheck)))
     || !text(evidence.providerId) || !text(evidence.modelId)
     || !text(evidence.attestationProtocol) || !text(evidence.e2eeProtocol) || !text(evidence.trustPolicyVersion)
     || !validGeneration || !positive(evidence.e2eeEncryptionVersion)
@@ -62,7 +67,7 @@ export function publicSecurityEvidence(result: VerifySecurityResponse, modelId: 
     || (evidence.tlsSpkiFingerprint != null && !fingerprint(evidence.tlsSpkiFingerprint))
     || !Array.isArray(evidence.checks) || evidence.checks.length === 0 || evidence.checks.length > 128
     || evidence.checks.some((check) => !text(check.name) || !text(check.detail, 8192)
-      || (check.passed !== true && !(!directPreview && degraded && check.name === "Intel TDX" && check.detail === "OutOfDate" && check.passed === false)
+      || (check.passed !== true && !(!directPreview && acceptedOutdatedCheck(check))
         && !(directPreview && check.name === "Application provenance" && check.detail === "unqualified development preview" && check.passed === false)))
     || !Array.isArray(evidence.providerClaims) || evidence.providerClaims.length > 128
     || evidence.providerClaims.some((claim) => !text(claim.name) || typeof claim.value !== "string" || claim.value.length > 8192)

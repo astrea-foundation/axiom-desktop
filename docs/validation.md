@@ -438,6 +438,14 @@ that ends at the output-token limit. Keep missing receipts, altered ciphertext,
 expired evidence and oversized key sets as rejecting cases. A successful
 attestation or posted usage charge does not establish authenticated completion.
 
+For `near-tdx-nvidia-gateway-v2`, qualify the matching backend and native client
+together. Require successful local verification of all supplied same-key worker
+environments and the gateway, visible manifests for each, and an authenticated
+encrypted completion. Confirm that a changed same-key environment forces fresh
+establishment and that legacy v1 retains its single-worker rule. Keep this release
+qualification open until the matching relay is deployed and completion is tested;
+read-only attestation checks alone do not close it.
+
 ## Dependency maintenance
 
 The 0.1.15 candidate updates Rustls to 0.23.46, resolving

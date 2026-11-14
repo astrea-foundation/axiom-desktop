@@ -56,6 +56,12 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
         attestation_protocol: &str,
     ) -> bool;
 
+    /// A compiled preference among supported, advertised contracts. Equal
+    /// preferences preserve the server's rollout order.
+    fn contract_preference(&self, _attestation_protocol: &str) -> u8 {
+        0
+    }
+
     fn populate_capabilities(&self, model: &mut ModelInfo);
 
     async fn establish(
@@ -194,13 +200,14 @@ impl ProviderRegistry {
         let provider = self.providers.get(provider_id)?;
         contracts
             .iter()
-            .find(|contract| {
+            .filter(|contract| {
                 provider.supports_contract(
                     &contract.e2ee_protocol,
                     contract.e2ee_encryption_version,
                     &contract.attestation_protocol,
                 )
             })
+            .min_by_key(|contract| provider.contract_preference(&contract.attestation_protocol))
             .cloned()
     }
 

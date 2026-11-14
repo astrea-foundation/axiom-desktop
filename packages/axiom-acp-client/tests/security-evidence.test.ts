@@ -96,6 +96,32 @@ test("degraded reports retain OutOfDate and reject every other failed check", ()
   assert.throws(() => publicSecurityEvidence(result, "test-model"), /incomplete|mismatched/);
 });
 
+test("NEAR gateway and replica OutOfDate consent stays visible without permitting other failures", () => {
+  for (const protocol of ["near-tdx-nvidia-gateway-v1", "near-tdx-nvidia-gateway-v2"]) {
+    for (const name of ["Intel TDX", "NEAR gateway (Intel TDX)", "Worker 2 (Intel TDX)", "Worker 16 (Intel TDX)"]) {
+      const evidence = securityEvidence();
+      evidence.status.state = "degraded";
+      evidence.providerId = "near";
+      evidence.attestationProtocol = protocol;
+      evidence.e2eeProtocol = "near-v3";
+      evidence.checks.push({ name, detail: "OutOfDate", passed: false });
+      const result: VerifySecurityResponse = { status: { state: "degraded" }, evidence };
+      if (protocol === "near-tdx-nvidia-gateway-v1" && name.startsWith("Worker")) {
+        assert.throws(() => publicSecurityEvidence(result, "test-model"));
+        continue;
+      }
+      assert.equal(publicSecurityEvidence(result, "test-model")!.status.state, "degraded");
+      for (const detail of ["Revoked", "OutOfDateConfigurationNeeded", "unknown"]) {
+        evidence.checks.at(-1)!.detail = detail;
+        assert.throws(() => publicSecurityEvidence(result, "test-model"));
+      }
+      evidence.checks.at(-1)!.detail = "OutOfDate";
+      evidence.checks.push({ name: "Worker 2 NVIDIA GPU", detail: "failed", passed: false });
+      assert.throws(() => publicSecurityEvidence(result, "test-model"));
+    }
+  }
+});
+
 test("consent requires the selected model and is sent only by an explicit call", async (t) => {
   const client = fixture(t);
   const requests: unknown[] = [];

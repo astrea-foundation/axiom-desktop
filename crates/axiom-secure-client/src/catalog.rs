@@ -781,6 +781,36 @@ mod tests {
         assert_eq!(supported[0].e2ee_protocol, "near-v3");
         assert_eq!(supported[0].e2ee_encryption_version, 2);
 
+        // Preserve the old server default for existing clients, while this
+        // native engine opts into the fully implemented multi-worker contract.
+        let mut gateway = model("gateway");
+        gateway.e2ee_protocol = "near-v3".into();
+        gateway.e2ee_encryption_version = 2;
+        gateway.attestation_protocol = "near-tdx-nvidia-gateway-v1".into();
+        let legacy = validate_models(vec![wire(gateway.clone())], &config, &providers).unwrap();
+        assert_eq!(legacy[0].attestation_protocol, "near-tdx-nvidia-gateway-v1");
+        gateway.e2ee_contracts = vec![
+            CatalogE2eeContract {
+                e2ee_protocol: "near-v3".into(),
+                e2ee_encryption_version: 2,
+                attestation_protocol: "near-tdx-nvidia-gateway-v1".into(),
+                preferred: true,
+                retire_after_unix_seconds: None,
+            },
+            CatalogE2eeContract {
+                e2ee_protocol: "near-v3".into(),
+                e2ee_encryption_version: 2,
+                attestation_protocol: "near-tdx-nvidia-gateway-v2".into(),
+                preferred: false,
+                retire_after_unix_seconds: None,
+            },
+        ];
+        let upgraded = validate_models(vec![wire(gateway)], &config, &providers).unwrap();
+        assert_eq!(
+            upgraded[0].attestation_protocol,
+            "near-tdx-nvidia-gateway-v2"
+        );
+
         let mut retired = model("retired");
         retired.e2ee_protocol = "near-v3".into();
         retired.e2ee_encryption_version = 3;

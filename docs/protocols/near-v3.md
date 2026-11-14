@@ -8,6 +8,8 @@ conversion and response signatures. It replaces NEAR v2's independently fetched
 Ed25519/ECDSA reports. The `near-tdx-nvidia-v2` attestation contract covers
 direct model workers; `near-tdx-nvidia-gateway-v1` covers the same workers reached
 through NEAR's attested cloud gateway (see [Gateway route](#gateway-route)).
+`near-tdx-nvidia-gateway-v2` verifies multiple supplied environments sharing the
+selected recipient key, while retaining the same E2EE and response authentication.
 
 ## Establishment
 
@@ -156,6 +158,27 @@ and timing but no message content.
 
 Native and backend releases must implement the same registered `near-v3`
 contract. Unsupported protocol offers fail closed.
+
+Updated clients prefer advertised `near-tdx-nvidia-gateway-v2` over v1. The server
+retains the v1 default for older clients; the native engine uses v1 if v2 is not
+advertised. V1 continues to require a single selected worker.
+
+V2 requires a `worker_attestations` array of one to sixteen normalized worker
+reports. Its first member must match the top-level selected worker. Every member
+must name the same recipient key, model and fresh challenge. The client verifies
+each Intel quote, exact measured workload manifest, TLS/key binding and NVIDIA
+evidence independently. A bad second entry rejects the whole group before any
+session is cached or inference encrypted. The gateway quote is also required and
+verified. The explicit, runtime-only `OutOfDate` exception applies separately to
+each TDX environment; other failures remain rejected.
+
+Evidence exposes additional worker checks, measurements, TLS fingerprints and
+manifest digests. For v2, the workload-manifest field is a JSON bundle containing
+the exact manifest strings for all verified workers and the gateway. Any accepted
+outdated environment produces degraded evidence. The gateway preflight accepts
+only the group's previously verified model/TLS/manifest bindings; a new same-key
+environment forces fresh establishment. Requests and signed response receipts
+remain bound to the selected key, not the array position.
 
 NEAR source confirms [Ed25519 receipts](https://github.com/nearai/inference-proxy/blob/85ff2c493f84c835e175be74a319a8ab583a7fd3/src/routes/signature.rs)
 and documents [worker-local signature records](https://docs.near.ai/cloud/verification/chat).
