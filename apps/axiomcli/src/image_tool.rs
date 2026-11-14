@@ -1,4 +1,4 @@
-//! Conversation-local image generation and optional visual inspection.
+//! Conversation-local image generation with automatic visual previews.
 use crate::{
     AxiomError, Result,
     app::AppEvent,
@@ -56,7 +56,7 @@ pub(crate) fn configure_runtime_definition(
         "Omit aspect_ratio to retain a reference's shape."
     };
     tool.function.description = format!(
-        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; if view_image is available, you may use it to inspect the result before answering.",
+        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically. Vision-capable chat models also receive a preview as visual input after the tool responses; inspect that preview directly without calling view_image again for the new result.",
         p.aspect_ratios.join(", "),
         p.default_aspect_ratio,
         size.width,
@@ -263,7 +263,7 @@ impl Tool for ViewImageTool {
         "view_image"
     }
     fn description(&self) -> &'static str {
-        "Inspect an uploaded, generated or edited image from this conversation. Use the exact image_id from the image inventory or an earlier generate result. The image is returned as visual input so you can check its appearance before answering or deciding on further edits. Generated images are not automatically visible to you. Viewing does not create or modify an image and does not require a separate user request for image creation."
+        "Inspect an uploaded or earlier generated image from this conversation using its exact image_id. Newly generated and edited images already include a visual preview; use that preview directly. Use view_image when an image is not in your current visual context, for example after compaction. Viewing does not create or modify an image and does not require a separate user request for image creation."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -306,13 +306,14 @@ impl Tool for ViewImageTool {
     }
 }
 
-fn image_result(
+async fn image_result(
     context: &ToolContext,
     image: axiom_secure_client::GeneratedImage,
+    cancellation: CancellationToken,
 ) -> Result<ToolResult> {
     let id = context.images.add_generated(&image)?;
     let mut result = ToolResult::success(format!(
-        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. If view_image is available, call it with this image_id to inspect the result. Use generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
+        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. Use generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
         image.width,
         image.height,
         image.usage.cost_microusd.as_deref().unwrap_or("unknown")
@@ -324,6 +325,14 @@ fn image_result(
         call_id: String::new(),
         image: Box::new(image),
     });
+    // A preview failure must not hide a completed, authenticated generation or
+    // invite another paid request. The original remains in the catalog/UI.
+    if let Ok(preview) = context.images.view(&id, cancellation).await {
+        result.images.push(preview);
+        result.content.push_str(" A preview is supplied as visual input after the tool responses for vision-capable chat models. Inspect it directly; do not call view_image again for this result.");
+    } else {
+        result.content.push_str(" The image was created, but its visual preview is unavailable. Do not claim to have inspected it or regenerate it automatically.");
+    }
     Ok(result)
 }
 
@@ -333,7 +342,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. If view_image is available, you may call it to inspect the result before answering."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. Vision-capable chat models receive a visual preview after the tool responses; inspect it directly without calling view_image again for the new result."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -478,9 +487,9 @@ impl Tool for ImageGenerationTool {
             references: &references,
             dimensions,
         };
-        let operation = self
-            .provider
-            .image_request_with_progress(request, sender, cancellation);
+        let operation =
+            self.provider
+                .image_request_with_progress(request, sender, cancellation.clone());
         tokio::pin!(operation);
         let mut open = true;
         let image = loop {
@@ -495,7 +504,7 @@ impl Tool for ImageGenerationTool {
                 }
             }
         };
-        image_result(context, image)
+        image_result(context, image, cancellation).await
     }
 }
 
@@ -877,6 +886,35 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(catalog.0.lock().unwrap().len(), 50);
+    }
+
+    #[tokio::test]
+    async fn completed_generation_is_preserved_when_preview_preparation_is_cancelled() {
+        let context = ToolContext {
+            model_id: "vision".into(),
+            session_id: SessionId::new(),
+            cwd: PathBuf::from("."),
+            permission_profile: PermissionProfile::Web,
+            images: ImageCatalog::default(),
+            progress: None,
+        };
+        let generated = generated_fixture();
+        let image_id = format!("img_{}", generated.request_id);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = image_result(&context, generated.clone(), cancellation)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.images.is_empty());
+        assert!(result.content.contains("visual preview is unavailable"));
+        assert!(result.events.iter().any(|event| matches!(event,
+            AppEvent::ImageGenerated { image, .. } if image.as_ref() == &generated
+        )));
+        assert_eq!(
+            context.images.resolve(&image_id).unwrap().image.data,
+            generated.data
+        );
     }
 
     #[tokio::test]

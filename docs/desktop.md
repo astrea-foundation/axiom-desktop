@@ -258,10 +258,11 @@ originating chat model for regeneration.
 Images from chat models with the catalog's **Uncensored** tag (such as the
 abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
 LoRA at strength 0.9; other chat models use the base image model. Vision-capable
-chat models can optionally call `view_image` to inspect an uploaded or generated
-result before finishing a turn, including deciding whether a correction is
-needed. Its row names the
-inspected image ID; expand it to see that image. Expand an image request to see
+chat models automatically receive a bounded preview of each generated or edited
+result, so they can inspect it before finishing without a separate tool call.
+They can use `view_image` for an image absent from their current visual context,
+including after compaction. Its row names the inspected image ID; expand it to
+see that image. Expand an image request to see
 its prompt, aspect ratio, output size and any reference images as cards labelled
 `<image1>`, `<image2>`, etc., above the result. While the model is writing a
 tool call, a "Writing tool call…" row appears until the call itself is shown. Click a generated or edited
@@ -375,10 +376,11 @@ Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
 Automatic compaction is triggered only by context tokens, at the selected model's
-advertised threshold capped by local token limits. Uploaded images and successful
-`view_image` observations contribute visual tokens; generated images contribute
-only when viewed. Provider-reported usage takes precedence over estimates for
-existing context. Only new material is estimated until the next provider report.
+advertised threshold capped by local token limits. Uploaded images, automatic
+generated previews and successful `view_image` observations contribute visual
+tokens for vision-capable models. Provider-reported usage takes precedence over
+estimates for existing context. Only new material is estimated until the next
+provider report.
 Image counts and encoded attachment sizes do not trigger compaction. The runtime
 uses one summary request whenever the conversation fits with room for summary
 output, reasoning and a safety margin. It passes historical messages and native
@@ -416,9 +418,10 @@ Late generated titles update the sidebar without reopening an unloaded thread.
 The composer meter displays provider-reported input/output usage for the **last
 completed conversation request**, with that request's model capacity and effective
 compaction threshold. The 85% threshold controls when history is compacted.
-New uploads and successful `view_image` observations count toward the next
-request's context; the meter updates when the provider reports that request.
-Image generation alone does not add visual input to the chat model. Encoded
+New uploads, automatic generated previews and successful `view_image` observations
+count toward the next request's context; the meter updates when the provider
+reports that request.
+Generated previews enter vision-capable models' context automatically. Encoded
 image/file data has per-message native size limits. These transport limits are
 independent of compaction. Ten attachments is a per-message upload limit: later
 messages can add ten more, and image views and generation have no conversation

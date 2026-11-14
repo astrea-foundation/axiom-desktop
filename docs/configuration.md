@@ -226,19 +226,22 @@ before dispatch and cannot fall back to generation. The model is instructed to
 create or edit images only when the user explicitly asks; an attachment or a
 request for analysis alone does not authorize image creation.
 
-`view_image` accepts an exact conversation-owned `image_id` and supplies the
-image as visual input on the model's next step in the same turn. The model may
-inspect an upload or check a generated/edited result before answering or
-requesting a correction. Viewing is optional and does not create or edit an
-image. Generated results are displayed to the user but are not automatically
-added to the model's visual context. Vision copies preserve aspect ratio and
-transparency, correct orientation, and fit within 1,048,576 pixels; originals
+`generate` automatically supplies a bounded preview of each generated or edited
+image to vision-capable chat models on their next step, after all replies in the
+tool-call batch. The model can inspect that result without a separate
+`view_image` call. `view_image` accepts an exact conversation-owned `image_id`
+for an image absent from the current visual context, for example after
+compaction. Viewing is optional and does not create or edit an image.
+Vision copies preserve aspect ratio and transparency, correct orientation,
+and fit within 1,048,576 pixels; originals
 remain available for editing, viewing and saving. Viewed images consume model
 context tokens and encoded request bytes, and can trigger normal automatic
 compaction. There is no conversation-wide view or generation count limit.
 Conversation image IDs remain available for later viewing and reference use.
-Successful views are restored from their tool records and conversation-local
-references or saved model checkpoints.
+Generated previews and successful views are restored from their tool records
+and conversation-local references or saved model checkpoints. Preview preparation
+failure preserves the completed image and reports that visual inspection is
+unavailable; it does not repeat generation.
 
 Native code enables `generate` when the installed image service passes its
 verified capability preflight, independently of chat vision support. It withholds
@@ -294,13 +297,14 @@ per-message limits. Exceeding a memory or provider transport limit returns an
 error while preserving the conversation. Base64 byte length is not a text-token
 count. Ten uploads is a per-message limit; later messages can add ten more.
 History, views, generation and retained asset catalogs have no image-count cap.
-Uploads and successful `view_image` observations use the selected model's visual
-allowance for new context before the provider reports usage. Existing context
+Uploads, automatic generated previews and successful `view_image` observations
+use the selected model's visual allowance for new context before the provider
+reports usage. Existing context
 uses the provider count, including after reload when the report still covers the
 same completed context and model; model changes invalidate that baseline. Without
-a matching report, the next turn estimates using current model metadata. Generated
-images add visual context only when viewed. Unsupported reasoning levels fail
-locally.
+a matching report, the next turn estimates using current model metadata. Chat
+models without vision do not receive preview pixels. Unsupported reasoning levels
+fail locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model
 may expose only a subset. See [CLI](cli.md) for remembered model/thinking settings.
 

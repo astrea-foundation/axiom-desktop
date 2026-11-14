@@ -321,8 +321,10 @@ reject the action before sending any generation request. The model-facing tool
 uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
 32-pixel-grid output within the existing area cap. New images default to 2:3.
 
-`view_image` selects one conversation-local `image_id` for optional inspection,
-including a result generated earlier in the same turn. Native code supplies a
+`generate` automatically supplies a bounded preview to vision-capable models.
+No separate viewing call is needed to inspect the new result. `view_image`
+selects one conversation-local `image_id` absent from current visual context,
+including after compaction. Native code supplies a
 bounded visual observation after all replies in the tool-call batch, preserving
 provider tool-history ordering. The observation is application context, not a
 new user request. ACP receives a normal text tool result; image bytes go only to
@@ -360,8 +362,10 @@ reject the action before sending any generation request. The model-facing tool
 uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
 32-pixel-grid output within the existing area cap. New images default to 2:3.
 
-`view_image` selects one conversation-local `image_id` for optional inspection,
-including a result generated earlier in the same turn. Native code supplies a
+`generate` automatically supplies a bounded preview to vision-capable models.
+No separate viewing call is needed to inspect the new result. `view_image`
+selects one conversation-local `image_id` absent from current visual context,
+including after compaction. Native code supplies a
 bounded visual observation after all replies in the tool-call batch, preserving
 provider tool-history ordering. The observation is application context, not a
 new user request. ACP receives a normal text tool result; image bytes go only to
