@@ -327,7 +327,7 @@ test("automatic cache renewal keeps a valid report visible and only a click forc
   } finally { await page.close(); }
 });
 
-test("image-turn completion reuses automatic verification rather than forcing a new appraisal", async () => {
+test("image turns renew their report before expiry without waiting for generation to finish", async () => {
   const { page, errors } = await open("light", true);
   try {
     await page.evaluate(() => {
@@ -336,12 +336,73 @@ test("image-turn completion reuses automatic verification rather than forcing a 
         { id: "image", kind: "tool", text: "Generating image", status: "in_progress" },
       ] });
     });
-    await page.clock.fastForward(301_000);
-    assert.equal(await page.evaluate(() => (window as any).__privacyTest.automaticCalls()), 0);
-    await page.evaluate(() => (window as any).__privacyTest.update({ running: false }));
+    await page.clock.fastForward(270_000);
     await page.waitForFunction(() => (window as any).__privacyTest.automaticCalls() === 1);
     assert.equal(await count(page), 0);
-    await page.evaluate(() => (window as any).__privacyTest.finish());
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Refresh TEE verification", exact: true }).isDisabled(), true);
+    await page.clock.fastForward(31_000);
+    await page.getByRole("button", { name: "Verifying TEE. View privacy proof", exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__privacyTest.finishReport({
+      ...(window as any).__privacyTest.report(), verifiedAtUnixSeconds: Math.floor(Date.now() / 1000),
+      hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+    }));
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
+    assert.equal(await count(page), 0, "automatic renewal never forces a new appraisal or stops the image turn");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("returning from another chat renews an expired report while its image turn is still running", async () => {
+  const { page, errors } = await open("dark", true);
+  try {
+    const original = await page.evaluate(() => (window as any).__privacyTest.report());
+    await page.evaluate(() => {
+      const app = (window as any).__privacyTest;
+      app.setCacheAware(true);
+      app.update({ sessionId: "other-thread", running: false, securityEvidence: {
+        ...app.report(), hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 3600,
+      } });
+    });
+    await page.clock.fastForward(301_000);
+    assert.equal(await page.evaluate(() => (window as any).__privacyTest.automaticCalls()), 0);
+    await page.evaluate(report => (window as any).__privacyTest.update({
+      sessionId: "thread", running: true, securityEvidence: report,
+    }), original);
+    await page.waitForFunction(() => (window as any).__privacyTest.automaticCalls() === 1);
+    assert.equal(await count(page), 0);
+    await page.evaluate(() => (window as any).__privacyTest.finishReport({
+      ...(window as any).__privacyTest.report(), verifiedAtUnixSeconds: Math.floor(Date.now() / 1000),
+      hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+    }));
+    await page.getByRole("button", { name: "TEE verified. View privacy proof", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a cached short-lived report is reread at expiry without waiting for the full retry interval", async () => {
+  const { page, errors } = await open("light", true);
+  try {
+    const short = await page.evaluate(() => {
+      const app = (window as any).__privacyTest;
+      const report = { ...app.report(), verifiedAtUnixSeconds: Math.floor(Date.now() / 1000),
+        hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 20 };
+      app.setCacheAware(true); app.update({ running: true, securityEvidence: report });
+      return report;
+    });
+    await page.clock.fastForward(10_000);
+    await page.waitForFunction(() => (window as any).__privacyTest.automaticCalls() === 1);
+    await page.evaluate(report => (window as any).__privacyTest.finishReport(report), short);
+    await page.clock.fastForward(10_000);
+    await page.waitForFunction(() => (window as any).__privacyTest.automaticCalls() === 2);
+    assert.equal(await count(page), 0);
+    await page.evaluate(() => (window as any).__privacyTest.finishReport({
+      ...(window as any).__privacyTest.report(), verifiedAtUnixSeconds: Math.floor(Date.now() / 1000),
+      hardExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+    }));
+    await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

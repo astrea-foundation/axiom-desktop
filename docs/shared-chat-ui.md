@@ -83,7 +83,12 @@ Hosts may supply `onEnsureSecurity` for automatic, cache-aware report renewal;
 `onVerifySecurity` remains the explicit Refresh action. Without that optional
 callback, automatic renewal retains the existing verification callback. An
 already valid report stays visible during automatic renewal until its true
-hard expiry. Running image/tool turns finish before either refresh can start.
+hard expiry. With `onEnsureSecurity`, automatic renewal continues during running
+image/tool turns without cancelling them or forcing a fresh appraisal. Explicit
+Refresh, and automatic renewal without that callback, wait for the reply to
+finish. Returning to a running chat renews an expired report in that chat's own
+scope. An unchanged cached report is reread by its hard expiry; failed refreshes
+retain bounded retry backoff. Renewal never extends the previous report's expiry.
 
 Queue hosts may provide `persistQueue` to require an encrypted durable commit
 before dispatch. Native hosts retain their existing synchronous admission timing.

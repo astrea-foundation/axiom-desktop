@@ -75,10 +75,16 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, mcpS
   const state = idle && !["development", "outdated", "degraded"].includes(currentProofState) ? "idle" : currentProofState;
   const badge = proofBadge(session, state);
   const verifying = currentProofState === "verifying";
-  const reason = disabledReason || (session.needsResync ? "Wait for the thread to reconnect" : session.running ? "Wait for the current reply to finish" : refreshing || verifying ? "Verification in progress" : undefined);
+  const blockedReason = disabledReason || (session.needsResync ? "Wait for the thread to reconnect"
+    : refreshing || verifying ? refreshMode.current === "automatic" && onEnsure
+      ? "Refreshing verification automatically" : "Verification in progress" : undefined);
+  const runningReason = session.running ? onEnsure
+    ? "Verification refreshes automatically during the reply" : "Wait for the current reply to finish" : undefined;
+  const reason = blockedReason || runningReason;
+  const automaticReason = blockedReason || (onEnsure ? undefined : runningReason);
   const color = badge.tone === "muted" ? "var(--color-text-muted)" : `var(--color-${badge.tone})`;
   const refresh = useCallback(async (mode: "automatic" | "manual" = "manual") => {
-    if (!mounted.current || busy.current || reason) return;
+    if (!mounted.current || busy.current || (mode === "automatic" ? automaticReason : reason)) return;
     refreshMode.current = mode;
     busy.current = true; setRefreshing(true); setError(null);
     nextRefresh.current = Date.now() + PROOF_REFRESH_RETRY_MS;
@@ -86,6 +92,12 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, mcpS
       await (mode === "automatic" && onEnsure ? onEnsure() : onVerify());
       refreshFailures.current = 0;
       nextRefresh.current = Date.now() + PROOF_REFRESH_RETRY_MS;
+      const expiresAt = (session.securityEvidence?.hardExpiresAtUnixSeconds ?? 0) * 1000;
+      // Native prewarm can return an unchanged, still-valid cached report.
+      // Re-read it by its real expiry, even for leases shorter than retry delay.
+      if (mode === "automatic" && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+        nextRefresh.current = Math.min(nextRefresh.current, expiresAt);
+      }
     }
     catch {
       refreshFailures.current = Math.min(refreshFailures.current + 1, 5);
@@ -97,16 +109,17 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, mcpS
       busy.current = false;
       if (mounted.current) { setRefreshing(false); setNow(Date.now()); }
     }
-  }, [onVerify, onEnsure, reason]);
+  }, [onVerify, onEnsure, reason, automaticReason, session.securityEvidence?.hardExpiresAtUnixSeconds]);
   useEffect(() => {
     // Renew the selected environment, including managed providers, before its
-    // report expires. Hidden/idle windows pause; streams finish before refresh.
+    // report expires. Cache-aware renewal can run alongside image/tool turns;
+    // hosts without it must finish streaming before forcing verification.
     // An outdated TEE still needs explicit consent, never an automatic override.
-    if (!modelId || idle || reason || refreshing || document.hidden || !navigator.onLine
+    if (!modelId || idle || automaticReason || refreshing || document.hidden || !navigator.onLine
       || currentProofState === "outdated" || (currentProofState === "failed" && !refreshFailures.current)) return;
     if (!proofRefreshDue(session, modelId, now) || now < nextRefresh.current) return;
     void refresh("automatic");
-  }, [modelId, idle, reason, refreshing, currentProofState, session.securityEvidence, now, refresh, activityVersion]);
+  }, [modelId, idle, automaticReason, refreshing, currentProofState, session.securityEvidence, now, refresh, activityVersion]);
 
   return <>
     <div className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">

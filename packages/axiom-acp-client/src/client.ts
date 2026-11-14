@@ -905,7 +905,6 @@ export class AxiomAcpClient extends EventEmitter {
     const session = this.state.snapshot().sessions[threadId];
     const modelId = session?.settings?.model;
     if (!context || !modelId) throw new ProtocolError("Load this thread before verifying its model");
-    if (session.running) throw new ProtocolError("Wait for the current reply before refreshing verification");
     const existing = this.securityVerifications.get(threadId);
     if (existing?.context === context) return existing.promise;
     const cached = this.securityWarmups.get(modelId);
@@ -915,16 +914,22 @@ export class AxiomAcpClient extends EventEmitter {
       // report, never the provider proof, pinned transport or retry backoff.
       this.securityWarmups.delete(modelId);
     }
-    const result = await this.prewarmSecurity(modelId);
+    const warmup = this.prewarmSecurity(modelId);
+    const result = await warmup;
     const current = this.state.snapshot().sessions[threadId];
     if (this.state.accountContextToken() !== accountContext || this.state.securityContextToken(threadId) !== context
-      || !current || current.running || this.securityVerifications.has(threadId)) {
+      || !current || (!session.running && current.running) || this.securityVerifications.has(threadId)
+      || (session.running && current.security?.state !== session.security?.state)) {
+      // A superseded result must not become a later cached retry that hides
+      // the request's newer report or failure. Keep any newer warmup intact.
+      if (this.securityWarmups.get(modelId)?.promise === warmup) this.securityWarmups.delete(modelId);
       throw new ProtocolError("The verification context changed; refresh the selected model");
     }
     const evidence = publicSecurityEvidence(result, modelId);
     if (!evidence || evidence.hardExpiresAtUnixSeconds * 1000 <= Date.now()) throw new ProtocolError("Verification returned no fresh evidence");
-    // Cached warmups may predate this thread. Apply the public report only to
-    // its still-idle, unchanged model/account/runtime; keep the original expiry.
+    // Model-only prewarm does not reserve or cancel this thread's active work.
+    // Renew its environment report while an existing image/tool turn continues;
+    // a new request or newer request report/status still takes precedence.
     this.state.setSecurityVerification(threadId, { pending: false, evidence, status: result.status });
     return { status: result.status, evidence };
   }

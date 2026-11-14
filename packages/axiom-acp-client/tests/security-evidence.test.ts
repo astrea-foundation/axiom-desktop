@@ -371,6 +371,69 @@ test("automatic renewal rereads near-expiry native material without forcing a ha
   assert.equal(request.mock.callCount(), 1);
 });
 
+test("automatic renewal refreshes a running image turn independently of another running chat", async (t) => {
+  const client = fixture(t);
+  client.state.setRunning("thread", true);
+  client.state.addSession("other-thread", "");
+  client.state.setConfig("other-thread", [{ id: "model", name: "Model", currentValue: "other-model", options: [] }]);
+  client.state.setRunning("other-thread", true);
+  const report = result();
+  const request = t.mock.method(client.process, "request", async () => report);
+
+  await client.ensureSecurity("thread");
+
+  assert.deepEqual(request.mock.calls.map(call => call.arguments.slice(0, 2)), [
+    ["_axiom/security/prewarm", { modelId: "test-model" }],
+  ]);
+  const state = client.getState();
+  assert.equal(state.sessions.thread?.running, true);
+  assert.equal(state.sessions.thread?.securityEvidence?.hardExpiresAtUnixSeconds, report.evidence!.hardExpiresAtUnixSeconds);
+  assert.equal(state.sessions["other-thread"]?.running, true);
+  assert.equal(state.sessions["other-thread"]?.securityEvidence, null);
+  await assert.rejects(client.verifySecurity("thread"), /current reply/);
+});
+
+for (const change of ["request-report", "failed", "outdated"] as const) {
+  test(`running report renewal cannot overwrite a newer ${change}`, async (t) => {
+    const client = fixture(t);
+    client.state.initializeRuntime("report-runtime");
+    client.state.setSecurityVerification("thread", { pending: false, evidence: securityEvidence(), status: { state: "verified" } });
+    client.state.setRunning("thread", true);
+    const pending = hold(t, client);
+    const renewal = assert.rejects(client.ensureSecurity("thread"), /context changed/);
+    await Promise.resolve();
+    if (change === "request-report") {
+      const actual = securityEvidence(); actual.modelKeyFingerprint = "d4".repeat(32);
+      requestReport(client, actual);
+    } else {
+      client.state.extensionEvent({ runtimeInstanceId: "report-runtime", sequence: 1,
+        occurredAt: new Date().toISOString(), sessionId: "thread",
+        event: { kind: "security_changed", status: { state: change } } });
+    }
+    pending.resolve(result()); await renewal;
+    const session = client.getState().sessions.thread!;
+    assert.equal(session.running, true);
+    assert.equal(session.security?.state, change === "request-report" ? "verified" : change);
+    if (change === "request-report") assert.equal(session.securityEvidence?.modelKeyFingerprint, "d4".repeat(32));
+    const reread = t.mock.method(client.process, "request", async () => result());
+    await client.prewarmSecurity("test-model");
+    assert.equal(reread.mock.callCount(), 1, "a superseded warmup cannot be reused as a later retry");
+    assert.equal(client.getState().sessions.thread?.security?.state, change === "request-report" ? "verified" : change);
+  });
+}
+
+test("running report renewal rejects expired evidence without extending its previous report", async (t) => {
+  const client = fixture(t);
+  const previous = securityEvidence();
+  client.state.setSecurityVerification("thread", { pending: false, evidence: previous, status: { state: "verified" } });
+  client.state.setRunning("thread", true);
+  const expired = result(); expired.evidence!.hardExpiresAtUnixSeconds = Math.floor(Date.now() / 1000) - 1;
+  t.mock.method(client.process, "request", async () => expired);
+  await assert.rejects(client.ensureSecurity("thread"), /fresh evidence|incomplete|mismatched/);
+  assert.equal(client.getState().sessions.thread?.securityEvidence?.hardExpiresAtUnixSeconds, previous.hardExpiresAtUnixSeconds);
+  assert.equal(client.getState().sessions.thread?.running, true);
+});
+
 for (const change of ["account", "runtime", "model", "running", "request-report"] as const) {
   test(`automatic report renewal cannot overwrite a changed ${change} context`, async (t) => {
     const client = fixture(t);
