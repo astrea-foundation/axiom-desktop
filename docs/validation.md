@@ -446,6 +446,33 @@ establishment and that legacy v1 retains its single-worker rule. Keep this relea
 qualification open until the matching relay is deployed and completion is tested;
 read-only attestation checks alone do not close it.
 
+## Headless model canary
+
+The `axiom-secure-client` example `model_canary` sends one short synthetic request
+to every discovered chat model. It requires an explicit inference automation
+credential in `AXIOM_API_KEY`; it never opens the OS credential store, refreshes a
+Desktop sign-in, or opens conversation storage. Real provider usage is charged.
+
+Run `cargo run -p axiom-secure-client --example model_canary` with the credential
+already configured. `AXIOM_RELAY_URL` defaults to `https://api.axiom.stream`.
+`AXIOM_CANARY_LIST_ONLY=1` lists the catalog without inference;
+`AXIOM_CANARY_MODEL` or `AXIOM_CANARY_PROVIDER` selects a subset. Installed
+AstreaAI configuration must retain its original public trust pins and frozen
+verifier; the explicit development config override is also supported.
+
+The canary verifies fresh provider evidence under the signed production trust
+policy, requests up to 512 output tokens without tools, and requires the word
+`OK`, exactly one verified-response event and a successful authenticated stream
+return. NEAR's provider finish event remains provisional until its later signed
+receipt and transport completion. A failed or ambiguous request is recorded and
+is not automatically replayed. Results are JSON lines containing public model,
+protocol, timing, usage and synthetic response fields, never credentials.
+
+For an isolated matching development relay, compile with `--features test-fixture`
+and explicitly set `AXIOM_CANARY_LOCAL_RELAY=1` with an HTTP `127.0.0.1` relay URL
+and its separate test account key. Only the account relay uses the loopback
+exception; real provider attestation, E2EE and response verification still apply.
+
 ## Dependency maintenance
 
 The 0.1.15 candidate updates Rustls to 0.23.46, resolving
