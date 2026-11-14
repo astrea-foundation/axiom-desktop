@@ -237,7 +237,8 @@ separate from the replacement. It is excluded from later model input and the
 successful answer's combined Copy action. Desktop offers Retry after a failed
 reply; the TUI displays the partial attempt separately. Stop cancels pending
 backoff as well as the active request. Resuming the app never dispatches a saved
-retry timer.
+retry timer. Checkpoint-based restore also keeps interrupted display text out of
+the next model request while retaining the last committed history and tool work.
 
 A verified text answer that ends at its output limit continues automatically
 once, within the usual context, time and billing limits. It preserves earlier

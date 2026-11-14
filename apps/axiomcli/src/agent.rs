@@ -2350,6 +2350,7 @@ impl TurnRunner for AgentEngine {
         let mut active_tools = BTreeSet::new();
         let mut tool_names = HashMap::new();
         let mut viewed_image_ids = HashMap::new();
+        let mut authoritative_history = false;
         for (index, envelope) in events.iter().enumerate() {
             match &envelope.event {
                 AppEvent::SessionCreated {
@@ -2388,7 +2389,10 @@ impl TurnRunner for AgentEngine {
                     last_used_model = Some(active_model.clone());
                     messages.push(ChatMessage::text(ChatRole::User, text.clone()));
                 }
-                AppEvent::TextDelta { text, .. } => {
+                AppEvent::TextDelta { text, .. } if !authoritative_history => {
+                    // Modern journals commit model input through complete
+                    // checkpoints. Display deltas after the last checkpoint
+                    // may belong to a crashed or interrupted attempt.
                     if let Some(message) = messages.last_mut().filter(|message| {
                         message.role == ChatRole::Assistant && message.tool_calls.is_empty()
                     }) {
@@ -2397,7 +2401,7 @@ impl TurnRunner for AgentEngine {
                         messages.push(ChatMessage::text(ChatRole::Assistant, text.clone()));
                     }
                 }
-                AppEvent::ReasoningDelta { text, .. } => {
+                AppEvent::ReasoningDelta { text, .. } if !authoritative_history => {
                     if let Some(message) = messages.last_mut().filter(|message| {
                         message.role == ChatRole::Assistant && message.tool_calls.is_empty()
                     }) {
@@ -2521,6 +2525,7 @@ impl TurnRunner for AgentEngine {
                         ));
                     }
                     messages = canonical;
+                    authoritative_history = true;
                     tool_names.clear();
                     viewed_image_ids.clear();
                     for message in &messages {

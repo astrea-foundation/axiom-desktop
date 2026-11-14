@@ -201,3 +201,72 @@ async fn stop_during_backoff_never_dispatches_the_successor() {
     assert!(matches!(work.await.unwrap(), Err(AxiomError::Cancelled)));
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
+
+#[tokio::test]
+async fn restarting_from_a_checkpoint_never_promotes_interrupted_display_deltas() {
+    let provider = Arc::new(RecoveryProvider {
+        allowed: false,
+        ..RecoveryProvider::new(1)
+    });
+    let (result, events, _) = run(provider.clone()).await;
+    assert!(result.is_err());
+    assert!(events.iter().any(
+        |event| matches!(event, AppEvent::TextDelta { text, .. } if text == "unverified fragment")
+    ));
+    let turn = events
+        .iter()
+        .find_map(|event| event.turn_id().cloned())
+        .unwrap();
+    let session = SessionId::new();
+    let journal = [
+        AppEvent::PromptAccepted {
+            turn_id: turn.clone(),
+            text: "answer this".into(),
+            attachments: vec![],
+        },
+        AppEvent::TurnStarted { turn_id: turn },
+    ]
+    .into_iter()
+    .chain(events)
+    .enumerate()
+    .map(|(index, event)| EventEnvelope {
+        schema_version: 1,
+        sequence: index as u64 + 1,
+        turn_id: event.turn_id().cloned(),
+        occurred_at: chrono::Utc::now(),
+        correlation_id: crate::app::CorrelationId::new(),
+        origin: crate::app::Origin::Test,
+        session_id: session.clone(),
+        event,
+    })
+    .collect::<Vec<_>>();
+    let engine = AgentEngine::new(provider.clone(), Arc::new(ToolRegistry::new()), "test", 1);
+    engine.restore_session(&session, &journal).await.unwrap();
+    let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+    engine
+        .run(
+            TurnContext {
+                session_id: session,
+                ..context()
+            },
+            "Continue".into(),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.role == ChatRole::User && message.content == "answer this")
+    );
+    assert!(
+        !requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("unverified fragment"))
+    );
+}
