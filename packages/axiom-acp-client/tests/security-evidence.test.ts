@@ -393,6 +393,46 @@ test("automatic renewal refreshes a running image turn independently of another 
   await assert.rejects(client.verifySecurity("thread"), /current reply/);
 });
 
+for (const firstModel of ["test-model", "other-model"]) {
+  test(`concurrent model renewals stay in their own running chats when ${firstModel} finishes first`, async (t) => {
+    const client = fixture(t);
+    client.state.setRunning("thread", true);
+    client.state.addSession("other-thread", "");
+    client.state.setConfig("other-thread", [{ id: "model", name: "Model", currentValue: "other-model", options: [] }]);
+    client.state.setRunning("other-thread", true);
+    const reports: Record<string, VerifySecurityResponse> = { "test-model": result(), "other-model": result() };
+    reports["test-model"]!.evidence!.modelKeyFingerprint = "a1".repeat(32);
+    reports["other-model"]!.evidence!.modelId = "other-model";
+    reports["other-model"]!.evidence!.modelKeyFingerprint = "b2".repeat(32);
+    const finish = new Map<string, (value: VerifySecurityResponse) => void>();
+    const request = t.mock.method(client.process, "request", (_method: string, params: unknown) =>
+      new Promise<VerifySecurityResponse>(resolve => finish.set((params as { modelId: string }).modelId, resolve)));
+    const renewals = new Map([
+      ["test-model", client.ensureSecurity("thread")],
+      ["other-model", client.ensureSecurity("other-thread")],
+    ]);
+    await Promise.resolve();
+    assert.deepEqual(request.mock.calls.map(call => call.arguments.slice(0, 2)), [
+      ["_axiom/security/prewarm", { modelId: "test-model" }],
+      ["_axiom/security/prewarm", { modelId: "other-model" }],
+    ]);
+    const secondModel = firstModel === "test-model" ? "other-model" : "test-model";
+    const firstThread = firstModel === "test-model" ? "thread" : "other-thread";
+    const secondThread = firstModel === "test-model" ? "other-thread" : "thread";
+    finish.get(firstModel)!(reports[firstModel]!); await renewals.get(firstModel);
+    assert.equal(client.getState().sessions[firstThread]?.securityEvidence?.modelId, firstModel);
+    assert.equal(client.getState().sessions[secondThread]?.securityEvidence, null);
+    finish.get(secondModel)!(reports[secondModel]!); await renewals.get(secondModel);
+    const state = client.getState();
+    assert.equal(state.sessions.thread?.securityEvidence?.modelId, "test-model");
+    assert.equal(state.sessions.thread?.securityEvidence?.modelKeyFingerprint, "a1".repeat(32));
+    assert.equal(state.sessions["other-thread"]?.securityEvidence?.modelId, "other-model");
+    assert.equal(state.sessions["other-thread"]?.securityEvidence?.modelKeyFingerprint, "b2".repeat(32));
+    assert.equal(state.sessions.thread?.running, true);
+    assert.equal(state.sessions["other-thread"]?.running, true);
+  });
+}
+
 for (const change of ["request-report", "failed", "outdated"] as const) {
   test(`running report renewal cannot overwrite a newer ${change}`, async (t) => {
     const client = fixture(t);
