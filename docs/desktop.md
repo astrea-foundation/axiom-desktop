@@ -278,7 +278,10 @@ live percentage and progress bar. Queued work displays 0%; finishing stays at
 Chat models without vision can create images and edit earlier generated images
 by their conversation-local IDs, but cannot inspect results or accept new image
 uploads. A failed image-service preflight withholds image tools and supplies
-the native diagnostic to the chat model, so it can explain the service failure.
+the native diagnostic to the chat model. The model is instructed to briefly say
+"Image generation is currently unavailable. Please try again later." It must
+not claim that the selected chat model cannot generate images or recommend
+switching models to resolve an image-service failure.
 
 Opening an image-heavy conversation loads its messages and image dimensions
 first. Original generated images load as they approach the visible part of the
