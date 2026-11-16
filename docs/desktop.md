@@ -31,6 +31,12 @@ For listed chats, the catalog already supplies the saved workspace, so opening
 skips the preliminary timeline peek. After `session/load`, the authoritative
 timeline and MCP selection are read concurrently. A rejected stale catalog
 workspace is re-read once before loading the actual saved location.
+Saved threads restore their journaled model and thinking settings without
+waiting for online model discovery. The initial session config reports only
+those saved values; the independent model catalog supplies selectable
+capabilities. Provider availability and supported settings are checked when
+selecting a model or starting inference. An unavailable provider does not
+prevent reading local history.
 
 State changes share immutable views of untouched sessions and coalesce bursts
 within one event-loop turn. Each window gets a complete initial state, followed

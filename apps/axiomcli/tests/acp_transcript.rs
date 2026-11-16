@@ -1832,6 +1832,97 @@ async fn durable_session_load_keeps_identity_replays_history_and_continues() {
 }
 
 #[tokio::test]
+async fn desktop_load_uses_saved_settings_and_history_while_catalog_stalls() {
+    let state = tempfile::tempdir().expect("isolated desktop state");
+    let mut first = AcpProcess::spawn_inner("echo", state.path(), None, Some("desktop-chat"), None);
+    first.initialize_extension().await;
+    first
+        .send(&json!({
+            "jsonrpc":"2.0","id":2,"method":"_axiom/desktop/bootstrap","params":{}
+        }))
+        .await;
+    let bootstrap = first.response(2).await;
+    let chat_cwd = Path::new(bootstrap["result"]["chatCwd"].as_str().unwrap());
+    let session = first.new_session(3, chat_cwd).await;
+    for (id, config_id, value) in [(4, "model", "alternate-model"), (5, "thinking", "high")] {
+        first
+            .send(&json!({
+                "jsonrpc":"2.0","id":id,"method":"session/set_config_option",
+                "params":{"sessionId":session,"configId":config_id,"value":value}
+            }))
+            .await;
+        assert!(first.response(id).await.get("result").is_some());
+    }
+    first.send(&json!({
+        "jsonrpc":"2.0","id":6,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"saved local conversation"}]}
+    })).await;
+    assert_eq!(first.response(6).await["result"]["stopReason"], "end_turn");
+    first
+        .send(&json!({
+            "jsonrpc":"2.0","id":7,"method":"_axiom/thread/timeline",
+            "params":{"threadId":session,"limit":1}
+        }))
+        .await;
+    let page = first.response(7).await;
+    let cwd = page["result"]["thread"]["cwd"].as_str().unwrap().to_owned();
+    first.close().await;
+
+    // A real production runner with a catalog endpoint that never answers.
+    // Any discovery request would block session/load, including a second
+    // lookup hidden in the model-settings setter.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = format!(
+        "unreachable-provider:https://{}",
+        listener.local_addr().unwrap()
+    );
+    let mut resumed =
+        AcpProcess::spawn_inner(&runner, state.path(), None, Some("desktop-chat"), None);
+    resumed.initialize_extension().await;
+    resumed
+        .send(&json!({
+            "jsonrpc":"2.0","id":2,"method":"session/load",
+            "params":{"sessionId":session,"cwd":cwd,"mcpServers":[],
+                "_meta":{"axiom":{"skipHistoryReplay":true}}}
+        }))
+        .await;
+    let loaded = resumed.response(2).await;
+    let options = loaded["result"]["configOptions"]
+        .as_array()
+        .expect("local restore succeeds");
+    for (id, value) in [("model", "alternate-model"), ("thinking", "high")] {
+        let option = options.iter().find(|option| option["id"] == id).unwrap();
+        assert_eq!(option["currentValue"], value);
+        assert_eq!(
+            option["options"].as_array().unwrap().len(),
+            1,
+            "local restore reports only persisted values, not advertised capabilities"
+        );
+    }
+    resumed
+        .send(&json!({
+            "jsonrpc":"2.0","id":3,"method":"_axiom/thread/timeline",
+            "params":{"threadId":session,"limit":250}
+        }))
+        .await;
+    let timeline = resumed.response(3).await;
+    assert!(
+        timeline["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["content"] == "saved local conversation")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "opening local history must not contact the provider catalog"
+    );
+    resumed.close().await;
+}
+
+#[tokio::test]
 async fn desktop_timeline_restore_transfers_saved_images_once_and_preserves_acp_replay() {
     use axiomcli::app::AppEvent;
     use base64::{Engine as _, engine::general_purpose::STANDARD};

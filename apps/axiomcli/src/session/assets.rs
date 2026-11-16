@@ -21,6 +21,8 @@ const MAX_ASSET_BYTES: usize = 128 * 1024 * 1024;
 #[derive(Clone)]
 pub(super) struct AssetManager {
     backing: Backing,
+    #[cfg(test)]
+    reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 #[derive(Clone)]
 enum Backing {
@@ -76,6 +78,8 @@ impl AssetManager {
     pub(super) fn memory() -> Self {
         Self {
             backing: Backing::Memory(Arc::new(Mutex::new(HashMap::new()))),
+            #[cfg(test)]
+            reads: Arc::default(),
         }
     }
     pub(super) fn disk(database: &Path, key: Arc<StorageKey>) -> Result<Self> {
@@ -92,7 +96,13 @@ impl AssetManager {
         }
         Ok(Self {
             backing: Backing::Disk { root, key },
+            #[cfg(test)]
+            reads: Arc::default(),
         })
+    }
+    #[cfg(test)]
+    pub(super) fn read_count(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
     }
     pub(super) fn intern(
         &self,
@@ -201,6 +211,9 @@ impl AssetManager {
         })
     }
     fn read_available(&self, reference: &AssetRef) -> Result<AssetLoad<Vec<u8>>> {
+        #[cfg(test)]
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if reference.version != 1
             || reference.bytes > MAX_ASSET_BYTES as u64
             || uuid::Uuid::parse_str(&reference.id).is_err()
@@ -367,7 +380,7 @@ impl AssetManager {
         self.verify_with_progress(connection, progress, true)?;
         self.clean_orphans(connection)
     }
-    fn clean_orphans(&self, connection: &Connection) -> Result<()> {
+    pub(super) fn clean_orphans(&self, connection: &Connection) -> Result<()> {
         let mut statement = connection
             .prepare("SELECT id FROM binary_assets")
             .map_err(storage_error)?;

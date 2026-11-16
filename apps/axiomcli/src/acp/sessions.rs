@@ -473,13 +473,21 @@ pub(super) async fn load_session(
             }
             let restored_model = model_for_resume(&loaded.events, &ctx_default_model);
             let restored_thinking = thinking_for_resume(&loaded.events, ctx_default_thinking);
-            let model_details = await_session_future(
-                &request_cancellation,
-                &work,
-                ctx_runner.available_model_details(work.cancellation.clone()),
-            )
-            .await?
-            .map_err(agent_error)?;
+            let local_restore = ctx_frontend == FrontendKind::DesktopChat;
+            // Desktop has an independent model picker/catalog. Reading saved
+            // history must not wait for provider discovery or an outage. The
+            // saved settings are revalidated before selection or inference.
+            let model_details = if local_restore {
+                Vec::new()
+            } else {
+                await_session_future(
+                    &request_cancellation,
+                    &work,
+                    ctx_runner.available_model_details(work.cancellation.clone()),
+                )
+                .await?
+                .map_err(agent_error)?
+            };
             let model_available = model_details.iter().any(|model| model.id == restored_model);
             let settings = if model_available {
                 crate::agent::reconcile_new_session_settings(
@@ -514,7 +522,15 @@ pub(super) async fn load_session(
             )
             .await?
             .map_err(agent_error)?;
-            if model_available {
+            if local_restore {
+                await_session_future(
+                    &request_cancellation,
+                    &work,
+                    ctx_runner.restore_model_settings(&internal_id, &settings),
+                )
+                .await?
+                .map_err(agent_error)?;
+            } else if model_available {
                 await_session_future(
                     &request_cancellation,
                     &work,
@@ -620,7 +636,7 @@ pub(super) async fn load_session(
                     &session_model,
                     &models,
                     session_thinking,
-                    Some(&supported_thinking),
+                    if local_restore { None } else { Some(&supported_thinking) },
                 ));
             {
                 let mut registry = ctx_sessions.lock().await;

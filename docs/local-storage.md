@@ -34,6 +34,13 @@ base64 may still appear in an in-memory protocol requiring it. Catalog and
 conversation image counts have no lifetime limit; model/token and per-request
 resource bounds still apply.
 
+Ordinary startup opens the encrypted database and cleans orphan asset files
+without reading or decrypting every saved image and document. Assets are still
+authorized, authenticated, length-checked and hashed on each access; damaged or
+missing bytes stay unavailable and their recoverable records are retained.
+Full asset verification remains part of migration finalization, explicit
+integrity checks, recovery and backup/export validation.
+
 ## Forward migration
 
 Opening an authenticated account upgrades its existing store. A consistent

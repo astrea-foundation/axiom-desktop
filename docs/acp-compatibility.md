@@ -237,6 +237,11 @@ A Desktop client with the timeline extension may send
 `_meta.axiom.skipHistoryReplay: true` on `session/load`. Native runtime history
 still restores, including damaged-record recovery, while Desktop fetches its
 authoritative timeline once. Standard ACP clients retain transcript replay.
+The Desktop frontend restores saved model/thinking settings without provider
+discovery. Its initial config exposes only the saved model and current thinking
+value; the independent model catalog supplies selectable capabilities. New
+selections and inference still require live provider validation. Other ACP
+frontends retain catalog reconciliation during load.
 
 ## Desktop authority and revisions
 

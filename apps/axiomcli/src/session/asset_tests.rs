@@ -1333,6 +1333,47 @@ fn replacement_and_deletion_collect_only_unowned_assets_after_commit() {
 }
 
 #[test]
+fn current_store_opens_without_reading_assets_and_authenticates_them_on_access() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("state.sqlite3");
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    store.set_local_payload("draft", &payload()).unwrap();
+    let orphan = asset_directory_for_database(&path).join(uuid::Uuid::new_v4().to_string());
+    std::fs::write(&orphan, b"uncommitted orphan ciphertext").unwrap();
+    drop(store);
+
+    let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    let assets = store.lock().unwrap().assets().clone();
+    assert_eq!(assets.read_count(), 0, "opening must not read saved media");
+    assert!(!orphan.exists(), "ordinary opens still clean orphan files");
+    assert_eq!(store.local_payload("draft").unwrap(), Some(payload()));
+    assert!(assets.read_count() > 0, "access must authenticate media");
+
+    let asset = std::fs::read_dir(asset_directory_for_database(&path))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut ciphertext = std::fs::read(&asset).unwrap();
+    let last = ciphertext.len() - 1;
+    ciphertext[last] ^= 1;
+    std::fs::write(&asset, &ciphertext).unwrap();
+    let mut unavailable = payload();
+    unavailable["payload"]["attachments"] = json!([]);
+    assert_eq!(store.local_payload("draft").unwrap(), Some(unavailable));
+    assert!(
+        store.verify_asset_integrity().is_err(),
+        "full verification remains explicit"
+    );
+    assert_eq!(
+        std::fs::read(asset).unwrap(),
+        ciphertext,
+        "damage stays recoverable"
+    );
+}
+
+#[test]
 fn pending_physical_migration_cleanup_retries_on_reopen() {
     let root = tempdir().unwrap();
     let path = root.path().join("state.sqlite3");
@@ -1345,6 +1386,10 @@ fn pending_physical_migration_cleanup_retries_on_reopen() {
         .unwrap();
     drop(store);
     let store = SessionStore::open_protected_with_key(&path, key()).unwrap();
+    assert!(
+        store.lock().unwrap().assets().read_count() > 0,
+        "pending migration must verify every asset before finishing"
+    );
     let pending: bool = store
         .lock()
         .unwrap()
