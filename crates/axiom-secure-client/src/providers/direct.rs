@@ -518,7 +518,7 @@ impl DirectProvider {
         &self,
         policy: &TrustPolicy,
         request: axiom_inference::ImageGenerationRequest<'_>,
-        uncensored: bool,
+        _uncensored: bool,
         progress: Option<mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
         cancel: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
@@ -592,7 +592,7 @@ impl DirectProvider {
         let input = Input::Image {
             prompt: request.prompt.into(),
             references,
-            uncensored,
+            uncensored: false,
             width: size.width,
             height: size.height,
             steps: 8,
@@ -740,7 +740,6 @@ fn image_progress(
 fn direct_image_runtime() -> axiom_inference::ImageRuntimePolicy {
     let mut runtime = axiom_inference::ImageRuntimePolicy::default();
     runtime.image.default_aspect_ratio = "1:1".into();
-    runtime.image.uncensored_models = vec![MODEL.into()];
     runtime.extensions.insert(
         "reference_uses_default_size".into(),
         serde_json::json!(true),
@@ -1525,6 +1524,8 @@ mod tests {
     fn direct_image_contract_keeps_five_references_and_full_size_square_default() {
         let runtime = direct_image_runtime();
         runtime.validate().unwrap();
+        assert!(runtime.image.lora.is_none());
+        assert!(runtime.image.uncensored_models.is_empty());
         assert_eq!(runtime.image.max_references, 5);
         assert!(runtime.references_use_default_size());
         let size = runtime

@@ -125,29 +125,14 @@ impl SecureClient {
             .await
     }
 
-    /// Whether the chat model's catalog tags select the uncensored image
-    /// adapter. Uses the accepted catalog, refreshing it when absent or stale;
-    /// an unknown chat model uses the standard adapter.
+    /// The uncensored image adapter is temporarily disabled for every chat
+    /// model, including tagged models and regeneration of older images.
     async fn uncensored_image_policy(
         &self,
-        chat_model_id: &str,
-        cancellation: &CancellationToken,
+        _chat_model_id: &str,
+        _cancellation: &CancellationToken,
     ) -> Result<bool> {
-        let tagged = |models: &[ModelInfo]| {
-            models
-                .iter()
-                .find(|model| model.id == chat_model_id)
-                .is_some_and(|model| model.has_tag(axiom_inference::UNCENSORED_MODEL_TAG))
-        };
-        {
-            let cache = self.catalog_cache.read().await;
-            if let Some(cached) = cache.as_ref()
-                && cached.fetched_at.elapsed() <= self.config.catalog_max_stale
-            {
-                return Ok(tagged(&cached.models));
-            }
-        }
-        Ok(tagged(&self.models(cancellation.clone()).await?))
+        Ok(false)
     }
 
     pub async fn generate_image(
@@ -632,7 +617,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_adapter_policy_follows_the_chat_models_uncensored_catalog_tag() {
+    async fn image_adapter_stays_disabled_for_tagged_and_untagged_models() {
         let config = installed_direct_config("https://relay.example");
         let client = SecureClient::new(config, ApiCredential::new("synthetic")).unwrap();
         let tag = |id: &str| axiom_inference::ModelTag {
@@ -659,7 +644,7 @@ mod tests {
         });
         let cancel = CancellationToken::new();
         for (chat_model, expected) in [
-            ("deepseek-v4-1-flash-1017-abliterated", true),
+            ("deepseek-v4-1-flash-1017-abliterated", false),
             ("tinfoil-deepseek-v4-1-flash", false),
             ("withdrawn-model", false),
         ] {
