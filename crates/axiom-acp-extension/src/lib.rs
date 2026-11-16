@@ -1226,6 +1226,10 @@ pub struct ListModelsRequest {}
 #[serde(rename_all = "camelCase")]
 pub struct ListModelsResponse {
     pub models: Vec<ModelInfo>,
+    /// Offerings whose provider is temporarily unavailable. Clients show them
+    /// greyed out and must not select them; they are never in `models`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable_models: Vec<ModelInfo>,
 }
 
 #[derive(

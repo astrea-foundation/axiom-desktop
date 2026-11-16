@@ -30,56 +30,70 @@ function withoutProviderSuffix(value: string, providerId: string, providerLabel:
 }
 
 function providerModels(response: ListModelsResponse): ProviderModel[] {
-  return response.models.map((model) => {
-    const providerId = model.providerId.trim();
-    const providerLabel = model.providerLabel.trim();
-    if (
-      !model.id.trim()
-      || !model.label.trim()
-      || !model.shortLabel.trim()
-      || !providerId
-      || !providerLabel
-      || !model.upstreamModel.trim()
-    ) throw new Error("AxiomCLI returned incomplete provider model metadata");
-    const label = withoutProviderSuffix(model.label, providerId, providerLabel);
-    const shortLabel = withoutProviderSuffix(model.shortLabel, providerId, providerLabel);
-    const inputPrice = model.inputPriceMicrousdPerMillionTokens ?? null;
-    const outputPrice = model.outputPriceMicrousdPerMillionTokens ?? null;
-    const validPrice = (value: number | null): boolean => value === null
-      || (Number.isSafeInteger(value) && value > 0);
-    if (
-      !validPrice(inputPrice)
-      || !validPrice(outputPrice)
-      || (inputPrice === null) !== (outputPrice === null)
-    ) throw new Error("AxiomCLI returned invalid provider pricing metadata");
-    return {
-      id: model.id,
-      label,
-      shortLabel,
-      providerId,
-      providerLabel,
-      model: model.upstreamModel.trim(),
-      supportedReasoningEfforts: explicitReasoningEfforts(model.thinkingLevels.filter(isReasoningEffort)),
-      inputPriceMicrousdPerMillionTokens: inputPrice,
-      outputPriceMicrousdPerMillionTokens: outputPrice,
-      contextWindowTokens: model.contextWindowTokens,
-      supportsImages: model.supportsImages,
-      fileMimeTypes: model.fileMimeTypes,
-      autoCompactThresholdTokens: model.autoCompactThresholdTokens,
-      // AxiomCLI already validated and sorted these; the native runtime applies the uncensored tag's image policy.
-      tags: (model.tags ?? []).map((tag) => ({
-        id: tag.id,
-        label: tag.label,
-        tone: tag.tone ?? "gray",
-        position: tag.position ?? 0,
-      })),
-    };
+  return response.models.map(providerModel).sort(compareModelPreference);
+}
+
+/** Display-only entries for providers that are temporarily down; a malformed one is dropped. */
+function unavailableProviderModels(response: ListModelsResponse, available: ProviderModel[]): ProviderModel[] {
+  return (response.unavailableModels ?? []).flatMap((model) => {
+    try {
+      return available.some((candidate) => candidate.id === model.id) ? [] : [providerModel(model)];
+    } catch {
+      return [];
+    }
   }).sort(compareModelPreference);
+}
+
+function providerModel(model: ListModelsResponse["models"][number]): ProviderModel {
+  const providerId = model.providerId.trim();
+  const providerLabel = model.providerLabel.trim();
+  if (
+    !model.id.trim()
+    || !model.label.trim()
+    || !model.shortLabel.trim()
+    || !providerId
+    || !providerLabel
+    || !model.upstreamModel.trim()
+  ) throw new Error("AxiomCLI returned incomplete provider model metadata");
+  const label = withoutProviderSuffix(model.label, providerId, providerLabel);
+  const shortLabel = withoutProviderSuffix(model.shortLabel, providerId, providerLabel);
+  const inputPrice = model.inputPriceMicrousdPerMillionTokens ?? null;
+  const outputPrice = model.outputPriceMicrousdPerMillionTokens ?? null;
+  const validPrice = (value: number | null): boolean => value === null
+    || (Number.isSafeInteger(value) && value > 0);
+  if (
+    !validPrice(inputPrice)
+    || !validPrice(outputPrice)
+    || (inputPrice === null) !== (outputPrice === null)
+  ) throw new Error("AxiomCLI returned invalid provider pricing metadata");
+  return {
+    id: model.id,
+    label,
+    shortLabel,
+    providerId,
+    providerLabel,
+    model: model.upstreamModel.trim(),
+    supportedReasoningEfforts: explicitReasoningEfforts(model.thinkingLevels.filter(isReasoningEffort)),
+    inputPriceMicrousdPerMillionTokens: inputPrice,
+    outputPriceMicrousdPerMillionTokens: outputPrice,
+    contextWindowTokens: model.contextWindowTokens,
+    supportsImages: model.supportsImages,
+    fileMimeTypes: model.fileMimeTypes,
+    autoCompactThresholdTokens: model.autoCompactThresholdTokens,
+    // AxiomCLI already validated and sorted these; the native runtime applies the uncensored tag's image policy.
+    tags: (model.tags ?? []).map((tag) => ({
+      id: tag.id,
+      label: tag.label,
+      tone: tag.tone ?? "gray",
+      position: tag.position ?? 0,
+    })),
+  };
 }
 
 export function useModelCatalog(agentState: ClientState, navigation: ReturnType<typeof useConversationNavigation>, setUiError: (error: string | null) => void) {
   const { surface, activeThreadId, activeThreadIdRef } = navigation;
   const [models, setModels] = useState<ProviderModel[]>([]);
+  const [unavailableModels, setUnavailableModels] = useState<ProviderModel[]>([]);
   const [modelId, setModelId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("provider_default");
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
@@ -138,12 +152,13 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     const api = window.axiomDesktop?.agent;
     if (!api || !agentState.connected || !desktopReady || agentState.account?.state !== "valid") {
       setModels([]);
+      setUnavailableModels([]);
       setModelCatalogError(null);
       return;
     }
     let cancelled = false;
     const scope = `${agentState.runtimeInstanceId}:${agentState.account.account?.id}`;
-    if (catalogScope.current !== scope) setModels([]);
+    if (catalogScope.current !== scope) { setModels([]); setUnavailableModels([]); }
     catalogScope.current = scope;
     setModelCatalogError(null);
     void api.listModels().then((response) => {
@@ -153,6 +168,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       const rememberedModel = preferredModelId.current;
       const nextModel = rememberedModel || available[0]!.id;
       setModels(available);
+      setUnavailableModels(unavailableProviderModels(response, available));
       if (!activeThreadIdRef.current) {
         const thinking = reconcileReasoningEffort(preferredReasoningEffort.current, available.find((model) => model.id === nextModel)?.supportedReasoningEfforts ?? []);
         setModelId(nextModel);
@@ -163,6 +179,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     }).catch((error: unknown) => {
       if (cancelled) return;
       setModels([]);
+      setUnavailableModels([]);
       const detail = desktopErrorMessage(error, "AxiomCLI could not load the model catalog.");
       setModelCatalogError(`Could not load models. Check your connection or refresh your account in Settings. ${detail}`);
     });
@@ -228,7 +245,9 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     });
   };
 
-  const modelStatusLabel = models.length && modelId && !selectedModel ? "Model unavailable" : !agentState.connected || !desktopReady
+  const modelStatusLabel = models.length && modelId && !selectedModel
+    ? unavailableModels.some((model) => model.id === modelId) ? "Model temporarily unavailable" : "Model unavailable"
+    : !agentState.connected || !desktopReady
     ? "Starting…"
     : !agentState.account || agentState.account.state === "starting"
       ? "Preparing your account…"
@@ -242,7 +261,7 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
             ? "Loading models…"
             : "Sign in for models";
   const refreshModels = useCallback(() => setModelCatalogRefresh((version) => version + 1), []);
-  const clearModels = useCallback(() => { setModels([]); setModelCatalogError(null); }, []);
+  const clearModels = useCallback(() => { setModels([]); setUnavailableModels([]); setModelCatalogError(null); }, []);
   const rememberSelection = useCallback((model: string, thinking: ReasoningEffort) => {
     preferredModelId.current = model;
     preferredReasoningEffort.current = thinking;
@@ -264,5 +283,5 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     setReasoningEffort(thinking);
     preferredReasoningEffort.current = thinking;
   };
-  return { models, modelId, selectedModel, effectiveReasoningEffort, desktopReady, modelCatalogError, modelStatusLabel, updateSettings, refreshModels, clearModels, rememberSelection, restorePreferredSelection, selectNewModel, selectNewThinking };
+  return { models, unavailableModels, modelId, selectedModel, effectiveReasoningEffort, desktopReady, modelCatalogError, modelStatusLabel, updateSettings, refreshModels, clearModels, rememberSelection, restorePreferredSelection, selectNewModel, selectNewThinking };
 }

@@ -66,24 +66,29 @@ test("reload and late bootstrap recover bytes without rolling back newer text", 
   const native = state(png(1024, 1024, 1024));
   const transport = new AgentStateTransport();
   transport.encode(native); // Event sent before the new preload subscribed.
-  const full = transport.encode(native, true);
+  const full = transport.snapshot(native);
   native.lastSequence = 9;
   native.sessions.thread!.timeline[0]!.text = "newer";
   const newer = transport.encode(native);
   const r = resources(), preload = new AgentStateImages(r.api);
-  assert.equal(image(preload.accept(newer)).imageUrl, undefined);
+  // A patch means nothing without the revision it was made from: it waits
+  // for the snapshot instead of being shown on its own.
+  assert.equal(newer.state, undefined);
+  assert.equal(preload.ingest(newer).state, null);
+  assert.equal(preload.needsSnapshot, true);
   const recovered = preload.accept(full);
+  assert.equal(preload.needsSnapshot, false);
   assert.equal(recovered.lastSequence, 9);
   assert.equal(recovered.sessions.thread!.timeline[0]!.text, "newer");
   assert.match(String(image(recovered).imageUrl), /^blob:/);
-  const reloaded = new AgentStateImages(resources().api).accept(transport.encode(native, true));
+  const reloaded = new AgentStateImages(resources().api).accept(transport.snapshot(native));
   assert.match(String(image(reloaded).imageUrl), /^blob:/);
 });
 
 test("logout, account switching and stale replies cannot retain or restore old image URLs", () => {
   const transport = new AgentStateTransport(), r = resources(), preload = new AgentStateImages(r.api);
   const native = state(png(1024, 1024, 1024));
-  const old = transport.encode(native, true);
+  const old = transport.snapshot(native);
   const oldUrl = image(preload.accept(old)).imageUrl;
   const signedOut = { ...native, account: { revision: 2, state: "signed_out" as const } };
   const logout = transport.encode(signedOut);
@@ -163,7 +168,7 @@ function lazyImages(count = 1, bytes = 1024) {
 test("lazy image state transfers no bytes and coalesces on-demand reads into stable cached URLs", async () => {
   const { native, replies } = lazyImages(8, 1024 * 1024);
   const transport = new AgentStateTransport(), r = resources(), preload = new AgentStateImages(r.api);
-  const packet = transport.encode(native, true);
+  const packet = transport.snapshot(native);
   const visible = preload.accept(packet);
   const id = String(image(visible).assetId);
   assert.equal(packet.images.length, 0);
@@ -185,7 +190,7 @@ test("lazy image state transfers no bytes and coalesces on-demand reads into sta
   await assert.rejects(other.readImage(packet.context!, id, async () => { throw new Error("must not read"); }), /no longer available/);
   preload.dispose();
   const reloaded = new AgentStateImages(r.api);
-  const snapshot = transport.encode(native, true);
+  const snapshot = transport.snapshot(native);
   const reloadId = String(image(reloaded.accept(snapshot)).assetId);
   assert.equal(snapshot.images.length, 0, "document reload also carries metadata only");
   assert.equal(calls, 1);

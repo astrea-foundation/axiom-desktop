@@ -146,6 +146,11 @@ phase `encrypting`, `moving_media`, `checking`, `finalizing` or `failed` and
 optional `completed`/`total` counters for that phase. During an upgrade the account
 state is `starting`, with no usable account/store context. Each progress update
 uses a newer account revision; final validation or failure has a later revision.
+After an account store opens, the final `valid` status is normally the validation
+that authorized opening it, re-published under that later revision without a
+second server request. The runtime validates again, after a `checking_sign_in`
+update, only when its authorization changed meanwhile or that result is no
+longer fresh.
 Clients must apply the usual account/runtime fences so delayed progress cannot
 replace a ready account. A failed upgrade publishes `unavailable`, recovery
 details and phase `failed`; `account/status` retries opening the existing store.

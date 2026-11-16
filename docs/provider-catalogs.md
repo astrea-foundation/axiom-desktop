@@ -32,6 +32,18 @@ the same provider preference order. Explicit configuration and remembered model
 choices take precedence. This is a default-selection preference, not an
 availability list; models are never substituted based on aliases or similar names.
 
+When a provider's backend catalog has been failing past that limit, the backend
+keeps listing the provider's last-known models as temporarily unavailable for up
+to a day. The native client requests them with `include_unavailable=true`, validates
+them like any other entry and keeps them apart from the selectable catalog: they
+are never a default, a saved preference or an inference target. AxiomCLI returns
+them as `unavailableModels` from `_axiom/models/list`. The Desktop picker shows
+them below the selectable models, greyed out and labelled "Temporarily
+unavailable", and greys out that provider's host filter. They return to normal on
+the first refresh after the provider recovers. A backend that restarted during
+the outage has no last-known models to list, and the TUI picker and browser chat
+still list selectable models only.
+
 An account that still needs to accept the current policies receives a catalog
 authorization error directing it to the hosted account page. Locally installed
 AstreaAI offerings must not hide this error by appearing as the entire catalog.

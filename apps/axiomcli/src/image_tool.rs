@@ -381,10 +381,9 @@ impl Tool for ViewImageTool {
     }
 }
 
-async fn image_result(
+fn image_result(
     context: &ToolContext,
     image: axiom_secure_client::GeneratedImage,
-    cancellation: CancellationToken,
 ) -> Result<ToolResult> {
     let id = context.images.add_generated(&image)?;
     let mut result = ToolResult::success(format!(
@@ -400,14 +399,6 @@ async fn image_result(
         call_id: String::new(),
         image: Box::new(image),
     });
-    // A preview failure must not hide a completed, authenticated generation or
-    // invite another paid request. The original remains in the catalog/UI.
-    if let Ok(preview) = context.images.view(&id, cancellation).await {
-        result.images.push(preview);
-        result.content.push_str(" A preview is supplied as visual input after the tool responses for vision-capable chat models. Inspect it directly; do not call view_image again for this result.");
-    } else {
-        result.content.push_str(" The image was created, but its visual preview is unavailable. Do not claim to have inspected it or regenerate it automatically.");
-    }
     Ok(result)
 }
 
@@ -579,7 +570,7 @@ impl Tool for ImageGenerationTool {
                 }
             }
         };
-        image_result(context, image, cancellation).await
+        image_result(context, image)
     }
 }
 
@@ -1014,8 +1005,8 @@ pub(crate) mod tests {
         assert_eq!(catalog.0.lock().unwrap().len(), 50);
     }
 
-    #[tokio::test]
-    async fn completed_generation_is_preserved_when_preview_preparation_is_cancelled() {
+    #[test]
+    fn completed_generation_is_ready_without_preparing_a_model_preview() {
         let context = ToolContext {
             model_id: "vision".into(),
             session_id: SessionId::new(),
@@ -1026,14 +1017,14 @@ pub(crate) mod tests {
         };
         let generated = generated_fixture();
         let image_id = format!("img_{}", generated.request_id);
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let result = image_result(&context, generated.clone(), cancellation)
-            .await
-            .unwrap();
+        let result = image_result(&context, generated.clone()).unwrap();
         assert!(result.success);
         assert!(result.images.is_empty());
-        assert!(result.content.contains("visual preview is unavailable"));
+        assert!(
+            result
+                .content
+                .contains("It is displayed in this conversation")
+        );
         assert!(result.events.iter().any(|event| matches!(event,
             AppEvent::ImageGenerated { image, .. } if image.as_ref() == &generated
         )));

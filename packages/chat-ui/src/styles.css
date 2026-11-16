@@ -822,25 +822,70 @@ input {
   }
 }
 
-.chat-preparation-activity span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 96px;
-  background: linear-gradient(90deg, transparent, var(--color-brand), transparent);
-  animation: chat-preparation-sweep 1.6s ease-in-out infinite;
-}
-@keyframes chat-preparation-sweep {
-  from { left: -96px; }
-  to { left: 100%; }
-}
 .chat-preparation-pulse { animation: chat-preparation-pulse 2s ease-in-out infinite; }
 @keyframes chat-preparation-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-preparation-activity span { animation: none; left: 0; }
   .chat-preparation-pulse { animation: none; }
+}
+.load-progress-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--wash-chip);
+}
+.load-progress-fill,
+.load-progress-active,
+.load-progress-sweep {
+  position: absolute;
+  inset: 0 auto 0 0;
+}
+.load-progress-fill {
+  border-radius: inherit;
+  background: var(--color-brand);
+  transition: width 0.3s ease-out;
+}
+/* The running step: tinted, with motion only inside its own span. */
+.load-progress-active {
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-brand) 22%, transparent);
+  transition: left 0.3s ease-out, width 0.3s ease-out;
+}
+.load-progress-active::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 60%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-brand) 70%, transparent), transparent);
+  animation: load-progress-sweep 1.6s ease-in-out infinite;
+}
+.load-progress-sweep {
+  width: 30%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--color-brand), transparent);
+  animation: load-progress-sweep 1.6s ease-in-out infinite;
+}
+@keyframes load-progress-sweep {
+  from { left: -60%; }
+  to { left: 100%; }
+}
+.load-progress-meta {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .load-progress-fill,
+  .load-progress-active { transition: none; }
+  .load-progress-active::after { animation: none; display: none; }
+  .load-progress-sweep { animation: none; left: 0; width: 100%; opacity: 0.45; }
 }
 .animate-fade-in {
   animation: fade-in 0.35s ease-out both;

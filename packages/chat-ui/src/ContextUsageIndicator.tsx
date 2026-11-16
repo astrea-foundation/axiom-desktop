@@ -126,7 +126,7 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
             <circle cx="16" cy="16" r="13" strokeWidth="2.5" stroke="currentColor" pathLength="100" strokeDasharray={`${fill} 100`} strokeLinecap={fill > 0 ? "round" : "butt"} />
           </svg>
           <span aria-hidden="true" className="text-[9px] font-medium tabular-nums">
-            {view.percentage === null ? "N/A" : Math.floor(view.percentage)}
+            {view.percentage === null ? null : Math.floor(view.percentage)}
           </span>
         </span>
       </button>

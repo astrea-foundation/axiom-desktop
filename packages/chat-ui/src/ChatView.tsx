@@ -28,6 +28,7 @@ interface ChatViewProps {
   onContinue?: () => Promise<void>;
   isStreaming: boolean;
   models: ProviderModel[];
+  unavailableModels?: ProviderModel[];
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
@@ -61,6 +62,7 @@ export function ChatView({
   onContinue,
   isStreaming,
   models,
+  unavailableModels,
   selectedModelId,
   modelStatusLabel,
   onModelChange,
@@ -131,6 +133,7 @@ export function ChatView({
             onStop={onStop}
             isStreaming={isStreaming}
             models={models}
+            unavailableModels={unavailableModels}
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}

@@ -6,6 +6,7 @@ import { AstreaBanner } from "./components/AstreaBanner";
 import { ChatView } from "./components/ChatView";
 import { DeleteConfirmationDialog } from "./components/DeleteConfirmationDialog";
 import { DismissibleNotice } from "./components/DismissibleNotice";
+import { LoadProgressBar } from "./components/LoadProgressBar";
 import { MessageQueue } from "./components/MessageQueue";
 import { OverflowTitle } from "./components/OverflowTitle";
 import { ProxyView } from "./components/ProxyView";
@@ -51,7 +52,7 @@ export function App() {
   const navigation = useConversationNavigation();
   const { surface, setSurface, activeThreadId, cancelThreadPreparation } = navigation;
   const catalog = useModelCatalog(agentState, navigation, setUiError);
-  const { models, modelId, effectiveReasoningEffort, modelCatalogError, modelStatusLabel, updateSettings } = catalog;
+  const { models, unavailableModels, modelId, effectiveReasoningEffort, modelCatalogError, modelStatusLabel, updateSettings } = catalog;
   const closeAccountScreen = useCallback(() => setAccountScreen(null), []);
   useEffect(() => {
     if (accountScreenOpen) return;
@@ -332,6 +333,7 @@ export function App() {
                 onStop={stopStream}
                 isStreaming={isStreaming}
                 models={models}
+                unavailableModels={unavailableModels}
                 selectedModelId={modelId || models[0]?.id || ""}
                 modelStatusLabel={modelStatusLabel}
                 onModelChange={(id) => updateSettings(id, undefined)}
@@ -364,7 +366,13 @@ export function App() {
                       <button type="button" className="rounded-md bg-[var(--wash-row)] px-3 py-2" onClick={showWelcome}>New thread</button>
                     </div>
                   </>
-                ) : "Loading thread…"}
+                ) : (
+                  // One native load request; no partial counts exist, so the bar stays indeterminate.
+                  <div className="w-full max-w-[280px] px-6">
+                    <p className="mb-3 text-center">Loading thread…</p>
+                    <LoadProgressBar label="Loading thread" />
+                  </div>
+                )}
               </div>
             ) : (
               <WelcomeView
@@ -379,6 +387,7 @@ export function App() {
                 onDraftChange={composeDraft}
                 onSubmit={() => void submitDraft()}
                 models={models}
+                unavailableModels={unavailableModels}
                 selectedModelId={modelId || models[0]?.id || ""}
                 modelStatusLabel={modelStatusLabel}
                 onModelChange={catalog.selectNewModel}

@@ -1804,11 +1804,11 @@ for (const platform of ["linux", "win32", "darwin"]) {
     try {
       const indicator = page.locator("[data-context-usage]");
       await indicator.waitFor();
-      assert.equal(await indicator.innerText(), "N/A");
+      assert.equal(await indicator.innerText(), "");
       assert.doesNotMatch(await page.locator(".composer-shell").innerText(), /Ctrl|⌘|↵/);
       await page.locator('[data-thread-id="old-thread"]').click();
       await page.locator("textarea").waitFor();
-      assert.equal(await indicator.innerText(), "N/A");
+      assert.equal(await indicator.innerText(), "");
       const setUsage = (total: number, modelId = "test-model") => page.evaluate((usage) => (window as any).__deletionTest.setContextUsage(usage), {
         inputTokens: total - 1_000, outputTokens: 1_000, modelId,
         reportedAt: "2026-09-07T00:00:00Z", contextWindowTokens: 100_000, autoCompactThresholdTokens: 85_000,
@@ -1862,7 +1862,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
         await page.screenshot({ path: "/tmp/axiom-context-usage.png" });
       }
       await page.getByRole("button", { name: "New thread", exact: true }).click();
-      assert.equal(await indicator.innerText(), "N/A");
+      assert.equal(await indicator.innerText(), "");
       await page.locator("textarea").fill("Composer still works");
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
@@ -2661,7 +2661,10 @@ test("decryption screen replaces the composer, preserves drafts and keeps Settin
     assert.equal(await status.locator('li[aria-current="step"]').innerText(), "Decrypt chats\nIn progress");
     assert.match(await status.innerText(), /on this device/);
     assert.equal(await page.getByRole("alert").count(), 0, (await page.getByRole("alert").allTextContents()).join("; "));
-    assert.equal(await page.getByRole("progressbar").count(), 0);
+    // The bar reports observed native stages only; decryption is one indivisible open.
+    const progress = status.getByRole("progressbar", { name: "Chat preparation progress", exact: true });
+    assert.equal(await progress.getAttribute("aria-valuenow"), "75");
+    assert.equal(await progress.getAttribute("aria-valuetext"), "Step 4 of 4: Decrypt chats");
     assert.equal(await page.getByRole("button", { name: "Send", exact: true }).count(), 0);
     assert.equal(await page.locator("textarea[data-chat-input]").count(), 0);
     assert.equal(await page.getByRole("button", { name: "Web", exact: true }).count(), 0);
@@ -2675,7 +2678,7 @@ test("decryption screen replaces the composer, preserves drafts and keeps Settin
     }
     await page.setViewportSize({ width: 720, height: 740 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    assert.equal(await page.locator(".chat-preparation-activity span").evaluate(element => getComputedStyle(element).animationName), "none");
+    assert.equal(await status.locator(".load-progress-active").evaluate(element => getComputedStyle(element, "::after").animationName), "none");
     if (process.env.AXIOM_STARTUP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STARTUP_CAPTURE_DIR}/startup-narrow.png`, animations: "disabled" });
     await page.setViewportSize({ width: 1320, height: 900 });
     await page.getByRole("button", { name: "Account menu", exact: true }).click();
@@ -3767,6 +3770,45 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
     await picker.getByRole("textbox", { name: "Search models" }).fill("new");
     assert.equal(await rows.count(), 1);
     assert.match(await rows.first().innerText(), /^MiniMax M3/);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("model picker greys out the models of a temporarily unavailable provider", async () => {
+  const model = (id: string, label: string, providerId: string, priced = true) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel: id, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
+    autoCompactThresholdTokens: 27853, supportsImages: false, fileMimeTypes: [],
+    ...(priced ? { inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000 } : {}),
+  });
+  const catalog = {
+    models: [model("tinfoil-deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "tinfoil"), model("tinfoil-kimi-k3", "Kimi K3", "tinfoil")],
+    unavailableModels: [model("near-qwen", "Qwen3.6 35B", "near", false), model("near-minimax", "MiniMax M3", "near", false), { id: "broken" }],
+  } as unknown as ListModelsResponse;
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
+  try {
+    await page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Choose a model" });
+    const rows = picker.getByRole("group", { name: "Models" }).getByRole("button", { includeHidden: true });
+    assert.equal(await rows.count(), 4);
+    assert.deepEqual(await rows.evaluateAll(buttons => buttons.map(button => (button as HTMLButtonElement).disabled)), [false, false, true, true]);
+    assert.match(await rows.nth(2).innerText(), /NEAR AI[\s\S]*Temporarily unavailable/);
+    assert.match(await picker.locator('[aria-live="polite"]').innerText(), /^2 models, 2 temporarily unavailable$/);
+    const near = picker.getByRole("group", { name: "Filter by host" }).locator("button", { hasText: "NEAR AI" });
+    assert.equal(await near.isDisabled(), true);
+    assert.equal(await near.getAttribute("title"), "NEAR AI is temporarily unavailable");
+    await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
+    await picker.screenshot({ path: "/Users/salt/local-projects/axiom/artifacts/model-picker-unavailable-provider.png" });
+
+    // An unavailable row cannot become the selection.
+    await rows.nth(2).click({ force: true });
+    assert.equal(await picker.isVisible(), true);
+    await picker.getByRole("textbox", { name: "Search models" }).fill("qwen");
+    assert.equal(await rows.count(), 1);
+    assert.equal(await rows.first().isDisabled(), true);
+    await rows.first().click({ force: true });
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

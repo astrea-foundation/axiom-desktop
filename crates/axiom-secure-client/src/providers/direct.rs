@@ -588,6 +588,7 @@ impl DirectProvider {
                 .await;
         }
         let updates = progress.clone();
+        let mut previous_update = None;
         let input = Input::Image {
             prompt: request.prompt.into(),
             references,
@@ -615,24 +616,15 @@ impl DirectProvider {
                 None,
                 move |frame| {
                     let updates = updates.clone();
+                    let update = image_progress(&frame, previous_update);
+                    if let Ok(Some(update)) = &update {
+                        previous_update = Some(*update);
+                    }
                     async move {
-                        if let Some(tx) = updates {
-                            let update = match frame.kind.as_str() {
-                                "accepted" => Some(axiom_inference::ImageGenerationProgress {
-                                    stage: axiom_inference::ImageGenerationStage::Generating,
-                                    percent: 1,
-                                }),
-                                "image_manifest" => {
-                                    Some(axiom_inference::ImageGenerationProgress {
-                                        stage: axiom_inference::ImageGenerationStage::Finishing,
-                                        percent: 99,
-                                    })
-                                }
-                                _ => None,
-                            };
-                            if let Some(update) = update {
-                                let _ = tx.send(update).await;
-                            }
+                        if let Some(update) = update?
+                            && let Some(tx) = updates
+                        {
+                            let _ = tx.send(update).await;
                         }
                         Ok(())
                     }
@@ -712,6 +704,39 @@ impl DirectProvider {
         })
     }
 }
+
+fn image_progress(
+    frame: &axiom_pool_protocol::frames::Frame,
+    previous: Option<axiom_inference::ImageGenerationProgress>,
+) -> anyhow::Result<Option<axiom_inference::ImageGenerationProgress>> {
+    use axiom_inference::{ImageGenerationProgress, ImageGenerationStage};
+    let update = match frame.kind.as_str() {
+        "accepted" => ImageGenerationProgress {
+            stage: ImageGenerationStage::Generating,
+            percent: 1,
+        },
+        "usage" => {
+            let usage: axiom_pool_protocol::types::Usage =
+                serde_json::from_value(frame.data.clone())?;
+            anyhow::ensure!(usage.image_steps <= 8, "invalid image sampling progress");
+            ImageGenerationProgress {
+                stage: ImageGenerationStage::Generating,
+                percent: u8::try_from(1 + usage.image_steps * 94 / 8)?,
+            }
+        }
+        "image_manifest" => ImageGenerationProgress {
+            stage: ImageGenerationStage::Finishing,
+            percent: 99,
+        },
+        _ => return Ok(None),
+    };
+    anyhow::ensure!(
+        update.valid_after(previous),
+        "image progress went backwards"
+    );
+    Ok(Some(update))
+}
+
 fn direct_image_runtime() -> axiom_inference::ImageRuntimePolicy {
     let mut runtime = axiom_inference::ImageRuntimePolicy::default();
     runtime.image.default_aspect_ratio = "1:1".into();
@@ -1212,6 +1237,66 @@ fn evidence(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn progress_frame(kind: &str, steps: u64) -> axiom_pool_protocol::frames::Frame {
+        axiom_pool_protocol::frames::Frame {
+            protocol: axiom_pool_protocol::PROTOCOL.into(),
+            binding_sha256: "00".repeat(32),
+            request_wire_sha256: "11".repeat(32),
+            sequence: 0,
+            kind: kind.into(),
+            data: serde_json::to_value(axiom_pool_protocol::types::Usage {
+                image_steps: steps,
+                ..Default::default()
+            })
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn image_step_usage_advances_without_claiming_completion() {
+        use axiom_inference::ImageGenerationStage;
+        let mut previous = None;
+        for (kind, steps, expected) in [
+            ("accepted", 0, 1),
+            ("usage", 0, 1),
+            ("usage", 2, 24),
+            ("usage", 2, 24),
+            ("usage", 5, 59),
+            ("usage", 8, 95),
+            ("image_manifest", 0, 99),
+        ] {
+            let update = image_progress(&progress_frame(kind, steps), previous)
+                .unwrap()
+                .unwrap();
+            assert_eq!(update.percent, expected);
+            assert_eq!(
+                update.stage,
+                if expected == 99 {
+                    ImageGenerationStage::Finishing
+                } else {
+                    ImageGenerationStage::Generating
+                }
+            );
+            previous = Some(update);
+        }
+        assert!(
+            image_progress(&progress_frame("heartbeat", 0), previous)
+                .unwrap()
+                .is_none()
+        );
+        assert!(image_progress(&progress_frame("usage", 8), previous).is_err());
+    }
+
+    #[test]
+    fn image_step_usage_rejects_invalid_or_reversed_counters() {
+        let previous = image_progress(&progress_frame("usage", 4), None).unwrap();
+        assert!(image_progress(&progress_frame("usage", 2), previous).is_err());
+        assert!(image_progress(&progress_frame("usage", 9), None).is_err());
+        let mut frame = progress_frame("usage", 0);
+        frame.data["image_steps"] = serde_json::json!(1.5);
+        assert!(image_progress(&frame, None).is_err());
+    }
 
     fn text_input(text: &str) -> Input {
         Input::Chat {

@@ -47,7 +47,7 @@ import type {
 import { validatePrompt } from "./attachments.js";
 import { AcpError, ProtocolError } from "./errors.js";
 import { AcpProcess, type IncomingRequest, type SidecarProcessOptions } from "./process.js";
-import { AxiomStateStore, type ClientState } from "./state.js";
+import { AxiomStateStore, type ClientState, type StateChange } from "./state.js";
 import { publicSecurityEvidence } from "./security-evidence.js";
 import type {
   ElicitationOutcome,
@@ -193,7 +193,9 @@ export class AxiomAcpClient extends EventEmitter {
     this.process.on("request", (request: IncomingRequest) => this.onRequest(request));
     this.process.on("diagnostic", (diagnostic: string) => this.state.setDiagnostic(diagnostic));
     this.process.on("exit", (error: Error) => this.state.setConnected(false, error.message));
-    this.state.on("change", (state: ClientState) => { if (!state.connected) this.securityWarmups.clear(); this.emit("state", state); this.scheduleAccountingRecovery(state); });
+    // `state` is a shared immutable view; `change` names the sessions that may
+    // differ from the previous emission so transports can skip the rest.
+    this.state.on("change", (state: ClientState, change: StateChange) => { if (!state.connected) this.securityWarmups.clear(); this.emit("state", state, change); this.scheduleAccountingRecovery(state); });
   }
 
   private scheduleAccountingRecovery(state: ClientState): void {
@@ -321,11 +323,29 @@ export class AxiomAcpClient extends EventEmitter {
   async loadChat(threadId: string): Promise<SessionStartResult> {
     this.requireDesktopChatCwd();
     const accountContext = this.state.accountContextToken();
-    // Read the persisted workspace without presenting an unloaded thread as
-    // ready. The native load handler validates this exact directory identity.
+    // The native load handler accepts only the thread's saved directory, so the
+    // catalog entry is a safe first choice: a stale one is rejected before any
+    // session exists, and the saved workspace is then read once and retried.
+    const listed = this.state.snapshot().catalog.find((thread) => thread.threadId === threadId)?.cwd;
+    if (!listed) return this.loadSession(threadId, await this.savedWorkspace(threadId, accountContext));
+    let loaded: SessionStartResult;
+    try {
+      loaded = await this.requestSessionLoad(threadId, listed);
+    } catch (error) {
+      if (!(error instanceof AcpError)) throw error;
+      this.assertAccountContext(accountContext);
+      const saved = await this.savedWorkspace(threadId, accountContext);
+      if (saved === listed) throw error;
+      return this.loadSession(threadId, saved);
+    }
+    return this.finishSessionStart(threadId, listed, loaded, accountContext);
+  }
+
+  /** Read the persisted workspace without presenting an unloaded thread as ready. */
+  private async savedWorkspace(threadId: string, accountContext: number): Promise<string> {
     const page = await this.process.request<GetThreadTimelineResponse>("_axiom/thread/timeline", { threadId, limit: 1 });
     this.assertAccountContext(accountContext);
-    return this.loadSession(threadId, page.thread.cwd);
+    return page.thread.cwd;
   }
 
   async localPayload(request: LocalPayloadRequest): Promise<LocalPayloadResponse> {
@@ -374,31 +394,37 @@ export class AxiomAcpClient extends EventEmitter {
     this.assertInitialized();
     const accountContext = this.state.accountContextToken();
     const result = await this.process.request<SessionStartResult>("session/new", { cwd, mcpServers: [] });
-    this.assertAccountContext(accountContext);
-    this.state.addSession(result.sessionId, cwd);
-    if (result.modes) this.state.setModes(result.sessionId, result.modes.currentModeId, result.modes.availableModes);
-    if (result.configOptions) this.state.setConfig(result.sessionId, result.configOptions);
-    await this.refreshThread(result.sessionId);
-    if (this.supportsMcp) await this.desktopMcp({ threadId: result.sessionId, action: { kind: "list" } });
+    await this.finishSessionStart(result.sessionId, cwd, result, accountContext);
     return result;
   }
 
   async loadSession(threadId: string, cwd: string): Promise<SessionStartResult> {
-    this.assertInitialized();
     const accountContext = this.state.accountContextToken();
-    const result = await this.process.request<SessionStartResult>("session/load", {
+    return this.finishSessionStart(threadId, cwd, await this.requestSessionLoad(threadId, cwd), accountContext);
+  }
+
+  private requestSessionLoad(threadId: string, cwd: string): Promise<SessionStartResult> {
+    this.assertInitialized();
+    return this.process.request<SessionStartResult>("session/load", {
       sessionId: threadId, cwd, mcpServers: [],
       // Desktop atomically restores the authoritative timeline below. Replaying
       // every saved event first transfers all generated images a second time
       // and publishes a growing state snapshot for each historical event.
       ...(this.desktopBootstrap ? { _meta: { axiom: { skipHistoryReplay: true } } } : {}),
     });
+  }
+
+  /** Expose a session only after the native runtime has created or loaded it. */
+  private async finishSessionStart(threadId: string, cwd: string, result: SessionStartResult, accountContext: number): Promise<SessionStartResult> {
     this.assertAccountContext(accountContext);
     this.state.addSession(threadId, cwd);
     if (result.modes) this.state.setModes(threadId, result.modes.currentModeId, result.modes.availableModes);
     if (result.configOptions) this.state.setConfig(threadId, result.configOptions);
-    await this.refreshThread(threadId);
-    if (this.supportsMcp) await this.desktopMcp({ threadId, action: { kind: "list" } });
+    // The authoritative timeline and the thread's MCP selection are independent reads.
+    await Promise.all([
+      this.refreshThread(threadId),
+      this.supportsMcp ? this.desktopMcp({ threadId, action: { kind: "list" } }) : undefined,
+    ]);
     return { ...result, sessionId: threadId };
   }
 
@@ -1156,6 +1182,8 @@ export class AxiomAcpClient extends EventEmitter {
     };
     this.interactions.set(interaction.id, { interaction, respond: incoming.respond });
     this.state.addInteraction(interaction);
+    // The interaction event must follow the state that lists it.
+    this.state.flush();
     this.emit("interaction", interaction);
   }
 

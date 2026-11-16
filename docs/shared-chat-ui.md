@@ -29,8 +29,11 @@ the previous dialog's draft.
 
 `WelcomeView` replaces the greeting and composer with `ChatPreparationScreen`
 while native account preparation is active. The host supplies observed phases;
-the screen never simulates stages or percentages. The native decryption stage
-is distinct from key retrieval. Storage failures keep recovery in that same
+the screen never simulates stages. Its `LoadProgressBar` shows the observed
+step position (“Step N of 4”) and never advances on a timer. The native
+decryption stage is distinct from key retrieval. `LoadProgressBar` is the shared
+accessible bar: determinate only for a supplied observed value, otherwise
+indeterminate. Storage failures keep recovery in that same
 surface, and the host retains drafts and focus outside it until ready.
 
 `VaultScreen` supplies callback-driven first-use password confirmation, recovery

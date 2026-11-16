@@ -18,9 +18,35 @@ heading names the native operation: checking the saved sign-in, updating the
 local account, unlocking the saved key, or **Decrypting your chats**. Decryption
 is reported only after obtaining the key and immediately before opening an
 existing encrypted database. Fresh stores and legacy migrations do not report
-that decryption stage. The screen shows only stages actually observed, with a
-subtle activity sweep and reduced-motion support; it invents no percentages,
-counts or completion times.
+that decryption stage. The screen lists only stages actually observed. Its
+progress bar reports the observed position in the fixed four-step pipeline
+(start, sign-in or account update, key, decryption) as “Step N of 4”, with motion
+only inside the running step. SQLCipher opens the database in one indivisible
+step, so the bar never advances on a timer and invents no per-chat counts or
+completion times. Reduced motion stops the sweep.
+
+Opening a saved thread shows “Loading thread…” with an indeterminate progress
+bar until its native session and transcript are ready; it reports no percentage.
+For listed chats, the catalog already supplies the saved workspace, so opening
+skips the preliminary timeline peek. After `session/load`, the authoritative
+timeline and MCP selection are read concurrently. A rejected stale catalog
+workspace is re-read once before loading the actual saved location.
+
+State changes share immutable views of untouched sessions and coalesce bursts
+within one event-loop turn. Each window gets a complete initial state, followed
+by structural patches through IPC, preload and the context bridge. Untouched
+sessions and timeline rows keep their identity in the renderer. Account/runtime
+changes replace the complete state, and a missing patch triggers snapshot
+recovery before later patches are applied. Generated image identities retain
+the same document-scoped validation and resource lifecycle.
+
+The saved sign-in is checked with the server once per startup, before the local
+account store is opened. When the store is ready, the native runtime publishes
+that same result under a newer account revision instead of asking the server
+again. It repeats the check only if authorization changed while the store was
+opening (a different credential, account or session), the store was closed, or
+more than 30 seconds passed, as during a long storage update. A result for any
+account other than the one whose store was opened is reported as unavailable.
 
 The textbox, model picker, Web, Agent and Send controls are absent during
 preparation. Drafts remain in local state and return with the composer when the
@@ -438,7 +464,8 @@ to the provider.
 A verified `length` finish reason is shown as an output-limit notice, with the
 option to ask for continuation. The usage meter is not a draft estimate or cumulative charge. Reports
 survive reload, and model switches do not rescale old counts against a new model.
-No report is shown as unknown, rather than fabricated zero usage.
+The ring stays empty until a usage percentage is available; the usage panel
+describes missing reports as unavailable.
 
 Hover, focus or click the meter to see context use and the compaction threshold.
 Request records are selected by their start timestamps, independent of the random

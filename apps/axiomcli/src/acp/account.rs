@@ -44,6 +44,7 @@ pub(super) fn account_status(
             responder,
             await_request_future(&request_cancellation, ctx_auth.validate_with_revision(),).await
         );
+        let validated_at = std::time::Instant::now();
         let mut validation = validation_status_if_current(&ctx_auth, validation);
         let switch_target = match (&validation.status, &ctx_store) {
             (ValidationStatus::Valid(account), Some(store))
@@ -86,14 +87,25 @@ pub(super) fn account_status(
                 .await
                 .map_err(agent_error)
             );
-            super::publish_account_preparing(
-                &connection,
-                &ctx_extension_state,
-                &ctx_auth,
-                extension::AccountPreparationPhase::CheckingSignIn,
-            )?;
-            validation =
-                validation_status_if_current(&ctx_auth, ctx_auth.validate_with_revision().await);
+            // The switch published preparation events with revisions later
+            // than the validation that authorized it. Re-publish that exact
+            // result under a fresh revision. Ask the server again only when
+            // authorization changed meanwhile, the store was closed, or the
+            // result is no longer fresh; local chats do not wait behind a
+            // second round trip otherwise.
+            let republished = ctx_auth.republish_validation(&validation, validated_at.elapsed());
+            validation = if let Some(current) = republished {
+                current
+            } else {
+                super::publish_account_preparing(
+                    &connection,
+                    &ctx_extension_state,
+                    &ctx_auth,
+                    extension::AccountPreparationPhase::CheckingSignIn,
+                )?;
+                validation_status_if_current(&ctx_auth, ctx_auth.validate_with_revision().await)
+            }
+            .for_prepared_account(target.as_deref());
         }
         let status = extension_account_status(validation);
         if switch_target.is_some() {

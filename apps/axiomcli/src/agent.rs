@@ -409,6 +409,13 @@ pub trait TurnRunner: Send + Sync {
             .collect())
     }
 
+    /// Offerings the latest discovery reported as temporarily unavailable
+    /// because their provider is down. Pickers show them greyed out; they are
+    /// never part of [`Self::available_model_details`] and cannot be selected.
+    async fn unavailable_model_details(&self) -> Vec<axiom_inference::ModelInfo> {
+        Vec::new()
+    }
+
     /// Verify the selected model's attestation and secure-session binding
     /// without sending a prompt.
     async fn verify_security(
@@ -3656,6 +3663,19 @@ impl TurnRunner for AgentEngine {
                 if tool_result.success && !tool_images.is_empty() {
                     image_observations.push(image_observation(&call.id, tool_images));
                 }
+                let generated_preview = if tool_result.success
+                    && model.supports_images
+                    && call.function.name == "generate"
+                {
+                    tool_result.events.iter().find_map(|event| match event {
+                        AppEvent::ImageGenerated { image, .. } => {
+                            Some(format!("img_{}", image.request_id))
+                        }
+                        _ => None,
+                    })
+                } else {
+                    None
+                };
                 for mut event in std::mem::take(&mut tool_result.events) {
                     if let AppEvent::ImageGenerated { call_id, .. } = &mut event {
                         call_id.clone_from(&call.id);
@@ -3755,6 +3775,16 @@ impl TurnRunner for AgentEngine {
                     })
                     .await
                     .map_err(|_| AxiomError::Cancelled)?;
+                // The verified original can be displayed before preparing the
+                // model-only preview. Preview failure never repeats generation.
+                if let Some(image_id) = generated_preview {
+                    if let Ok(preview) = images.view(&image_id, cancellation.child_token()).await {
+                        image_observations.push(image_observation(&call.id, vec![preview]));
+                        tool_result.content.push_str(" A preview is supplied as visual input after the tool responses. Inspect it directly; do not call view_image again for this result.");
+                    } else {
+                        tool_result.content.push_str(" The image was created, but its visual preview is unavailable. Do not claim to have inspected it or regenerate it automatically.");
+                    }
+                }
                 if !tool_result.changed_paths.is_empty() {
                     self.change_sets
                         .lock()
@@ -3892,6 +3922,17 @@ impl TurnRunner for AgentEngine {
         models.dedup_by(|left, right| left.id == right.id);
         models.sort_by(compare_model_preference);
         Ok(models)
+    }
+
+    async fn unavailable_model_details(&self) -> Vec<axiom_inference::ModelInfo> {
+        let mut models = self.provider.unavailable_models().await;
+        models.retain(|model| {
+            !model.id.trim().is_empty() && !model.id.chars().any(char::is_whitespace)
+        });
+        models.sort_by(|left, right| left.id.cmp(&right.id));
+        models.dedup_by(|left, right| left.id == right.id);
+        models.sort_by(compare_model_preference);
+        models
     }
 
     async fn recover_accounting(

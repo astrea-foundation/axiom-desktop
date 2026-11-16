@@ -8,6 +8,7 @@ import {
   AxiomAcpClient,
   DESKTOP_SIDECAR_INHERITED_ENV,
   type ClientState,
+  type StateChange,
   type DesktopBootstrapResponse,
   type ConfigureDesktopAgentRequest,
   type ElicitationOutcome,
@@ -35,11 +36,12 @@ function rendererTransport(contents: WebContents): AgentStateTransport {
   return transport;
 }
 
-function broadcast(channel: string, value: unknown): void {
+function broadcast(channel: string, value: unknown, change?: StateChange): void {
   for (const window of BrowserWindow.getAllWindows()) {
-    const payload = channel === AGENT_STATE_CHANNEL
-      ? rendererTransport(window.webContents).encode(value as ClientState) : value;
-    window.webContents.send(channel, payload);
+    if (channel !== AGENT_STATE_CHANNEL) { window.webContents.send(channel, value); continue; }
+    // Each window receives only what differs from the state it already holds.
+    const packet = rendererTransport(window.webContents).encode(value as ClientState, change);
+    if (packet.state || packet.patch) window.webContents.send(channel, packet);
   }
 }
 
@@ -73,7 +75,7 @@ export async function resolveSidecar(): Promise<string> {
 
 export class AgentSidecar {
   rendererState(contents: WebContents) {
-    return rendererTransport(contents).encode(this.state(), true);
+    return rendererTransport(contents).snapshot(this.state());
   }
   rendererImage(contents: WebContents, context: string, id: string) {
     const client = this.requireClient();
@@ -138,13 +140,13 @@ export class AgentSidecar {
         unsetEnv: ["AXIOM_API_KEY"],
       });
       this.initializingClient = client;
-      client.on("state", (state: ClientState) => {
+      client.on("state", (state: ClientState, change?: StateChange) => {
         const visibleState = this.client === client
           ? state
           : { ...state, connected: false };
         this.lastState = visibleState;
         this.stateChanged(visibleState);
-        broadcast(AGENT_STATE_CHANNEL, visibleState);
+        broadcast(AGENT_STATE_CHANNEL, visibleState, change);
       });
       client.on("interaction", (interaction: PendingInteraction) => {
         broadcast(AGENT_INTERACTION_CHANNEL, interaction);

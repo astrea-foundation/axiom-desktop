@@ -26,9 +26,8 @@ pub(super) fn list_models(
                     agent_client_protocol::Error::request_cancelled(),
                 );
             }
-        }
-        .into_iter()
-        .map(|model| {
+        };
+        let describe = |model: axiom_inference::ModelInfo| {
             if model.id.trim().is_empty()
                 || model.label.trim().is_empty()
                 || model.short_label.trim().is_empty()
@@ -73,10 +72,25 @@ pub(super) fn list_models(
                 tags: model.tags.into_iter().map(Into::into).collect(),
                 thinking_levels,
             })
-        })
-        .collect::<agent_client_protocol::Result<Vec<_>>>();
+        };
+        // Display-only entries for providers that are temporarily down. They
+        // accompany the discovery above and never fail the catalog.
+        let unavailable_models = ctx_runner
+            .unavailable_model_details()
+            .await
+            .into_iter()
+            .filter(|unavailable| models.iter().all(|model| model.id != unavailable.id))
+            .filter_map(|model| describe(model).ok())
+            .collect();
+        let models = models
+            .into_iter()
+            .map(describe)
+            .collect::<agent_client_protocol::Result<Vec<_>>>();
         let models = respond_or_return!(responder, models);
-        responder.respond(ListModelsResponse { models })
+        responder.respond(ListModelsResponse {
+            models,
+            unavailable_models,
+        })
     })?;
     Ok(())
 }

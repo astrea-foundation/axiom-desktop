@@ -18,6 +18,7 @@ interface WelcomeViewProps {
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
   models: ProviderModel[];
+  unavailableModels?: ProviderModel[];
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
@@ -41,6 +42,7 @@ export function WelcomeView({
   onDraftChange,
   onSubmit,
   models,
+  unavailableModels,
   selectedModelId,
   modelStatusLabel,
   onModelChange,
@@ -128,6 +130,7 @@ export function WelcomeView({
             onSubmit={onSubmit}
             autoFocus={focusComposer}
             models={models}
+            unavailableModels={unavailableModels}
             selectedModelId={selectedModelId}
             modelStatusLabel={modelStatusLabel}
             onModelChange={onModelChange}

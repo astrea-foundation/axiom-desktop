@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ClientState } from "@axiom/axiom-acp-client";
+import type { ClientState, StateChange } from "@axiom/axiom-acp-client";
 import type { AgentImagePacket, AgentStatePacket } from "../shared/agent-state";
+import { diffState, type StatePatch } from "../shared/state-patch";
 import type { ReadImageResponse } from "@axiom/axiom-acp-client";
 
 type ImageRequest = { threadId: string; callId: string; sha256: string };
@@ -12,15 +13,31 @@ function validDimensions(width: unknown, height: unknown): width is number {
     && width <= 8192 && height <= 8192 && width % 32 === 0 && height % 32 === 0 && width * height <= 2048 * 2048;
 }
 
+// An image block is replaced as a whole, never patched field by field: preload
+// maps complete blocks to document-local resources.
+const imageBlock = (value: object) => (value as { type?: unknown }).type === "image";
+const define = (target: object, key: string, value: unknown) =>
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+
 /** One instance per webContents. Native image descriptors become opaque local
  * handles, and originals are read only on demand. Legacy inline state retains
- * its one-time binary transfer and explicit snapshot recovery behavior. */
+ * its one-time binary transfer and explicit snapshot recovery behavior.
+ *
+ * The transport keeps the projection it last sent to its window and sends only
+ * the difference. The first packet, every account/runtime identity change and
+ * every explicit snapshot carry the whole projection. */
 export class AgentStateTransport {
   private identity: string | null = null;
   private context: string | null = null;
   private generation = 0;
   private revision = 0;
   private images = new Map<string, Image>();
+  private sent: ClientState | null = null;
+  // Image keys referenced by each sent session and by everything outside sessions.
+  private sessionImages = new Map<string, Set<string>>();
+  private live = "";
+  private source: object | null = null;
+  private sourceRevision = 0;
 
   async readImage(context: string, id: string, read: (request: ImageRequest) => Promise<ReadImageResponse>): Promise<AgentImagePacket> {
     const current = () => context === this.context && this.context !== null
@@ -42,7 +59,21 @@ export class AgentStateTransport {
     return { generation: this.generation, context, id, bytes: Uint8Array.from(bytes).buffer, width: image.width, height: image.height };
   }
 
-  encode(state: ClientState, fullImages = false): AgentStatePacket {
+  /** Complete projection with every inline image, for a new or recovering document. */
+  snapshot(state: ClientState): AgentStatePacket {
+    return this.project(state, undefined, true);
+  }
+
+  /**
+   * Packet for a state change: the whole projection the first time and after an
+   * identity change, otherwise a patch. `change` comes with client emissions
+   * and lets untouched sessions be skipped; without it every session is compared.
+   */
+  encode(state: ClientState, change?: StateChange): AgentStatePacket {
+    return this.project(state, change, false);
+  }
+
+  private project(state: ClientState, change: StateChange | undefined, full: boolean): AgentStatePacket {
     const account = state.account;
     const identity = state.connected && state.runtimeInstanceId && account?.state === "valid" && account.account?.id
       ? `${state.runtimeInstanceId}\0${account.account.id}` : null;
@@ -51,17 +82,27 @@ export class AgentStateTransport {
       this.context = identity ? randomUUID() : null;
       this.generation++;
       this.images.clear();
+      // The next document state is never derived from the previous identity's.
+      this.sent = null;
+      this.sessionImages.clear();
+      this.live = "";
     }
+    // A hint is trusted only as the direct successor of the emission this
+    // transport encoded last; anything else compares every session.
+    const continuous = !!change && change.source === this.source && change.revision === this.sourceRevision + 1;
+    if (change) { this.source = change.source; this.sourceRevision = change.revision; }
+    const previous = this.sent;
+    const touched = !full && continuous && change!.sessions ? new Set(change!.sessions) : null;
+
     const assets: AgentStatePacket["images"] = [];
-    const used = new Set<string>();
     const included = new Set<string>();
-    const copy = (value: unknown, threadId?: string, seen = new WeakMap<object, unknown>()): unknown => {
+    const copy = (value: unknown, used: Set<string>, threadId?: string, seen = new WeakMap<object, unknown>()): unknown => {
       if (!value || typeof value !== "object") return value;
       if (seen.has(value)) return seen.get(value);
       if (Array.isArray(value)) {
         const result: unknown[] = [];
         seen.set(value, result);
-        for (const item of value) result.push(copy(item, threadId, seen));
+        for (const item of value) result.push(copy(item, used, threadId, seen));
         return result;
       }
       const block = value as Record<string, unknown>;
@@ -100,7 +141,7 @@ export class AgentStateTransport {
           this.images.set(data, image);
         }
         used.add(data);
-        if ((fullImages || !image.sent) && !included.has(image.id)) {
+        if ((full || !image.sent) && !included.has(image.id)) {
           bytes ??= Buffer.from(data, "base64");
           assets.push({ id: image.id, bytes: Uint8Array.from(bytes).buffer, width: image.width, height: image.height });
           included.add(image.id);
@@ -110,17 +151,39 @@ export class AgentStateTransport {
       }
       const result: Record<string, unknown> = {};
       seen.set(value, result);
-      for (const [key, item] of Object.entries(block)) {
-        const content = value === state && key === "sessions"
-          ? Object.fromEntries(Object.entries(state.sessions).map(([id, session]) => [id, copy(session, id)]))
-          : copy(item, threadId, seen);
-        Object.defineProperty(result, key, { value: content, enumerable: true, configurable: true, writable: true });
-      }
+      for (const [key, item] of Object.entries(block)) define(result, key, copy(item, used, threadId, seen));
       return result;
     };
-    const visible = copy(state) as ClientState;
-    for (const data of this.images.keys()) if (!used.has(data)) this.images.delete(data);
-    return { version: 1, generation: this.generation, revision: ++this.revision,
-      context: this.context, state: visible, images: assets };
+
+    const used = new Set<string>();
+    const sessionImages = new Map<string, Set<string>>();
+    const next = {} as ClientState;
+    for (const [key, item] of Object.entries(state)) {
+      if (key !== "sessions" || !item || typeof item !== "object") { define(next, key, copy(item, used)); continue; }
+      const sessions: ClientState["sessions"] = {};
+      for (const [id, session] of Object.entries(item as ClientState["sessions"])) {
+        // A session the client did not touch is already projected; its
+        // image references stay live without visiting it again.
+        const kept = previous && touched && !touched.has(id) ? previous.sessions[id] : undefined;
+        const keptImages = kept ? this.sessionImages.get(id) : undefined;
+        const images = keptImages ?? new Set<string>();
+        define(sessions, id, kept && keptImages ? kept : copy(session, images, id));
+        sessionImages.set(id, images);
+        for (const image of images) used.add(image);
+      }
+      define(next, key, sessions);
+    }
+    for (const key of this.images.keys()) if (!used.has(key)) this.images.delete(key);
+    this.sessionImages = sessionImages;
+
+    const patch: StatePatch | undefined = previous ? diffState(previous, next, imageBlock) : undefined;
+    if (!previous || patch) { this.revision++; this.sent = next; }
+    const handles = [...used].map(key => this.images.get(key)!.id).sort();
+    const live = handles.join("\n");
+    const liveChanged = live !== this.live;
+    this.live = live;
+    const packet: AgentStatePacket = { version: 2, generation: this.generation, revision: this.revision, context: this.context, images: assets };
+    if (!previous || full) return { ...packet, state: this.sent!, live: handles };
+    return { ...packet, ...(patch ? { patch } : {}), ...(liveChanged ? { live: handles } : {}) };
   }
 }

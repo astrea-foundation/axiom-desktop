@@ -44,6 +44,8 @@ interface ChatComposerProps {
   preparing?: boolean;
   isStreaming?: boolean;
   models: ProviderModel[];
+  /** Models whose provider is temporarily down; shown greyed out in the picker. */
+  unavailableModels?: ProviderModel[];
   selectedModelId: string;
   modelStatusLabel: string;
   onModelChange: (modelId: string) => void;
@@ -77,6 +79,7 @@ export function ChatComposer({
   preparing = false,
   isStreaming = false,
   models,
+  unavailableModels,
   selectedModelId,
   modelStatusLabel,
   onModelChange,
@@ -231,6 +234,7 @@ export function ChatComposer({
               {openMenu === "model" && !modelSelectionLocked ? (
                 <ModelPicker
                   models={models}
+                  unavailableModels={unavailableModels}
                   selectedModelId={selectedModelId}
                   onSelect={(modelId) => {
                     if (modelSelectionLocked) return;

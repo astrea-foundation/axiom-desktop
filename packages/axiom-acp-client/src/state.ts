@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert";
 import { EventEmitter } from "node:events";
 import { ProtocolError } from "./errors.js";
 import { publicSecurityEvidence } from "./security-evidence.js";
@@ -105,6 +106,16 @@ export interface ClientState {
   billing: (BillingStatus & { credits?: import("@axiom/chat-core/creditBalances").CreditBalanceSummary | null }) | null;
   diagnostic: string;
   error: string | null;
+}
+
+/** Accompanies every "change" emission so consumers can skip untouched sessions. */
+export interface StateChange {
+  /** The emitting store; revisions are comparable only for one source. */
+  source: object;
+  /** Consecutive per source: this emission follows `revision - 1`. */
+  revision: number;
+  /** Sessions that may differ from the previous emission; null means any of them. */
+  sessions: string[] | null;
 }
 
 export interface ExtensionEventResult {
@@ -307,8 +318,26 @@ function settingsFromThread(thread: ThreadSummary): ThreadSettings {
   };
 }
 
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value) || Object.isFrozen(value)) return value;
+  seen.add(value);
+  for (const item of Object.values(value)) deepFreeze(item, seen);
+  return Object.freeze(value);
+}
+
 export class AxiomStateStore extends EventEmitter {
+  /** Tests set this: every shared view is checked against a complete copy and frozen. */
+  static verifyViews = false;
   private accountContextGeneration = 0;
+  // `snapshot()` returns one immutable view that shares every session untouched
+  // since the previous view. `stale` names sessions whose view must be copied
+  // again; `pending` names those changed since the last emission (null = all).
+  private view: ClientState | null = null;
+  private viewDirty = true;
+  private stale: Set<string> | null = null;
+  private pending: Set<string> | null = null;
+  private emitScheduled = false;
+  private emitRevision = 0;
   private securityContexts = new WeakMap<ClientSessionState, object>();
   // Text already included by either a stream update or an authoritative page.
   private textRevisions = new Map<string, number>();
@@ -326,8 +355,43 @@ export class AxiomStateStore extends EventEmitter {
     error: null,
   };
 
+  /**
+   * Immutable view of the current state. Callers must not mutate it: sessions
+   * that did not change are the same objects in consecutive views.
+   */
   snapshot(): ClientState {
-    return stateSnapshot(this.value);
+    if (!this.viewDirty && this.view) return this.view;
+    const previous = this.view, stale = this.stale;
+    let next: ClientState;
+    if (!previous || stale === null) next = stateSnapshot(this.value);
+    else {
+      const sessions: Record<string, ClientSessionState> = {};
+      for (const [id, session] of Object.entries(this.value.sessions)) {
+        const shared = stale.has(id) ? undefined : previous.sessions[id];
+        Object.defineProperty(sessions, id, { value: shared ?? stateSnapshot(session), enumerable: true, writable: true, configurable: true });
+      }
+      next = {} as ClientState;
+      for (const [key, item] of Object.entries(this.value)) {
+        Object.defineProperty(next, key, { value: key === "sessions" ? sessions : stateSnapshot(item), enumerable: true, writable: true, configurable: true });
+      }
+    }
+    if (AxiomStateStore.verifyViews) {
+      deepStrictEqual(next, stateSnapshot(this.value), "shared state view diverged from the store");
+      deepFreeze(next);
+    }
+    this.view = next;
+    this.viewDirty = false;
+    this.stale = new Set();
+    return next;
+  }
+
+  /** Publish any coalesced change now. Call before an event that depends on it. */
+  flush(): void {
+    if (!this.emitScheduled) return;
+    this.emitScheduled = false;
+    const sessions = this.pending ? [...this.pending] : null;
+    this.pending = new Set();
+    this.emit("change", this.snapshot(), { source: this, revision: ++this.emitRevision, sessions } satisfies StateChange);
   }
 
   accountContextToken(): number {
@@ -348,6 +412,7 @@ export class AxiomStateStore extends EventEmitter {
       throw new ProtocolError("AxiomCLI initialization runtime identity disagrees with its events");
     }
     this.value.runtimeInstanceId = runtimeInstanceId;
+    this.touch([]);
     // setConnected publishes this together with readiness after the client
     // finishes negotiation; subscribers never see connected with a null ID.
   }
@@ -358,16 +423,19 @@ export class AxiomStateStore extends EventEmitter {
     }
     this.value.connected = connected;
     this.value.error = error;
-    this.changed();
+    this.changed(connected ? [] : undefined);
+    // Connection identity is never deferred behind later work.
+    this.flush();
   }
 
   setDiagnostic(diagnostic: string): void {
     this.value.diagnostic = diagnostic;
-    this.changed();
+    this.changed([]);
   }
 
   setImageGenerationAvailable(available: boolean): void {
     this.value.imageGenerationAvailable = available;
+    this.touch([]);
   }
 
   // A different model, removed/reloaded session, account or runtime gets a new
@@ -389,7 +457,7 @@ export class AxiomStateStore extends EventEmitter {
     session.securityVerificationError = update.error ?? null;
     if (update.evidence !== undefined) session.securityEvidence = update.evidence;
     if (update.status) session.security = update.status;
-    this.changed();
+    this.changed([sessionId]);
   }
 
   private invalidateSecurity(session: ClientSessionState): void {
@@ -403,6 +471,8 @@ export class AxiomStateStore extends EventEmitter {
   setAccount(account: AccountStatus): void {
     if (!this.applyAccount(account)) return;
     this.changed();
+    // Account context is published atomically, before any later request.
+    this.flush();
   }
 
   private applyAccount(account: AccountStatus): boolean {
@@ -429,39 +499,39 @@ export class AxiomStateStore extends EventEmitter {
 
   setCollections(collections: CollectionState): void {
     if (collections.revision >= this.value.collections.revision) this.value.collections = collections;
-    this.changed();
+    this.changed([]);
   }
 
   setPreferences(preferences: ProfilePreferences): void {
     this.value.preferences = preferences;
-    this.changed();
+    this.changed([]);
   }
 
   setBilling(status: BillingStatus): void {
     if (this.value.billing && status.revision <= this.value.billing.revision) return;
     if (this.value.billing && status.ledgerSequence < this.value.billing.ledgerSequence) return;
     this.value.billing = { ...status, ...(this.value.billing?.credits ? {credits: this.value.billing.credits} : {}) };
-    this.changed();
+    this.changed([]);
   }
 
   setCreditBalances(summary: import("@axiom/chat-core/creditBalances").CreditBalanceSummary | null): void {
     if (!this.value.billing) return;
     if (summary && this.value.billing.credits && BigInt(summary.revision) < BigInt(this.value.billing.credits.revision)) return;
     this.value.billing = { ...this.value.billing, credits: summary };
-    this.changed();
+    this.changed([]);
   }
 
   addSession(sessionId: string, cwd: string): ClientSessionState {
     const session = (this.value.sessions[sessionId] ??= emptySession(sessionId, cwd));
     if (cwd) session.cwd = cwd;
-    this.changed();
+    this.changed([sessionId]);
     return session;
   }
 
   removeSession(sessionId: string): void {
     delete this.value.sessions[sessionId];
     this.textRevisions.delete(sessionId);
-    this.changed();
+    this.changed([sessionId]);
   }
 
   setCatalog(catalog: ThreadSummary[]): void {
@@ -480,7 +550,7 @@ export class AxiomStateStore extends EventEmitter {
     // A live delta may have advanced the session beyond the rename revision.
     // Update only its title, never roll back its stream/settings or load a chat.
     if (session) session.title = latest.title ?? null;
-    this.changed();
+    this.changed([thread.threadId]);
   }
 
   replaceTimeline(pages: GetThreadTimelineResponse[]): boolean {
@@ -499,7 +569,7 @@ export class AxiomStateStore extends EventEmitter {
     const existing = this.value.sessions[threadId];
     if (existing && revision < existing.threadRevision) {
       existing.needsResync = true;
-      this.changed();
+      this.changed([threadId]);
       return false;
     }
     const items = pages.flatMap((page) => page.items);
@@ -531,17 +601,23 @@ export class AxiomStateStore extends EventEmitter {
     session.timeline = items.map(fromDurable);
     this.textRevisions.set(threadId, revision);
     session.needsResync = false;
-    this.changed();
+    this.changed([threadId]);
     return true;
   }
 
   setDesktopMcp(response: DesktopMcpResponse, threadId?: string | null, resetSelections = false): void {
     this.value.mcp = response;
+    const touched: string[] = [];
     for (const session of Object.values(this.value.sessions)) {
-      if (session.desktopMcp) session.desktopMcp = { revision: response.revision, selectedTools: resetSelections ? [] : session.desktopMcp.selectedTools };
+      if (!session.desktopMcp) continue;
+      if (session.desktopMcp.revision !== response.revision || (resetSelections && session.desktopMcp.selectedTools.length)) touched.push(session.sessionId);
+      session.desktopMcp = { revision: response.revision, selectedTools: resetSelections ? [] : session.desktopMcp.selectedTools };
     }
-    if (threadId && this.value.sessions[threadId]) this.value.sessions[threadId].desktopMcp = { revision: response.revision, selectedTools: response.selectedTools };
-    this.changed();
+    if (threadId && this.value.sessions[threadId]) {
+      this.value.sessions[threadId].desktopMcp = { revision: response.revision, selectedTools: response.selectedTools };
+      touched.push(threadId);
+    }
+    this.changed(touched);
   }
 
   setDesktopAgent(response: ConfigureDesktopAgentResponse): void {
@@ -550,14 +626,14 @@ export class AxiomStateStore extends EventEmitter {
     const session = this.applyThreadSummary(response.thread);
     session.desktopAgent = response.agent;
     session.currentModeId = response.thread.profile;
-    this.changed();
+    this.changed([response.thread.threadId]);
   }
 
   setModes(sessionId: string, currentModeId: string, modes: SessionMode[]): void {
     const session = (this.value.sessions[sessionId] ??= emptySession(sessionId));
     session.currentModeId = currentModeId;
     session.modes = modes;
-    this.changed();
+    this.changed([sessionId]);
   }
 
   setConfig(sessionId: string, options: SessionConfigOption[]): void {
@@ -573,7 +649,7 @@ export class AxiomStateStore extends EventEmitter {
       }
       if (thinking) session.settings.thinkingLevel = thinking;
     }
-    this.changed();
+    this.changed([sessionId]);
   }
 
   setRunning(sessionId: string, running: boolean): void {
@@ -584,21 +660,24 @@ export class AxiomStateStore extends EventEmitter {
       session.compaction = null;
       session.toolCallDraftTurnId = null;
     }
-    this.changed();
+    this.changed([sessionId]);
   }
 
   addInteraction(interaction: PendingInteraction): void {
     if (!interaction.sessionId) return;
     const session = (this.value.sessions[interaction.sessionId] ??= emptySession(interaction.sessionId));
     session.interactions.push(interaction);
-    this.changed();
+    this.changed([interaction.sessionId]);
   }
 
   removeInteraction(interactionId: string): void {
+    const touched: string[] = [];
     for (const session of Object.values(this.value.sessions)) {
+      if (!session.interactions.some((item) => item.id === interactionId)) continue;
       session.interactions = session.interactions.filter((item) => item.id !== interactionId);
+      touched.push(session.sessionId);
     }
-    this.changed();
+    this.changed(touched);
   }
 
   standardUpdate(params: unknown): string | null {
@@ -618,11 +697,14 @@ export class AxiomStateStore extends EventEmitter {
       if (summary && typeof update.title === "string" && (!metadata || metadata.threadRevision >= summary.revision)) {
         summary.title = update.title;
         if (metadata) summary.revision = Math.max(summary.revision, metadata.threadRevision);
-        this.changed();
+        this.changed([]);
       }
       return null;
     }
     const session = (this.value.sessions[record.sessionId] ??= emptySession(record.sessionId));
+    // Every path below may alter this session, including those that return
+    // without publishing; the next view must copy it again either way.
+    this.touch([record.sessionId]);
     if (metadata) {
       if (metadata.threadRevision < session.threadRevision) return null;
       if (session.threadRevision > 0 && metadata.threadRevision > session.threadRevision + 1) {
@@ -711,7 +793,7 @@ export class AxiomStateStore extends EventEmitter {
         }
       }
     }
-    this.changed();
+    this.changed([record.sessionId]);
     return session.needsResync ? record.sessionId : null;
   }
 
@@ -727,6 +809,12 @@ export class AxiomStateStore extends EventEmitter {
     const sequenceGap = previousRuntime === notification.runtimeInstanceId
       && notification.sequence > this.value.lastSequence + 1;
     const fullResync = runtimeChanged || sequenceGap;
+    // Account, runtime and gap handling may touch every session. Everything
+    // else is confined to the event's own session and top-level fields.
+    const scope = fullResync || notification.event.kind === "account_changed" ? undefined
+      : notification.sessionId ? [notification.sessionId] : [];
+    // A rejected event can leave partial updates behind without publishing.
+    this.touch(scope);
     if (runtimeChanged) {
       this.value.lastSequence = 0;
       // Account revisions are monotonic only within one agent runtime.
@@ -752,7 +840,9 @@ export class AxiomStateStore extends EventEmitter {
       session.threadRevision = Math.max(session.threadRevision, notification.threadRevision);
       session.lastTimelineSequence = Math.max(session.lastTimelineSequence, notification.lastTimelineSequence ?? 0);
     }
-    this.changed();
+    this.changed(scope);
+    // Runtime, account and resync boundaries are published immediately.
+    if (!scope) this.flush();
     return {
       threadId: session?.needsResync ? notification.sessionId ?? null : null,
       fullResync,
@@ -848,8 +938,23 @@ export class AxiomStateStore extends EventEmitter {
     }
   }
 
-  private changed(): void {
-    this.emit("change", this.snapshot());
+  /** Record that state differs from the cached view without publishing. */
+  private touch(sessions?: readonly string[]): void {
+    this.viewDirty = true;
+    if (!sessions) { this.stale = null; this.pending = null; return; }
+    for (const id of sessions) { this.stale?.add(id); this.pending?.add(id); }
+  }
+
+  /**
+   * Publish a change. Bursts in one turn of the event loop become one
+   * emission, delivered before any promise continuation queued after them.
+   * Omit `sessions` when any session may have changed.
+   */
+  private changed(sessions?: readonly string[]): void {
+    this.touch(sessions);
+    if (this.emitScheduled) return;
+    this.emitScheduled = true;
+    queueMicrotask(() => this.flush());
   }
 }
 

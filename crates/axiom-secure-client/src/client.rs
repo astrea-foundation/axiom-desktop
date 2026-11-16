@@ -30,6 +30,8 @@ pub struct SecureClient {
 struct CachedCatalog {
     fetched_at: Instant,
     models: Vec<ModelInfo>,
+    /// Display-only offerings the backend reported as temporarily unavailable.
+    unavailable: Vec<ModelInfo>,
 }
 
 struct CachedTrustPolicy {
@@ -231,13 +233,17 @@ impl SecureClient {
         let mut configured_pool = crate::providers::pool::models(&self.config);
         configured_pool.extend(crate::providers::direct::models(&self.config));
         let result = match result {
-            Ok(mut models) => {
+            Ok(catalog::Catalog {
+                mut models,
+                mut unavailable,
+            }) => {
                 for model in configured_pool {
                     if !models.iter().any(|item| item.id == model.id) {
                         models.push(model);
                     }
                 }
-                Ok(models)
+                unavailable.retain(|model| !models.iter().any(|item| item.id == model.id));
+                Ok((models, unavailable))
             }
             // Locally pinned discovery remains useful during catalog outages,
             // but must not hide account authorization failures. Inference
@@ -250,19 +256,35 @@ impl SecureClient {
                             | axiom_inference::ProviderFailureKind::Authentication
                     ) =>
             {
-                Ok(configured_pool)
+                Ok((configured_pool, Vec::new()))
             }
             Err(error) => Err(error),
         };
         self.accept_catalog(result).await
     }
 
-    async fn accept_catalog(&self, result: Result<Vec<ModelInfo>>) -> Result<Vec<ModelInfo>> {
+    /// Offerings the last accepted catalog reported as temporarily unavailable
+    /// because their provider is down. Display only: they are never returned by
+    /// [`Self::models`] and cannot be selected, priced or routed.
+    pub async fn unavailable_models(&self) -> Vec<ModelInfo> {
+        let cache = self.catalog_cache.read().await;
+        cache
+            .as_ref()
+            .filter(|cached| cached.fetched_at.elapsed() <= self.config.catalog_max_stale)
+            .map(|cached| cached.unavailable.clone())
+            .unwrap_or_default()
+    }
+
+    async fn accept_catalog(
+        &self,
+        result: Result<(Vec<ModelInfo>, Vec<ModelInfo>)>,
+    ) -> Result<Vec<ModelInfo>> {
         match result {
-            Ok(models) => {
+            Ok((models, unavailable)) => {
                 *self.catalog_cache.write().await = Some(CachedCatalog {
                     fetched_at: Instant::now(),
                     models: models.clone(),
+                    unavailable,
                 });
                 Ok(models)
             }
@@ -633,6 +655,7 @@ mod tests {
                     ..ModelInfo::default()
                 },
             ],
+            unavailable: Vec::new(),
         });
         let cancel = CancellationToken::new();
         for (chat_model, expected) in [
@@ -710,6 +733,7 @@ mod tests {
                 id: "tinfoil-model".into(),
                 ..ModelInfo::default()
             }],
+            unavailable: Vec::new(),
         });
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
@@ -748,7 +772,10 @@ mod tests {
                 assert!(count > 0 && request.len() + count <= 16 * 1024);
                 request.extend_from_slice(&buffer[..count]);
             }
-            assert!(request.starts_with(b"GET /api/v1/relay/models HTTP/1.1\r\n"));
+            assert!(
+                request
+                    .starts_with(b"GET /api/v1/relay/models?include_unavailable=true HTTP/1.1\r\n")
+            );
             socket.write_all(response.as_bytes()).await.unwrap();
         });
         (relay, server)
@@ -863,7 +890,7 @@ mod tests {
             ..ModelInfo::default()
         };
         client
-            .accept_catalog(Ok(vec![model.clone()]))
+            .accept_catalog(Ok((vec![model.clone()], Vec::new())))
             .await
             .unwrap();
         assert_eq!(
@@ -877,7 +904,10 @@ mod tests {
                 .is_err()
         );
         assert!(client.accept_catalog(Err(transient())).await.is_err());
-        client.accept_catalog(Ok(vec![model])).await.unwrap();
+        client
+            .accept_catalog(Ok((vec![model], Vec::new())))
+            .await
+            .unwrap();
         client
             .catalog_cache
             .write()

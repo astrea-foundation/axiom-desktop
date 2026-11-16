@@ -269,6 +269,12 @@ and conversation-local references or saved model checkpoints. Preview preparatio
 failure preserves the completed image and reports that visual inspection is
 unavailable; it does not repeat generation.
 
+Desktop receives the verified original and image-tool completion before the
+native client prepares the chat model's visual preview. Image-only regeneration
+does not prepare a model preview. The 99% finishing indicator starts when the
+worker announces the generated image; image transfer, authenticated completion
+and local storage still have to finish before display.
+
 Native code enables `generate` when the installed image service passes its
 verified capability preflight, independently of chat vision support. It withholds
 and rejects `view_image` for chat models without vision, including after a model
@@ -293,7 +299,10 @@ recommending a model switch. See the
 [image-generation contract](../../axiom-inference/docs/image-generation.md).
 
 Image tools forward authenticated progress percentages through the native
-client, including queued, generating and finishing states. The UI shows percentages
+client, including queued, generating and finishing states. Updated image workers
+send the latest completed sampling-step count about once per second. Sampling
+maps to 1–95%; 99% marks the image manifest and the remaining completion work.
+Counters can stay unchanged during conditioning or decoding. The UI shows percentages
 while work is pending; its percentage and progress bar disappear after successful
 result verification and settlement. This requires the
 matching streaming image cords and backend relay paths. Save image suggests

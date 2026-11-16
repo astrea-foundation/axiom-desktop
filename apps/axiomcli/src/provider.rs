@@ -182,6 +182,12 @@ pub trait InferenceProvider: Send + Sync {
             "provider does not support model discovery".into(),
         ))
     }
+
+    /// Offerings the latest [`Self::models`] discovery reported as temporarily
+    /// unavailable. Display only; never selectable.
+    async fn unavailable_models(&self) -> Vec<ModelInfo> {
+        Vec::new()
+    }
 }
 
 /// Production provider: model discovery, attestation, and E2EE all happen in
@@ -715,6 +721,13 @@ impl InferenceProvider for SecureAxiomProvider {
             .models(cancellation)
             .await
             .map_err(map_secure_error)
+    }
+
+    async fn unavailable_models(&self) -> Vec<ModelInfo> {
+        match self.client(&CancellationToken::new()).await {
+            Ok(client) => client.unavailable_models().await,
+            Err(_) => Vec::new(),
+        }
     }
 }
 
