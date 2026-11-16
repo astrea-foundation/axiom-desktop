@@ -9,10 +9,12 @@ export interface CreditBalanceSummary {
     cancel_at_period_end: boolean; pending_plan_key: string | null } | null;
   paid_fallback: boolean; payment_review_required: boolean;
 }
-export function creditAmount(value: string, exact = false): string {
+// Validate the source amount before forming display-only totals across periods.
+export function creditAmount(value: string, exact = false, periods = 1n): string {
   if (typeof value !== "string" || value === "-0" || !/^-?(0|[1-9]\d{0,15})$/.test(value)) throw new Error("Invalid credit amount");
-  const units = BigInt(value), absolute = units < 0n ? -units : units;
-  if (absolute > 9_000_000_000_000_000n) throw new Error("Credit amount is outside supported bounds");
+  const source = BigInt(value);
+  if (source > 9_000_000_000_000_000n || source < -9_000_000_000_000_000n) throw new Error("Credit amount is outside supported bounds");
+  const units = source * periods, absolute = units < 0n ? -units : units;
   if (!exact && units > 0n && units < 1_000_000n) return "Less than 1";
   const whole = new Intl.NumberFormat("en-US").format(absolute / 1_000_000n);
   const fraction = (absolute % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");

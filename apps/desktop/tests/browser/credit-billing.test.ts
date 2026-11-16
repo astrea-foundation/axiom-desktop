@@ -37,7 +37,11 @@ async function open(clock = false, initiallyHidden = false) {
           allowance:{limit_units:"1250000000",remaining_units:"482500000",held_units:"0",generation:null,resets_at:"2027-01-08T00:00:00Z",effective_until:"2027-01-08T00:00:00Z"},subscription,
           capabilities:{subscriptions:true,auto_topup:true,card:true,crypto:true,admin:false}}; break;
         case "card_options": value={enabled:true,currency:"usd",min_amount_microusd:5000000,max_amount_microusd:1000000000}; break;
-        case "plans": value={enabled:true,currency:"usd",billing_interval:"month",allowance_interval_days:7,plans:[{key:"starter",name:"Starter",amount_cents:250,weekly_units:"1250000000",version:"plans-v3"}]}; break;
+        case "plans": value={enabled:true,currency:"usd",billing_interval:"month",allowance_interval_days:7,plans:[
+          {key:"starter",name:"Starter",amount_cents:250,weekly_units:"1250000000",version:"plans-v3"},
+          {key:"standard",name:"Standard",amount_cents:1000,weekly_units:"5000000000",version:"plans-v3"},
+          {key:"plus",name:"Plus",amount_cents:2500,weekly_units:"12500000000",version:"plans-v3"},
+          {key:"max",name:"Max",amount_cents:10000,weekly_units:"50000000000",version:"plans-v3"}]}; break;
         case "cards": value={cards:[{id:"pm_Fixture",brand:"visa",last4:"4242",exp_month:12,exp_year:2030}]}; break;
         case "auto_topup": value=auto; break;
         case "configure_auto_topup": auto={...auto,...action.settings,version:String(Number(auto.version)+1)}; value=auto; kind="auto_topup"; break;
@@ -66,6 +70,12 @@ test("native credit controls separate balances and require explicit saved-card c
   try {
     assert.match(await page.locator("body").innerText(),/Weekly credits.*482.*Purchased credit.*\$8\.00/s);
     assert.match(await page.locator("body").innerText(),/1,250 credits \/ week/);
+    for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month (4 weeks)`, {exact:true}).waitFor();
+    if (process.env.AXIOM_UI_ARTIFACT_DIR) await page.locator('section[aria-label="Subscription plans"]').screenshot({path:`${process.env.AXIOM_UI_ARTIFACT_DIR}/native-monthly-plan-totals.png`});
+    await page.setViewportSize({width:320,height:1000});
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "monthly plan totals fit a narrow screen");
+    for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month (4 weeks)`, {exact:true}).waitFor();
+    await page.setViewportSize({width:800,height:1000});
     assert.equal(await page.getByLabel("Balance threshold (USD)",{exact:true}).inputValue(), "5.00");
     assert(await page.getByRole("button",{name:"Enable automatic top-up",exact:true}).isDisabled());
     const initial=await page.evaluate(()=>(window as any).__billingTest.calls);
@@ -89,7 +99,8 @@ for (const state of ["expired", "canceled"]) test(`an ${state} subscription star
   try {
     await page.evaluate(state => {(window as any).__billingTest.subscription(state); window.dispatchEvent(new Event("focus"));}, state);
     await page.getByText(`Subscription: ${state}`,{exact:true}).waitFor();
-    await page.getByRole("button",{name:"Subscribe",exact:true}).click();
+    await page.getByRole("button",{name:"Subscribe",exact:true}).first().click();
+    await page.getByRole("dialog",{name:"Confirm subscription plan"}).getByText("Monthly total: 5,000 credits (4 weeks).",{exact:true}).waitFor();
     await page.getByRole("button",{name:"Confirm",exact:true}).click();
     await page.getByText("Complete your subscription in the browser, then return here.",{exact:true}).waitFor();
     const actions=await page.evaluate(()=>(window as any).__billingTest.calls.map((call:any)=>call.action));
