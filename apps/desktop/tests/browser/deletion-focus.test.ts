@@ -3774,6 +3774,56 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
   } finally { await page.close(); }
 });
 
+test("model picker is never clipped by the window or a clipping container", async () => {
+  const model = (index: number) => ({
+    id: `model-${index}`, label: `Model ${index}`, shortLabel: `Model ${index}`, providerId: index % 2 ? "near" : "tinfoil",
+    providerLabel: index % 2 ? "NEAR AI" : "Tinfoil", upstreamModel: `model-${index}`, thinkingLevels: [],
+    contextWindowTokens: 32768, maxOutputTokens: 8192, autoCompactThresholdTokens: 27853, supportsImages: index % 3 === 0,
+    fileMimeTypes: [], inputPriceMicrousdPerMillionTokens: 500000, outputPriceMicrousdPerMillionTokens: 2000000,
+    tags: [{ id: "cheap", label: "Cheap", tone: "green", position: 10 }],
+  });
+  const catalog = { models: Array.from({ length: 14 }, (_, index) => model(index)) } as unknown as ListModelsResponse;
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
+  // Everything the picker draws must sit inside the window and inside every ancestor that clips overflow.
+  const overflow = () => page.evaluate(() => {
+    const picker = document.querySelector('[role="dialog"][aria-label="Choose a model"]') as HTMLElement;
+    picker.getAnimations().forEach(animation => animation.finish());
+    const rect = picker.getBoundingClientRect();
+    const limits = [{ name: "window", top: 0, left: 0, right: document.documentElement.clientWidth, bottom: window.innerHeight }];
+    for (let node = picker.parentElement; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+      const box = node.getBoundingClientRect();
+      limits.push({ name: node.className, top: box.top, left: box.left, right: box.right, bottom: box.bottom });
+    }
+    const outside = limits.filter(limit => rect.top < limit.top - 0.5 || rect.left < limit.left - 0.5 || rect.right > limit.right + 0.5 || rect.bottom > limit.bottom + 0.5);
+    const scrollable = picker.scrollHeight <= picker.clientHeight + 1 || getComputedStyle(picker).overflowY === "auto";
+    return { outside, scrollable, height: rect.height, width: rect.width };
+  });
+  try {
+    for (const [width, height, hostTop] of [[1280, 900, 0], [1280, 900, 320], [960, 640, 0], [960, 640, 200], [900, 520, 140], [960, 400, 0], [960, 400, 110]] as const) {
+      await page.setViewportSize({ width, height });
+      // A web host frames the chat lower on the page inside its own clipping panel.
+      await page.evaluate((top) => {
+        const root = document.getElementById("root")!;
+        Object.assign(root.style, top ? { position: "fixed", inset: `${top}px 24px 16px 24px`, height: "auto", overflow: "hidden" } : { position: "", inset: "", height: "", overflow: "" });
+        window.dispatchEvent(new Event("resize"));
+      }, hostTop);
+      await page.locator('button[title="Select model"]').click();
+      const picker = page.getByRole("dialog", { name: "Choose a model" });
+      await picker.waitFor();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)))));
+      const result = await overflow();
+      assert.deepEqual(result.outside, [], `picker clipped at ${width}x${height} with host top ${hostTop}`);
+      assert.equal(result.scrollable, true, `picker content unreachable at ${width}x${height}`);
+      assert.ok(result.height > 60 && result.width > 200, `picker collapsed at ${width}x${height}`);
+      await page.keyboard.press("Escape");
+      await picker.waitFor({ state: "detached" });
+    }
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("model picker greys out the models of a temporarily unavailable provider", async () => {
   const model = (id: string, label: string, providerId: string, priced = true) => ({
     id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",

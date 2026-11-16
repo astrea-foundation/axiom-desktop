@@ -245,11 +245,12 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
       const naturalLeft = (parent?.left ?? 0) + picker.offsetLeft - current.right;
       const maxHeight = Math.max(0, Math.floor(Math.min(MAX_HEIGHT, bounds.bottom - bounds.top)));
       const maxWidth = Math.max(0, Math.floor(Math.min(MAX_WIDTH, bounds.right - bounds.left)));
-      const leftmost = bounds.left;
-      const rightmost = Math.max(leftmost, bounds.right - Math.min(picker.offsetWidth, maxWidth));
+      // Keep the anchored position when it fits, otherwise slide to the nearest spot that does.
+      const lowest = Math.max(bounds.top, bounds.bottom - Math.min(picker.offsetHeight, maxHeight));
+      const rightmost = Math.max(bounds.left, bounds.right - Math.min(picker.offsetWidth, maxWidth));
       const next = {
-        down: Math.max(0, Math.ceil(bounds.top - naturalTop)),
-        right: Math.round(Math.min(Math.max(naturalLeft, leftmost), rightmost) - naturalLeft),
+        down: Math.round(Math.min(Math.max(naturalTop, bounds.top), lowest) - naturalTop),
+        right: Math.round(Math.min(Math.max(naturalLeft, bounds.left), rightmost) - naturalLeft),
         maxHeight,
         maxWidth,
       };

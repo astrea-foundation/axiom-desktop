@@ -95,7 +95,11 @@ Tag filters combine with AND; host filters (from each entry's provider) combine 
 image and file toggles appear only when some, but not all, offerings accept that
 input. Search also matches tag labels. Filters that would leave no models are
 disabled, and filters reset each time the picker opens. Rows show the host and up
-to three tags; the upstream model name moves to the row tooltip. The browser chat
+to three tags; the upstream model name moves to the row tooltip. The picker
+measures the window and every ancestor that clips or scrolls, then limits its size
+and slides from its anchor above the model control so it is never cut off in
+Desktop or a browser host; when very little height is left, the whole picker
+scrolls. The browser chat
 consumes a vendored `@axiom/chat-ui` package and shows tags only after it is
 re-vendored with this picker.
 
