@@ -28,21 +28,21 @@ async function open(clock = false, initiallyHidden = false) {
     const calls: any[] = []; let gate: (() => void) | null = null, held = false, subscription: any = null;
     let auto: any = {currency:"usd",scale:"100000000",available:true,enabled:false,version:"0",threshold_units:"500000000",amount_cents:1000,monthly_cap_cents:3000,payment_method_id:null,paused_reason:null,cap_month:"2026-11",used_cents:0,consent_version:"auto-topup-v2"};
     Object.assign(window, {__billingTest:{calls,hold:()=>{held=true;},release:()=>{held=false;gate?.();},
-      subscription:(state:string)=>{subscription={id:"20000000-0000-4000-8000-000000000001",plan_key:"starter",amount_cents:250,weekly_units:"125000000",state,paid_through_at:"2026-11-01T00:00:00Z",cancel_at_period_end:false,pending_plan_key:null};}},axiomDesktop:{agent:{creditBilling:async (action:any, account:string) => {
+      subscription:(state:string)=>{subscription={id:"20000000-0000-4000-8000-000000000001",plan_key:"starter",amount_cents:250,weekly_units:"1250000000",state,paid_through_at:"2026-11-01T00:00:00Z",cancel_at_period_end:false,pending_plan_key:null};}},axiomDesktop:{agent:{creditBilling:async (action:any, account:string) => {
       calls.push({action:structuredClone(action),account});
       let kind = action.kind, value: any;
       switch (kind) {
-        case "summary": value = {format:"credits@3",enabled:true,scale:"1000000",revision:"1",policy_version:"credits-v3",reference_microusd_per_credit:10000,default_multiplier_ppm:1000000,paid_fallback:true,payment_review_required:false,
+        case "summary": value = {format:"credits@3",enabled:true,scale:"1000000",revision:"1",policy_version:"credits-v4",reference_microusd_per_credit:1000,default_multiplier_ppm:1000000,paid_fallback:true,payment_review_required:false,
           purchased:{currency:"usd",scale:"100000000",posted_units:account==="account-a"?"800000000":"100000000",held_units:"0",available_units:account==="account-a"?"800000000":"100000000"},trial:{posted_units:"0",held_units:"0"},
-          allowance:{limit_units:"125000000",remaining_units:"48250000",held_units:"0",generation:null,resets_at:"2027-01-08T00:00:00Z",effective_until:"2027-01-08T00:00:00Z"},subscription,
+          allowance:{limit_units:"1250000000",remaining_units:"482500000",held_units:"0",generation:null,resets_at:"2027-01-08T00:00:00Z",effective_until:"2027-01-08T00:00:00Z"},subscription,
           capabilities:{subscriptions:true,auto_topup:true,card:true,crypto:true,admin:false}}; break;
         case "card_options": value={enabled:true,currency:"usd",min_amount_microusd:5000000,max_amount_microusd:1000000000}; break;
-        case "plans": value={enabled:true,currency:"usd",billing_interval:"month",allowance_interval_days:7,plans:[{key:"starter",name:"Starter",amount_cents:250,weekly_units:"125000000",version:"v1"}]}; break;
+        case "plans": value={enabled:true,currency:"usd",billing_interval:"month",allowance_interval_days:7,plans:[{key:"starter",name:"Starter",amount_cents:250,weekly_units:"1250000000",version:"plans-v3"}]}; break;
         case "cards": value={cards:[{id:"pm_Fixture",brand:"visa",last4:"4242",exp_month:12,exp_year:2030}]}; break;
         case "auto_topup": value=auto; break;
         case "configure_auto_topup": auto={...auto,...action.settings,version:String(Number(auto.version)+1)}; value=auto; kind="auto_topup"; break;
         case "operations": case "card_payments": value=[]; break;
-        case "usage": value={period:"all_time",scale:"1000000",total_units:"250000",allocation:{subscription_units:"250000",trial_units:"0"},purchased:{currency:"usd",scale:"100000000",total_units:"0",models:[]},models:[{provider:"near",model_id:"fixture",units:"250000"}]}; break;
+        case "usage": value={period:"all_time",scale:"1000000",total_units:"2500000",allocation:{subscription_units:"2500000",trial_units:"0"},purchased:{currency:"usd",scale:"100000000",total_units:"0",models:[]},models:[{provider:"near",model_id:"fixture",units:"2500000"}]}; break;
         case "checkout": value={id:action.id,kind:"subscription",state:"pending",url:"https://checkout.stripe.com/c/pay/subscription",amount_cents:250,card:null,created_at:"2026-11-13T00:00:00Z"}; kind="operation"; break;
         case "create_card_payment":
           if (held) await new Promise<void>(resolve=>{gate=resolve;});
@@ -64,8 +64,8 @@ async function open(clock = false, initiallyHidden = false) {
 test("native credit controls separate balances and require explicit saved-card charge consent", async () => {
   const {page,errors}=await open();
   try {
-    assert.match(await page.locator("body").innerText(),/Weekly credits.*48.*Purchased credit.*\$8\.00/s);
-    assert.match(await page.locator("body").innerText(),/125 credits \/ week/);
+    assert.match(await page.locator("body").innerText(),/Weekly credits.*482.*Purchased credit.*\$8\.00/s);
+    assert.match(await page.locator("body").innerText(),/1,250 credits \/ week/);
     assert.equal(await page.getByLabel("Balance threshold (USD)",{exact:true}).inputValue(), "5.00");
     assert(await page.getByRole("button",{name:"Enable automatic top-up",exact:true}).isDisabled());
     const initial=await page.evaluate(()=>(window as any).__billingTest.calls);

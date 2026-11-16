@@ -11,6 +11,11 @@ Weekly balances display whole credits while usage retains fractions; a positive
 remainder below one displays as **Less than 1**. Money uses fixed precision of
 100,000,000 units per dollar; a positive balance below one cent displays as
 **Less than $0.01**. Held amounts and usage retain exact fractions.
+The default credit value is $0.001 (0.1 cent): $1 of reference API usage consumes
+1,000 credits at the default multiplier. The $1 lifetime trial opens as 1,000
+credits. Weekly defaults are 1,250/5,000/12,500/50,000 credits for unchanged
+$2.50/$10/$25/$100 monthly payments. Plans and credit values come from the server;
+the client keeps their exact amounts and does not assume a one-cent credit.
 While a request is running, its reservation can reduce available dollars below
 the posted balance. Billing refreshes and gift redemption still report the valid
 available balance during these holds.
@@ -80,8 +85,8 @@ axiomcli billing status
 axiomcli billing plans
 axiomcli billing prices
 axiomcli billing usage --period month --timezone America/Los_Angeles
-axiomcli billing subscribe --id UUID_V4 --plan starter --catalog-version plans-v2
-axiomcli billing change-plan --id UUID_V4 --plan standard --catalog-version plans-v2
+axiomcli billing subscribe --id UUID_V4 --plan starter --catalog-version plans-v3
+axiomcli billing change-plan --id UUID_V4 --plan standard --catalog-version plans-v3
 axiomcli billing top-up --id UUID_V4 --amount-cents 1000
 axiomcli billing save-card --id UUID_V4
 axiomcli billing cards
