@@ -16,6 +16,8 @@ pub mod factory_reset;
 pub mod image_tool;
 pub(crate) mod local_storage;
 pub mod mcp;
+#[cfg(target_os = "macos")]
+mod native_secrets;
 pub mod paths;
 pub mod planning;
 pub mod policy;

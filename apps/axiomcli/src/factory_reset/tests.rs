@@ -246,6 +246,49 @@ fn system_reset_only_removes_storage_keys_for_the_canonical_root_being_erased() 
     assert_eq!(other.get_password().unwrap(), "synthetic key");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn reset_only_removes_combined_keychain_items_for_the_profile_being_erased() {
+    use keyring_core::api::CredentialStoreApi as _;
+    let root = tempfile::tempdir().unwrap();
+    let plan = isolated_plan(root.path());
+    fs::create_dir_all(plan.paths.data_root()).unwrap();
+    let scope = storage_credential_scope(&plan.paths).unwrap();
+    let store = keyring_core::mock::Store::new().unwrap();
+    let selected = store
+        .build(
+            crate::native_secrets::KEYRING_SERVICE,
+            &format!("{scope}native-secrets-v1"),
+            None,
+        )
+        .unwrap();
+    let other = store
+        .build(
+            crate::native_secrets::KEYRING_SERVICE,
+            "other-profile:native-secrets-v1",
+            None,
+        )
+        .unwrap();
+    selected.set_password("selected-profile-keys").unwrap();
+    other.set_password("keep-other-profile-keys").unwrap();
+    erase_matching_credentials(
+        |spec| store.search(spec),
+        |service, entry| {
+            if service == crate::native_secrets::KEYRING_SERVICE {
+                storage_credential_matches(entry, &scope)
+            } else {
+                Ok(false)
+            }
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        selected.get_password(),
+        Err(keyring_core::Error::NoEntry)
+    ));
+    assert_eq!(other.get_password().unwrap(), "keep-other-profile-keys");
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_search_anchors_the_full_axiom_service_name() {

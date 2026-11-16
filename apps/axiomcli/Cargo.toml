@@ -70,6 +70,7 @@ zeroize = "1.8.2"
 nix = { version = "0.31.3", features = ["process", "signal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
 security-framework = "3.7.0"
 
 [target.'cfg(windows)'.dependencies]

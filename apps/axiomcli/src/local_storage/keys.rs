@@ -22,13 +22,17 @@ pub(crate) fn scope_prefix(root: &Path) -> String {
     )
 }
 
-pub(crate) fn credential_name(path: &Path) -> String {
+fn profile_root(path: &Path) -> &Path {
     let parent = path.parent().unwrap_or(path);
-    let root = parent
+    parent
         .ancestors()
         .find(|p| p.file_name().is_some_and(|n| n == "accounts"))
         .and_then(Path::parent)
-        .unwrap_or(parent);
+        .unwrap_or(parent)
+}
+
+pub(crate) fn credential_name(path: &Path) -> String {
+    let root = profile_root(path);
     format!(
         "{}{}",
         scope_prefix(root),
@@ -41,21 +45,47 @@ trait KeyStore {
     fn write(&self, name: &str, key: &StorageKey) -> Result<()>;
 }
 
-struct SystemKeyStore;
+struct SystemKeyStore {
+    #[cfg(target_os = "macos")]
+    root: std::path::PathBuf,
+}
+
+impl SystemKeyStore {
+    #[cfg(target_os = "macos")]
+    fn for_path(path: &Path) -> Self {
+        Self {
+            root: profile_root(path).to_owned(),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn for_path(_: &Path) -> Self {
+        Self {}
+    }
+}
 
 impl KeyStore for SystemKeyStore {
     fn read(&self, name: &str) -> Result<Option<StorageKey>> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, name).map_err(|_| {
-            failure("System credential store is unavailable; unlock it and try again")
-        })?;
-        let bytes = match entry.get_secret() {
-            Ok(value) => Zeroizing::new(value),
-            Err(keyring::Error::NoEntry) => return Ok(None),
-            Err(_) => {
-                return Err(failure(
-                    "Local storage key is locked or unavailable; existing data was preserved",
-                ));
-            }
+        #[cfg(target_os = "macos")]
+        let Some(bytes) = crate::native_secrets::read(&self.root, KEYRING_SERVICE, name)
+            .map_err(|error| failure(&error))?
+        else {
+            return Ok(None);
+        };
+        #[cfg(not(target_os = "macos"))]
+        let bytes = {
+            let entry = keyring::Entry::new(KEYRING_SERVICE, name).map_err(|_| {
+                failure("System credential store is unavailable; unlock it and try again")
+            })?;
+            let bytes = match entry.get_secret() {
+                Ok(value) => Zeroizing::new(value),
+                Err(keyring::Error::NoEntry) => return Ok(None),
+                Err(_) => {
+                    return Err(failure(
+                        "Local storage key is locked or unavailable; existing data was preserved",
+                    ));
+                }
+            };
+            bytes
         };
         if bytes.len() != 32 {
             return Err(failure(
@@ -68,6 +98,12 @@ impl KeyStore for SystemKeyStore {
     }
 
     fn write(&self, name: &str, key: &StorageKey) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::native_secrets::write(&self.root, KEYRING_SERVICE, name, key.secret.as_ref())
+                .map_err(|error| failure(&error))
+        }
+        #[cfg(not(target_os = "macos"))]
         keyring::Entry::new(KEYRING_SERVICE, name)
             .map_err(|_| {
                 failure("System credential store is unavailable; unlock it and try again")
@@ -80,7 +116,7 @@ impl KeyStore for SystemKeyStore {
 }
 
 pub(super) fn obtain(paths: &StorePaths) -> Result<StorageKey> {
-    obtain_with(paths, &SystemKeyStore)
+    obtain_with(paths, &SystemKeyStore::for_path(&paths.database))
 }
 
 fn obtain_with(paths: &StorePaths, store: &impl KeyStore) -> Result<StorageKey> {
@@ -107,7 +143,7 @@ fn obtain_with(paths: &StorePaths, store: &impl KeyStore) -> Result<StorageKey> 
 pub(crate) fn load_key_for_path(path: &Path) -> Result<Arc<StorageKey>> {
     let paths = StorePaths::prepare(path)?;
     let _lock = paths.lock()?;
-    SystemKeyStore
+    SystemKeyStore::for_path(&paths.database)
         .read(&credential_name(&paths.database))?
         .map(Arc::new)
         .ok_or_else(|| failure("The local storage key is missing; restore a recovery backup"))
@@ -118,9 +154,23 @@ pub(crate) fn load_key_for_path(path: &Path) -> Result<Arc<StorageKey>> {
 pub(crate) fn save_key_for_path(path: &Path, key: &StorageKey) -> Result<()> {
     let paths = StorePaths::prepare(path)?;
     let _lock = paths.lock()?;
-    save_with(&paths, key, &SystemKeyStore)
+    #[cfg(target_os = "macos")]
+    {
+        // Explicit recovery can recreate a missing combined Keychain item,
+        // only after the recovered key unlocks the preserved database.
+        database::validate_key(&paths.database, key)?;
+        crate::native_secrets::restore_storage_key(
+            profile_root(&paths.database),
+            &credential_name(&paths.database),
+            key.secret.as_ref(),
+        )
+        .map_err(|error| failure(&error))
+    }
+    #[cfg(not(target_os = "macos"))]
+    save_with(&paths, key, &SystemKeyStore::for_path(&paths.database))
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn save_with(paths: &StorePaths, key: &StorageKey, store: &impl KeyStore) -> Result<()> {
     let name = credential_name(&paths.database);
     if let Some(existing) = store.read(&name)? {

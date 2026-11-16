@@ -25,6 +25,13 @@ only inside the running step. SQLCipher opens the database in one indivisible
 step, so the bar never advances on a timer and invents no per-chat counts or
 completion times. Reduced motion stops the sweep.
 
+On macOS, saved sign-in and chat keys use a shared Keychain unlock, keeping
+their secret values independent. The first upgrade may still request approval
+for each older Keychain item while migrating it. Later starts read the combined
+item once and reuse the native memory snapshot to open chats. Signing out keeps
+the chat keys protected in Keychain and clears the unlocked snapshot. See
+[encrypted local storage](local-storage.md#keys-and-account-boundaries).
+
 Opening a saved thread shows “Loading thread…” with an indeterminate progress
 bar until its native session and transcript are ready; it reports no percentage.
 For listed chats, the catalog already supplies the saved workspace, so opening

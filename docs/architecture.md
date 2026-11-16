@@ -72,16 +72,28 @@ bounded account metadata and opaque login handles, never native access/refresh
 tokens. Desktop removes `AXIOM_API_KEY` from its sidecar environment; standalone
 CLI/proxy automation may use that explicit environment override.
 
-On macOS, startup checks for the origin-scoped Keychain item by reference without
-decrypting its password. The first restore reads the refresh token once while
-holding the CLI/Desktop coordination lock continuously through server rotation
-and persistence. Commit reuses that locked observation, and the macOS writer
-updates the existing item in place without reading the old password again.
-The item keeps its existing access controls and shared service/account identity.
-The protected entry is an `axc1_` envelope containing the rotating refresh token
-and an independently random 32-byte recovery attempt. It is still one OS
-credential item, using the existing origin/profile scope. Legacy bare tokens
-upgrade under the same process-shared lock before a request is dispatched.
+On macOS, sign-in credentials and independently random local storage keys share
+one protected Keychain item per canonical data profile. Startup inspects item
+metadata without decrypting it; the first restore unlocks the native memory
+snapshot, which chat-key access then reuses. Entries retain their origin,
+account and frontend scopes. CLI/Desktop rotation holds its existing per-origin
+lock continuously through server rotation and persistence. A profile-wide lock
+also serializes combined-item reads and updates. Data and a nonsecret revision
+are updated atomically in place, preserving the item's ACL; another native
+process's update invalidates the cached snapshot through metadata alone.
+All secret values remain in Keychain. The only new files are an empty lock and
+migration marker. Legacy items migrate on access and can require one approval
+per old item once; old storage-key items remain available for explicit recovery.
+Legacy login tokens are removed only after verifying the combined protected
+copy so an old client cannot reuse a stale token and revoke its session family.
+Sign-out tombstones its login slot and releases the memory snapshot without
+deleting chat keys. A missing migrated item fails closed, including after a
+restart. See [local storage](local-storage.md) for explicit recovery behavior.
+
+Each login slot still contains the `axc1_` envelope with its rotating refresh
+token and independently random 32-byte recovery attempt. Windows/Linux retain
+individual credential-store items. Legacy bare tokens upgrade under the same
+process-shared lock before a request is dispatched.
 Transport timeouts, 5xx and malformed responses retain the same durable attempt;
 a different CLI/Desktop process reloads it under that lock. The API may return
 the exact original rotation for two minutes while all session/token bounds are
