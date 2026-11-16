@@ -3785,7 +3785,8 @@ test("model picker is never clipped by the window or a clipping container", asyn
   const catalog = { models: Array.from({ length: 14 }, (_, index) => model(index)) } as unknown as ListModelsResponse;
   const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
   // Everything the picker draws must sit inside the window and inside every ancestor that clips overflow.
-  const overflow = () => page.evaluate(() => {
+  const overflow = async () => {
+    const result = await page.waitForFunction(() => {
     const picker = document.querySelector('[role="dialog"][aria-label="Choose a model"]') as HTMLElement;
     picker.getAnimations().forEach(animation => animation.finish());
     const rect = picker.getBoundingClientRect();
@@ -3798,8 +3799,14 @@ test("model picker is never clipped by the window or a clipping container", asyn
     }
     const outside = limits.filter(limit => rect.top < limit.top - 0.5 || rect.left < limit.left - 0.5 || rect.right > limit.right + 0.5 || rect.bottom > limit.bottom + 0.5);
     const scrollable = picker.scrollHeight <= picker.clientHeight + 1 || getComputedStyle(picker).overflowY === "auto";
-    return { outside, scrollable, height: rect.height, width: rect.width };
-  });
+      // Focusing the search field can scroll a clipping ancestor. Allow the
+      // scroll/resize observers to finish placing the picker before asserting.
+      if (outside.length || !scrollable || rect.height <= 60 || rect.width <= 200) return false;
+      return { outside, scrollable, height: rect.height, width: rect.width };
+    }, undefined, { polling: "raf" });
+    try { return await result.jsonValue(); }
+    finally { await result.dispose(); }
+  };
   try {
     for (const [width, height, hostTop] of [[1280, 900, 0], [1280, 900, 320], [960, 640, 0], [960, 640, 200], [900, 520, 140], [960, 400, 0], [960, 400, 110]] as const) {
       await page.setViewportSize({ width, height });
@@ -3812,7 +3819,6 @@ test("model picker is never clipped by the window or a clipping container", asyn
       await page.locator('button[title="Select model"]').click();
       const picker = page.getByRole("dialog", { name: "Choose a model" });
       await picker.waitFor();
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)))));
       const result = await overflow();
       assert.deepEqual(result.outside, [], `picker clipped at ${width}x${height} with host top ${hostTop}`);
       assert.equal(result.scrollable, true, `picker content unreachable at ${width}x${height}`);
