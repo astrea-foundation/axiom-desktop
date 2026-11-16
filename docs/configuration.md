@@ -198,9 +198,35 @@ explicit Web consent independently of Agent permissions. See [Desktop](desktop.m
 Vision uploads accept up to ten images per submitted user message. Later messages
 can each add ten more; chat history has no separate image-count limit. Model
 token/context and encoded request-byte budgets still apply.
-Desktop resizes each image
-locally to at most 1,048,576 pixels while preserving aspect ratio and transparency
-before encryption. The unified image tool accepts optional `width` and `height`
+Desktop retains generation references at up to 2048² pixels. Before encryption,
+NEAR and Tinfoil prepare separate lossy WebP vision copies at up to 1,048,576
+pixels and 512 KiB each, preserving aspect ratio and transparency. The encoder
+starts at quality 85, tries 70, then reduces resolution only while retaining at
+least 65,536 pixels (or the source's smaller prepared area). A request that cannot
+fit at this floor fails locally. Tinfoil shares one quarter of its relay-byte
+budget across request images. AstreaAI retains its installed PNG/JPEG vision
+contract. Stored assets and generation references are not replaced by these
+viewing copies.
+
+NEAR plans against a conservative 10 MiB encrypted provider-request budget,
+including JSON content-array escaping, field encryption, hex encoding, text and
+tool definitions. Recent uploads receive the remaining allowance after their
+actual text/tool overhead; small images leave more room for larger ones. Older
+images keep their useful variants and trigger bounded history compaction when
+necessary. Summaries preserve observed details, source order and conversation
+image IDs. During an active tool loop the engine also keeps recent unique
+previews within three quarters of the byte and context budgets, leaving room for
+the next step. Original assets remain available by ID after compaction.
+
+Vision variants are cached in memory by source content and encoding profile,
+within each account client or conversation catalog. Each cache holds at most
+16 MiB of encoded copies and 64 entries. Clean, bounded static WebP copies are
+reused without another lossy encoding. Account/client replacement and catalog
+disposal drop their caches; no plaintext image variants are stored on the relay.
+NEAR's negotiated single-copy request transport is described in
+[the protocol guide](protocols/near-v3.md#routing-and-lifetime).
+
+The unified image tool accepts optional `width` and `height`
 together for saved legacy calls. New model calls use `aspect_ratio`; the native
 client chooses the largest exact match on a 32-pixel grid within 2,359,296 pixels.
 New images default to **1:1 square (1536×1536)**. The supported ratios are
@@ -221,19 +247,33 @@ before dispatch and cannot fall back to generation. The model is instructed to
 create or edit images only when the user explicitly asks; an attachment or a
 request for analysis alone does not authorize image creation.
 
-`view_image` accepts an exact conversation-owned `image_id` and supplies the
-image as visual input on the model's next step in the same turn. The model may
-inspect an upload or check a generated/edited result before answering or
-requesting a correction. Viewing is optional and does not create or edit an
-image. Generated results are displayed to the user but are not automatically
-added to the model's visual context. Vision copies preserve aspect ratio and
-transparency, correct orientation, and fit within 1,048,576 pixels; originals
+`generate` automatically supplies a bounded preview of each generated or edited
+image to vision-capable chat models on their next step, after all replies in the
+tool-call batch. The model can inspect that result without a separate
+`view_image` call. `view_image` accepts an exact conversation-owned `image_id`
+for an image absent from the current visual context, for example after
+compaction. Its description and model guidance forbid calling it for images
+already inline in the current model input, including uploads, generated previews
+and earlier successful views. A redundant call receives an acknowledgement
+without duplicate pixels. An image visible only in the user's UI may still need
+viewing if its pixels are absent from the model input. Viewing is optional and
+does not create or edit an image.
+Vision copies preserve aspect ratio and transparency, correct orientation,
+and fit within 1,048,576 pixels; originals
 remain available for editing, viewing and saving. Viewed images consume model
 context tokens and encoded request bytes, and can trigger normal automatic
 compaction. There is no conversation-wide view or generation count limit.
 Conversation image IDs remain available for later viewing and reference use.
-Successful views are restored from their tool records and conversation-local
-references or saved model checkpoints.
+Generated previews and successful views are restored from their tool records
+and conversation-local references or saved model checkpoints. Preview preparation
+failure preserves the completed image and reports that visual inspection is
+unavailable; it does not repeat generation.
+
+Desktop receives the verified original and image-tool completion before the
+native client prepares the chat model's visual preview. Image-only regeneration
+does not prepare a model preview. The 99% finishing indicator starts when the
+worker announces the generated image; image transfer, authenticated completion
+and local storage still have to finish before display.
 
 Native code enables `generate` when the installed image service passes its
 verified capability preflight, independently of chat vision support. It withholds
@@ -259,7 +299,10 @@ recommending a model switch. See the
 [image-generation contract](../../axiom-inference/docs/image-generation.md).
 
 Image tools forward authenticated progress percentages through the native
-client, including queued, generating and finishing states. The UI shows percentages
+client, including queued, generating and finishing states. Updated image workers
+send the latest completed sampling-step count about once per second. Sampling
+maps to 1–95%; 99% marks the image manifest and the remaining completion work.
+Counters can stay unchanged during conditioning or decoding. The UI shows percentages
 while work is pending; its percentage and progress bar disappear after successful
 result verification and settlement. This requires the
 matching streaming image cords and backend relay paths. Save image suggests
@@ -282,20 +325,22 @@ Provider request timeouts do not expire human approval/question cards. Those
 waits end on an answer, cancellation/disconnect, or an enabled whole-turn limit.
 
 Automatic compaction is based on 85% of the selected model's advertised context
-capacity, capped by local token limits. Image counts and payload sizes never
-trigger compaction. The independent `max_context_bytes` guard bounds conversation
+capacity, capped by local token limits. NEAR also compacts history when the
+prepared encrypted request would exceed its 10 MiB operating budget. Image
+counts alone do not trigger compaction. The independent `max_context_bytes` guard bounds conversation
 text, reasoning and tool arguments; encoded image/file data has separate
 per-message limits. Exceeding a memory or provider transport limit returns an
 error while preserving the conversation. Base64 byte length is not a text-token
 count. Ten uploads is a per-message limit; later messages can add ten more.
 History, views, generation and retained asset catalogs have no image-count cap.
-Uploads and successful `view_image` observations use the selected model's visual
-allowance for new context before the provider reports usage. Existing context
+Uploads, automatic generated previews and successful `view_image` observations
+use the selected model's visual allowance for new context before the provider
+reports usage. Existing context
 uses the provider count, including after reload when the report still covers the
 same completed context and model; model changes invalidate that baseline. Without
-a matching report, the next turn estimates using current model metadata. Generated
-images add visual context only when viewed. Unsupported reasoning levels fail
-locally.
+a matching report, the next turn estimates using current model metadata. Chat
+models without vision do not receive preview pixels. Unsupported reasoning levels
+fail locally.
 `minimal`, `low`, `medium`, `high`, and `xhigh` are the application enum; a model
 may expose only a subset. See [CLI](cli.md) for remembered model/thinking settings.
 

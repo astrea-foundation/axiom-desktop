@@ -379,16 +379,24 @@ impl Session {
                 true,
             ));
         }
+        let request = crate::vision::prepare_request(
+            request,
+            self.config.limits.serialized_relay_request_bytes / 4,
+            &cancellation,
+        )
+        .await?;
         let stream = sink.is_some();
         let mut payload = request_body(&self.model, &request, stream)?;
         // The provider key is shared by Axiom users. A separate random secret
         // partitions prompt caching per native client, inside the encrypted body.
         payload["user_cache_secret"] = json!(self.cache_secret.expose_secret());
-        let plaintext = serde_json::to_vec(&payload)
-            .map_err(|_| invalid_request("request serialization failed"))?;
-        if plaintext.len().saturating_add(20) > self.config.limits.serialized_relay_request_bytes {
-            return Err(invalid_request("encrypted request exceeds size limit"));
-        }
+        let plaintext = crate::request::serialize_bounded(
+            &payload,
+            self.config
+                .limits
+                .serialized_relay_request_bytes
+                .saturating_sub(20),
+        )?;
         let request_id = request_id(request.request_id.as_deref())?;
         let endpoint = relay_endpoint(
             &self.config.relay_base_url,

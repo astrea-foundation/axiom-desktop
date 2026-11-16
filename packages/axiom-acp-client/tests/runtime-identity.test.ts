@@ -1,3 +1,4 @@
+import "./verify-state-views.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { AxiomAcpClient } from "../src/client.js";

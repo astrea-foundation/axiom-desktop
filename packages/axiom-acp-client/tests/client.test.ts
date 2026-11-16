@@ -1,3 +1,4 @@
+import "./verify-state-views.js";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";

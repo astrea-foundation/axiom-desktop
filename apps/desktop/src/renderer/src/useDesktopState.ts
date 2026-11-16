@@ -1,5 +1,7 @@
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { useEffect, useRef, useState } from "react";
+import type { AgentApi } from "../../preload/agent-api";
+import { applyStatePatch } from "../../shared/state-patch";
 
 const EMPTY_AGENT_STATE: ClientState = {
   connected: false,
@@ -14,6 +16,22 @@ const EMPTY_AGENT_STATE: ClientState = {
   diagnostic: "",
   error: null,
 };
+
+/**
+ * Follow agent state through patches where the bridge provides them. Sessions
+ * and rows an update did not touch stay the same objects, so memoized views
+ * of them are not recomputed.
+ */
+export function subscribeAgentState(api: Pick<AgentApi, "onState" | "onStateUpdate">, listener: (state: ClientState) => void): () => void {
+  if (!api.onStateUpdate) return api.onState(listener);
+  let current: ClientState | null = null;
+  return api.onStateUpdate((update) => {
+    if ("state" in update) current = update.state;
+    else if (current) for (const patch of update.patches) current = applyStatePatch(current, patch);
+    else return;
+    listener(current);
+  });
+}
 
 const connectionScope = (state: ClientState) => JSON.stringify([
   state.connected, state.runtimeInstanceId,
@@ -51,7 +69,7 @@ export function useDesktopState(setUiError: (error: string | null) => void) {
         errorRevision: previous.errorRevision + (state.error && state.error !== previous.agentState.error ? 1 : 0),
       }));
     };
-    const unsubscribe = api.onState((state) => {
+    const unsubscribe = subscribeAgentState(api, (state) => {
       if (disposed) return;
       receivedLiveState = true;
       setAgentState(state);

@@ -258,9 +258,14 @@ impl<'a> RelayClient<'a> {
         if cancellation.is_cancelled() {
             return Err(SecureClientError::cancelled());
         }
+        let body = request.serialize_bounded(self.config.limits.serialized_relay_request_bytes)?;
         let endpoint = relay_endpoint(
             &self.config.relay_base_url,
-            "/api/v1/relay/chat/completions",
+            if request.exact_request_body.is_some() {
+                "/api/v1/relay/near/chat/completions"
+            } else {
+                "/api/v1/relay/chat/completions"
+            },
         )?;
         let client = relay_client(
             self.config,
@@ -272,7 +277,6 @@ impl<'a> RelayClient<'a> {
             },
         )
         .await?;
-        let body = request.serialize_bounded(self.config.limits.serialized_relay_request_bytes)?;
         let response = tokio::select! {
             () = tokio::time::sleep(std::time::Duration::from_secs(300)) => return Err(SecureClientError::with_code(axiom_inference::ProviderFailureKind::Transient, crate::SecureErrorCode::StreamTimeout, "Timed out starting the encrypted request.", true)),
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
@@ -283,7 +287,7 @@ impl<'a> RelayClient<'a> {
                 } else {
                     "application/json"
                 })
-                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_TYPE, if request.exact_request_body.is_some() { "application/vnd.axiom.near-request.v2" } else { "application/json" })
                 .bearer_auth(self.credential.expose())
                 .body(body)
                 .send() => response.map_err(|_| SecureClientError::new(
@@ -354,6 +358,9 @@ pub(crate) fn stream_failure(code: Option<&str>) -> SecureClientError {
 }
 
 pub(crate) fn error_for_status_body(status: StatusCode, body: &[u8]) -> SecureClientError {
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return error_for_status(status);
+    }
     let public = serde_json::from_slice::<PublicErrorEnvelope>(body).ok();
     let code = public
         .as_ref()
@@ -452,6 +459,23 @@ struct PublicErrorDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_requests_give_actionable_advice_without_automatic_replay() {
+        for body in [
+            b"Request body too large".as_slice(),
+            br#"{"detail":{"code":"ATTESTATION_KEY_CHANGED","message":"private upstream secret"}}"#,
+        ] {
+            let error = error_for_status_body(StatusCode::PAYLOAD_TOO_LARGE, body);
+            assert_eq!(
+                error.kind(),
+                axiom_inference::ProviderFailureKind::InvalidRequest
+            );
+            assert_eq!(error.safe_detail(), crate::request::REQUEST_TOO_LARGE);
+            assert!(!error.retryable());
+            assert!(!error.requires_reattest_and_reencrypt());
+        }
+    }
 
     #[test]
     fn insufficient_credit_in_a_stream_requires_top_up_without_retrying() {

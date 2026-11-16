@@ -87,6 +87,21 @@ struct CatalogModel {
     /// quarantines its model; see `catalog_tags`.
     #[serde(default)]
     tags: Value,
+    /// False only for the opt-in display entries of a provider whose backend
+    /// catalog is temporarily down. Never a selectable or routable offering.
+    #[serde(default = "available_by_default")]
+    available: bool,
+}
+
+const fn available_by_default() -> bool {
+    true
+}
+
+/// One accepted catalog response.
+pub(crate) struct Catalog {
+    pub(crate) models: Vec<ModelInfo>,
+    /// Fully validated but temporarily unavailable offerings, for display only.
+    pub(crate) unavailable: Vec<ModelInfo>,
 }
 
 #[derive(Deserialize)]
@@ -104,11 +119,13 @@ pub(crate) async fn fetch_models(
     credential: &ApiCredential,
     providers: &ProviderRegistry,
     cancellation: &CancellationToken,
-) -> Result<Vec<ModelInfo>> {
+) -> Result<Catalog> {
     if cancellation.is_cancelled() {
         return Err(SecureClientError::cancelled());
     }
-    let endpoint = relay_endpoint(&config.relay_base_url, "/api/v1/relay/models")?;
+    // Backends that predate the parameter ignore it and list available models only.
+    let mut endpoint = relay_endpoint(&config.relay_base_url, "/api/v1/relay/models")?;
+    endpoint.set_query(Some("include_unavailable=true"));
     let client = relay_client(config, &endpoint, config.request_timeout).await?;
     let response = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
@@ -145,14 +162,23 @@ pub(crate) async fn fetch_models(
     let body = bounded_body(response, config.limits.model_catalog_bytes).await?;
     let wire: Vec<Value> = serde_json::from_slice(&body)
         .map_err(|_| SecureClientError::catalog("model catalog schema is invalid"))?;
-    validate_models(wire, config, providers)
+    validate_catalog(wire, config, providers)
 }
 
+#[cfg(test)]
 fn validate_models(
     wire: Vec<Value>,
     config: &SecureClientConfig,
     providers: &ProviderRegistry,
 ) -> Result<Vec<ModelInfo>> {
+    validate_catalog(wire, config, providers).map(|catalog| catalog.models)
+}
+
+fn validate_catalog(
+    wire: Vec<Value>,
+    config: &SecureClientConfig,
+    providers: &ProviderRegistry,
+) -> Result<Catalog> {
     if wire.is_empty() || wire.len() > MAX_MODELS {
         return Err(SecureClientError::catalog(
             "model catalog has an invalid number of entries",
@@ -160,6 +186,7 @@ fn validate_models(
     }
     let mut ids = BTreeSet::new();
     let mut output = Vec::with_capacity(wire.len());
+    let mut unavailable = Vec::new();
     for raw in wire {
         let item: CatalogModel = match serde_json::from_value(raw) {
             Ok(item) => item,
@@ -283,6 +310,7 @@ fn validate_models(
             .endpoint_policy
             .validate_provider_url(&item.base_url)?;
         let tags = catalog_tags(&item.id, &item.tags);
+        let available = item.available;
         let mut model = ModelInfo {
             id: item.id,
             label: item.label,
@@ -319,14 +347,21 @@ fn validate_models(
             );
             continue;
         }
-        output.push(model);
+        if available {
+            output.push(model);
+        } else {
+            unavailable.push(model);
+        }
     }
     if output.is_empty() {
         return Err(SecureClientError::capability(
             "model catalog contains no providers supported by this client",
         ));
     }
-    Ok(output)
+    Ok(Catalog {
+        models: output,
+        unavailable,
+    })
 }
 
 /// Tags filter the picker and the `uncensored` tag selects the uncensored image
@@ -496,6 +531,10 @@ pub(crate) fn error_for_status(status: StatusCode) -> SecureClientError {
             ProviderFailureKind::ModelUnavailable,
             "selected model is unavailable",
         ),
+        413 => (
+            ProviderFailureKind::InvalidRequest,
+            crate::request::REQUEST_TOO_LARGE,
+        ),
         408 | 425 | 500..=504 => (
             ProviderFailureKind::Transient,
             "Axiom service is temporarily unavailable",
@@ -577,11 +616,56 @@ mod tests {
             supported_reasoning_efforts: vec!["medium".into()],
             e2ee_contracts: Vec::new(),
             tags: Value::Null,
+            available: true,
         }
     }
 
     fn wire(model: CatalogModel) -> Value {
         serde_json::to_value(model).unwrap()
+    }
+
+    #[test]
+    fn unavailable_entries_are_listed_apart_and_never_satisfy_the_catalog() {
+        let config = config();
+        let providers = ProviderRegistry::production(
+            config.clone(),
+            Arc::new(ApiCredential::new("test-credential")),
+        )
+        .unwrap();
+        let mut down = model("down");
+        down.available = false;
+        down.input_price_microusd_per_million_tokens = None;
+        down.output_price_microusd_per_million_tokens = None;
+        let catalog = validate_catalog(
+            vec![wire(model("live")), wire(down.clone())],
+            &config,
+            &providers,
+        )
+        .unwrap();
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["live"]
+        );
+        assert_eq!(
+            catalog
+                .unavailable
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["down"]
+        );
+        // Backends that predate the field list selectable models only.
+        let mut legacy = wire(model("legacy"));
+        legacy.as_object_mut().unwrap().remove("available");
+        let catalog = validate_catalog(vec![legacy], &config, &providers).unwrap();
+        assert_eq!(catalog.models.len(), 1);
+        assert!(catalog.unavailable.is_empty());
+        // Only unavailable offerings is still an unusable catalog.
+        assert!(validate_catalog(vec![wire(down)], &config, &providers).is_err());
     }
 
     #[test]

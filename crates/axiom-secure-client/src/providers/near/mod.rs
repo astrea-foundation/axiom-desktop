@@ -41,6 +41,7 @@ pub(crate) fn supports_attestation_protocol(protocol: &str) -> bool {
 }
 
 pub(crate) struct NearProvider {
+    vision_cache: Arc<crate::VisionCache>,
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     cache: VerifiedMaterialCache<NearVerifiedMaterial>,
@@ -49,6 +50,7 @@ pub(crate) struct NearProvider {
 impl NearProvider {
     pub(crate) fn new(config: SecureClientConfig, credential: Arc<ApiCredential>) -> Self {
         Self {
+            vision_cache: Arc::default(),
             config,
             credential,
             cache: VerifiedMaterialCache::default(),
@@ -61,6 +63,7 @@ struct NearVerifiedMaterial {
     verified: attestation::VerifiedNearAttestation,
     binding: AttestationBinding,
     worker_session_id: String,
+    single_copy: bool,
 }
 
 impl sealed::Provider for NearProvider {}
@@ -125,6 +128,7 @@ impl SecureProvider for NearProvider {
                 &self.config,
                 &self.credential,
                 model,
+                &self.vision_cache,
             ));
         }
         let _singleflight = tokio::select! {
@@ -137,6 +141,7 @@ impl SecureProvider for NearProvider {
                 &self.config,
                 &self.credential,
                 model,
+                &self.vision_cache,
             ));
         }
         let (mut verified, wire, worker_session_id) = Box::pin(attestation::verify_model(
@@ -148,6 +153,7 @@ impl SecureProvider for NearProvider {
         ))
         .await?;
         verify_response_signing_binding(&wire, &verified.response_signing_address)?;
+        let single_copy = wire.relay_request_wire_versions.contains(&2);
         let binding = AttestationBinding::verify(wire, model, &verified.model_key.to_hex())?;
         verified.evidence.attestation_generation = Some(binding.generation);
         // The UI must stop reusing a report when this process stops reusing its
@@ -166,6 +172,7 @@ impl SecureProvider for NearProvider {
             verified,
             binding,
             worker_session_id,
+            single_copy,
         };
         self.cache
             .insert(
@@ -181,6 +188,7 @@ impl SecureProvider for NearProvider {
             &self.config,
             &self.credential,
             model,
+            &self.vision_cache,
         ))
     }
 
@@ -194,8 +202,10 @@ fn session_from_material(
     config: &SecureClientConfig,
     credential: &Arc<ApiCredential>,
     model: &ModelInfo,
+    vision_cache: &Arc<crate::VisionCache>,
 ) -> Box<dyn VerifiedSession> {
     Box::new(NearVerifiedSession {
+        vision_cache: Arc::clone(vision_cache),
         evidence: material.verified.evidence,
         model_key: material.verified.model_key,
         response_signing_address: material.verified.response_signing_address,
@@ -204,10 +214,12 @@ fn session_from_material(
         model: model.clone(),
         binding: material.binding,
         worker_session_id: material.worker_session_id,
+        single_copy: material.single_copy,
     })
 }
 
 struct NearVerifiedSession {
+    vision_cache: Arc<crate::VisionCache>,
     evidence: SecurityEvidence,
     model_key: crypto::Ed25519PublicKey,
     response_signing_address: String,
@@ -216,6 +228,7 @@ struct NearVerifiedSession {
     model: ModelInfo,
     binding: AttestationBinding,
     worker_session_id: String,
+    single_copy: bool,
 }
 
 impl sealed::Session for NearVerifiedSession {}
@@ -240,6 +253,8 @@ impl VerifiedSession for NearVerifiedSession {
                 response_signing_address: &self.response_signing_address,
                 binding: &self.binding,
                 worker_session_id: &self.worker_session_id,
+                single_copy: self.single_copy,
+                vision_cache: Arc::clone(&self.vision_cache),
             },
             _request,
             &_cancellation,
@@ -262,6 +277,8 @@ impl VerifiedSession for NearVerifiedSession {
                 response_signing_address: &self.response_signing_address,
                 binding: &self.binding,
                 worker_session_id: &self.worker_session_id,
+                single_copy: self.single_copy,
+                vision_cache: Arc::clone(&self.vision_cache),
             },
             _request,
             _events,
@@ -403,6 +420,7 @@ mod tests {
         let address = "12".repeat(32);
         let fingerprint = hex::encode(Sha256::digest(hex::decode(&address).unwrap()));
         let mut wire = ProviderKeyLease {
+            relay_request_wire_versions: vec![],
             model_id: "model-id".into(),
             model: "model/upstream".into(),
             base_url: "https://model.example/v1".into(),

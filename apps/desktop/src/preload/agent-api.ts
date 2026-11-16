@@ -1,6 +1,6 @@
 import { ipcRenderer } from "electron";
 import { AgentStateImages } from "./agent-state-images";
-import type { AgentImagePacket, AgentStatePacket } from "../shared/agent-state";
+import type { AgentImagePacket, AgentStatePacket, AgentStateUpdate } from "../shared/agent-state";
 import type { GeneratedImageUrl } from "./agent-state-images";
 import type { PromptAttachment, GetAttachmentsResponse, ResolveImageResponse } from "@axiom/axiom-acp-client";
 import type {
@@ -107,7 +107,15 @@ export interface AgentApi {
   moveCollection: (collectionId: string, position: number) => Promise<CollectionStateResponse>;
   deleteCollection: (collectionId: string) => Promise<CollectionStateResponse>;
   assignThreadCollection: (threadId: string, collectionId: string | null) => Promise<unknown>;
+  /** Whole visible state after every change. Prefer `onStateUpdate` for rendering. */
   onState: (callback: (state: ClientState) => void) => () => void;
+  /**
+   * The whole state once, then ordered patches. The context bridge copies
+   * whatever crosses it, so patches keep each update proportional to what
+   * changed and let the page keep untouched objects. Bridges that publish only
+   * whole states omit this.
+   */
+  onStateUpdate?: (callback: (update: AgentStateUpdate) => void) => () => void;
   onInteraction: (callback: (interaction: PendingInteraction) => void) => () => void;
 }
 
@@ -117,23 +125,42 @@ function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
 
 const stateImages = new AgentStateImages();
 const stateListeners = new Set<(state: ClientState) => void>();
+// Each update listener first receives the whole state and patches after that.
+const updateListeners = new Map<(update: AgentStateUpdate) => void, { whole: boolean }>();
 // Subscribe before any renderer listeners: initial image payloads must not be
 // lost between bootstrap and React mounting. State projections carry document-
 // local URLs; explicit draft/attachment APIs transfer their owning input bytes.
 let localState: ClientState | null = null;
 let localEpoch = 0;
-function acceptState(packet: AgentStatePacket): ClientState {
-  const state = stateImages.accept(packet);
-  const identity = (value: ClientState | null) => JSON.stringify([value?.connected, value?.runtimeInstanceId, value?.account?.state, value?.account?.account?.id]);
-  if (identity(state) !== identity(localState)) localEpoch++;
-  localState = state;
+let snapshot: Promise<void> | null = null;
+function acceptState(packet: AgentStatePacket): ClientState | null {
+  const { state, update } = stateImages.ingest(packet);
+  if (state) {
+    const identity = (value: ClientState | null) => JSON.stringify([value?.connected, value?.runtimeInstanceId, value?.account?.state, value?.account?.account?.id]);
+    if (identity(state) !== identity(localState)) localEpoch++;
+    localState = state;
+    // Listeners follow every advance, including one made by a getState reply:
+    // a later patch is only meaningful on top of the state it was made from.
+    if (update) {
+      for (const listener of stateListeners) listener(state);
+      for (const [listener, delivered] of updateListeners) {
+        if (delivered.whole && "patches" in update) listener(update);
+        else { delivered.whole = true; listener({ state }); }
+      }
+    }
+  }
+  if (stateImages.needsSnapshot) requestSnapshot();
   return state;
 }
+// A reload or a missed packet leaves patches without their base. Ask main for
+// the whole projection; patches that arrive meanwhile wait and apply after it.
+function requestSnapshot(): void {
+  if (snapshot) return;
+  snapshot = invoke<AgentStatePacket>("state").then((packet) => { acceptState(packet); }, () => undefined)
+    .finally(() => { snapshot = null; });
+}
 
-ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => {
-  const state = acceptState(packet);
-  for (const listener of stateListeners) listener(state);
-});
+ipcRenderer.on("agent:state-changed", (_event, packet: AgentStatePacket) => { acceptState(packet); });
 window.addEventListener("unload", () => stateImages.dispose(), { once: true });
 
 export const agentApi: AgentApi = {
@@ -146,7 +173,11 @@ export const agentApi: AgentApi = {
     if (epoch !== localEpoch) throw new Error("The account changed while saving local data.");
     return result;
   },
-  getState: async () => acceptState(await invoke<AgentStatePacket>("state")),
+  getState: async () => {
+    const state = acceptState(await invoke<AgentStatePacket>("state"));
+    if (!state) throw new Error("Desktop state is missing");
+    return state;
+  },
   desktopBootstrap: () => invoke("desktop-bootstrap"),
   newChat: () => invoke("chat-new"),
   desktopMcp: (request) => invoke("desktop-mcp", request),
@@ -203,6 +234,10 @@ export const agentApi: AgentApi = {
   onState: (callback) => {
     stateListeners.add(callback);
     return () => { stateListeners.delete(callback); };
+  },
+  onStateUpdate: (callback) => {
+    updateListeners.set(callback, { whole: false });
+    return () => { updateListeners.delete(callback); };
   },
   onInteraction: (callback) => {
     const listener = (_event: unknown, interaction: PendingInteraction) => callback(interaction);

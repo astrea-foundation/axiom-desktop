@@ -44,6 +44,10 @@ const CREDENTIAL_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
 const CREDENTIAL_TIMEOUT_MARKER: &str =
     "timed out; the system credential store remains unavailable";
 const DEFAULT_MINIMUM_ACCESS_LIFETIME: Duration = Duration::from_secs(120);
+/// Session validation leases an access token with at least this much lifetime
+/// left. The same short bound limits how long a completed validation may be
+/// re-published without asking the server again.
+const VALIDATION_ACCESS_LIFETIME: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialSource {
@@ -109,6 +113,30 @@ pub enum ValidationStatus {
 pub struct VersionedValidationStatus {
     pub status: ValidationStatus,
     pub revision: u64,
+}
+
+impl VersionedValidationStatus {
+    /// A status published after local account preparation must describe the
+    /// account whose store was prepared (`None` when the store was closed).
+    /// Any other valid identity is reported as unavailable, so the client
+    /// refreshes instead of pairing it with different local data.
+    #[must_use]
+    pub fn for_prepared_account(self, prepared_account_id: Option<&str>) -> Self {
+        match &self.status {
+            ValidationStatus::Valid(status)
+                if prepared_account_id != Some(status.account.id.as_str()) =>
+            {
+                Self {
+                    status: ValidationStatus::Unavailable(
+                        "Axiom authorization changed while local chat storage was being prepared; refresh account status"
+                            .into(),
+                    ),
+                    revision: self.revision,
+                }
+            }
+            _ => self,
+        }
+    }
 }
 
 /// A bearer credential leased before a secure operation begins. Callers must
@@ -985,6 +1013,59 @@ impl AuthManager {
         self.next_revision()
     }
 
+    /// Re-publish the validation that authorized local account preparation
+    /// (opening that account's store) without contacting the server again.
+    ///
+    /// Preparation events reserve revisions later than the validation that
+    /// started them, so its result needs a fresh revision before clients will
+    /// apply it. `age` is the time since that validation completed.
+    ///
+    /// Returns `None`, and the caller must validate again, unless this manager
+    /// still holds exactly the validated authorization: the same credential
+    /// generation, source, account and session, no credential awaiting a
+    /// protected read or external change, and an `age` no greater than
+    /// `VALIDATION_ACCESS_LIFETIME`. Expired, missing and unavailable results
+    /// are never re-published.
+    #[must_use]
+    pub fn republish_validation(
+        &self,
+        validation: &VersionedValidationStatus,
+        age: Duration,
+    ) -> Option<VersionedValidationStatus> {
+        let ValidationStatus::Valid(status) = &validation.status else {
+            return None;
+        };
+        if age > VALIDATION_ACCESS_LIFETIME {
+            return None;
+        }
+        let mut state = self
+            .shared
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let has_credential = state.automation_key.is_some() || state.refresh_token.is_some();
+        if !has_credential
+            || state.refresh_token_pending
+            || state.external_change_pending
+            || state.unavailable_detail.is_some()
+            || state.generation != status.generation
+            || state.source != status.source
+            || state.account.as_ref() != Some(&status.account)
+            || state.session.as_ref() != Some(&status.session)
+        {
+            return None;
+        }
+        state.revision = state.revision.wrapping_add(1);
+        let revision = state.revision;
+        Some(VersionedValidationStatus {
+            status: ValidationStatus::Valid(AccountStatus {
+                revision,
+                ..status.clone()
+            }),
+            revision,
+        })
+    }
+
     pub async fn access_token_for_secure_operation(
         &self,
         cancellation: &CancellationToken,
@@ -1066,7 +1147,7 @@ impl AuthManager {
         }
         let cancellation = CancellationToken::new();
         let lease = match self
-            .access_token_internal(Duration::from_secs(30), &cancellation, true)
+            .access_token_internal(VALIDATION_ACCESS_LIFETIME, &cancellation, true)
             .await
         {
             Ok(lease) => lease,
@@ -2987,6 +3068,8 @@ mod tests {
         refresh_started: tokio::sync::Notify,
         refresh_release: tokio::sync::Notify,
         session_account_id: Mutex<Option<String>>,
+        sessions: AtomicUsize,
+        session_unauthorized: AtomicBool,
         cancelled: AtomicBool,
         revocations: AtomicUsize,
         searches: AtomicUsize,
@@ -3110,7 +3193,11 @@ mod tests {
         .into_response()
     }
 
-    async fn session(State(state): State<Arc<MockState>>) -> Json<Value> {
+    async fn session(State(state): State<Arc<MockState>>) -> Response {
+        state.sessions.fetch_add(1, Ordering::AcqRel);
+        if state.session_unauthorized.load(Ordering::Acquire) {
+            return AxumStatus::UNAUTHORIZED.into_response();
+        }
         let mut account = account_json();
         if let Some(id) = state
             .session_account_id
@@ -3128,6 +3215,7 @@ mod tests {
                 "expires_at": (Utc::now() + chrono::Duration::days(30)).to_rfc3339()
             }
         }))
+        .into_response()
     }
 
     async fn revoke_session(State(state): State<Arc<MockState>>) -> AxumStatus {
@@ -3233,6 +3321,8 @@ mod tests {
             refresh_started: tokio::sync::Notify::new(),
             refresh_release: tokio::sync::Notify::new(),
             session_account_id: Mutex::new(None),
+            sessions: AtomicUsize::new(0),
+            session_unauthorized: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             revocations: AtomicUsize::new(0),
             searches: AtomicUsize::new(0),
@@ -3611,6 +3701,228 @@ mod tests {
             1,
             "cached account validation must not ask for the same password again"
         );
+    }
+
+    /// A cold start with a saved session, as the Desktop account-status
+    /// handler performs it: validate, open the local store (which publishes
+    /// preparation events under reserved revisions), then publish the result.
+    async fn saved_session() -> (AuthManager, Arc<MockState>, Arc<MemoryStore>) {
+        let (auth, server, store) = manager().await;
+        *store.credential.lock().unwrap() = Some("saved-refresh-token-with-enough-entropy".into());
+        auth.shared.state.write().unwrap().refresh_token_pending = true;
+        (auth, server, store)
+    }
+
+    #[tokio::test]
+    async fn cold_start_validates_the_session_once_and_publishes_after_preparation_events() {
+        let (auth, server, _store) = saved_session().await;
+        let first = auth.validate_with_revision().await;
+        let ValidationStatus::Valid(validated) = &first.status else {
+            panic!("saved session: {first:?}")
+        };
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 1);
+        assert_eq!(server.sessions.load(Ordering::Acquire), 1);
+
+        // Switching, opening and decrypting the account store.
+        let preparation = [
+            auth.reserve_account_transition_revision(),
+            auth.reserve_account_transition_revision(),
+            auth.reserve_account_transition_revision(),
+        ];
+        assert!(
+            preparation
+                .iter()
+                .all(|revision| *revision > first.revision),
+            "the original result is older than every preparation event and would be dropped"
+        );
+
+        let published = auth
+            .republish_validation(&first, Duration::from_millis(5))
+            .expect("unchanged authorization is re-published");
+        assert!(published.revision > preparation[2]);
+        let ValidationStatus::Valid(status) = &published.status else {
+            panic!("published: {published:?}")
+        };
+        assert_eq!(
+            AuthManager::account_status_revision(status),
+            published.revision
+        );
+        assert_eq!(status.account, validated.account);
+        assert_eq!(status.session, validated.session);
+        assert_eq!(status.source, validated.source);
+        assert!(auth.account_status_is_current(status));
+        assert_eq!(
+            published
+                .clone()
+                .for_prepared_account(Some("acct_test-123")),
+            published
+        );
+        assert_eq!(
+            server.sessions.load(Ordering::Acquire),
+            1,
+            "local chats must not wait behind a second session request"
+        );
+        assert_eq!(server.refreshes.load(Ordering::Acquire), 1);
+
+        // Later publications stay monotonic, and the replaced behavior (a
+        // second validation) cost one more round trip.
+        let again = auth.validate_with_revision().await;
+        assert!(again.revision > published.revision);
+        assert!(matches!(again.status, ValidationStatus::Valid(_)));
+        assert_eq!(server.sessions.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn changed_authorization_is_never_republished_and_is_validated_again() {
+        let (auth, server, store) = saved_session().await;
+        let first = auth.validate_with_revision().await;
+        assert!(matches!(first.status, ValidationStatus::Valid(_)));
+        let fresh = Duration::from_millis(5);
+
+        // Only a fresh result is reused; the boundary is the lifetime the
+        // validating access token was required to have.
+        assert!(
+            auth.republish_validation(&first, VALIDATION_ACCESS_LIFETIME)
+                .is_some()
+        );
+        assert!(
+            auth.republish_validation(
+                &first,
+                VALIDATION_ACCESS_LIFETIME + Duration::from_millis(1)
+            )
+            .is_none()
+        );
+
+        // A rotated session for the same account is new server state.
+        let session = auth.shared.state.read().unwrap().session.clone();
+        auth.shared.state.write().unwrap().session = Some(NativeSessionStatus {
+            id: Some("session-2".into()),
+            expires_at: (Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+        });
+        assert!(auth.republish_validation(&first, fresh).is_none());
+        auth.shared.state.write().unwrap().session = session;
+        assert!(auth.republish_validation(&first, fresh).is_some());
+
+        // A relabelled account must not inherit the validated identity.
+        auth.shared
+            .state
+            .write()
+            .unwrap()
+            .account
+            .as_mut()
+            .unwrap()
+            .id = "other-account".into();
+        assert!(auth.republish_validation(&first, fresh).is_none());
+        auth.shared
+            .state
+            .write()
+            .unwrap()
+            .account
+            .as_mut()
+            .unwrap()
+            .id = "acct_test-123".into();
+
+        // A credential awaiting its protected read is not an authorization.
+        auth.shared.state.write().unwrap().refresh_token_pending = true;
+        assert!(auth.republish_validation(&first, fresh).is_none());
+        auth.shared.state.write().unwrap().refresh_token_pending = false;
+        assert!(auth.republish_validation(&first, fresh).is_some());
+
+        // Another process replaced the credential while the store was opening.
+        let sessions = server.sessions.load(Ordering::Acquire);
+        let replacement = "peer-login-refresh-token-with-enough-entropy";
+        store.save(replacement).unwrap();
+        auth.adopt_external_credential(Some(replacement.into()))
+            .unwrap();
+        assert!(auth.republish_validation(&first, fresh).is_none());
+        let revalidated = auth.validate_with_revision().await;
+        assert!(matches!(revalidated.status, ValidationStatus::Valid(_)));
+        assert!(revalidated.revision > first.revision);
+        assert_eq!(server.sessions.load(Ordering::Acquire), sessions + 1);
+        assert!(
+            auth.republish_validation(&first, fresh).is_none(),
+            "a result from the replaced credential stays unusable"
+        );
+        assert!(auth.republish_validation(&revalidated, fresh).is_some());
+
+        // Signing out clears the authorization entirely.
+        let _ = auth.clear_local_authorization(None);
+        assert!(auth.republish_validation(&revalidated, fresh).is_none());
+        assert!(matches!(auth.validate().await, ValidationStatus::Missing));
+    }
+
+    #[tokio::test]
+    async fn expiry_is_still_reported_around_local_preparation() {
+        // Revoked before the first check: the store is never opened for it, and
+        // nothing can be re-published.
+        let (auth, server, store) = saved_session().await;
+        server.session_unauthorized.store(true, Ordering::Release);
+        let first = auth.validate_with_revision().await;
+        assert!(matches!(first.status, ValidationStatus::Expired));
+        assert!(!auth.has_credential());
+        assert!(store.load().unwrap().is_none());
+        assert!(auth.republish_validation(&first, Duration::ZERO).is_none());
+        let sessions = server.sessions.load(Ordering::Acquire);
+        let after = auth.validate_with_revision().await;
+        assert!(matches!(after.status, ValidationStatus::Missing));
+        assert!(after.revision > first.revision);
+        assert_eq!(
+            server.sessions.load(Ordering::Acquire),
+            sessions,
+            "a cleared credential is reported without another request"
+        );
+
+        // Revoked while a long preparation ran: the stale result is not
+        // reused, and the second check clears the credential.
+        let (auth, server, store) = saved_session().await;
+        let first = auth.validate_with_revision().await;
+        assert!(matches!(first.status, ValidationStatus::Valid(_)));
+        server.session_unauthorized.store(true, Ordering::Release);
+        assert!(
+            auth.republish_validation(&first, VALIDATION_ACCESS_LIFETIME + Duration::from_secs(1))
+                .is_none()
+        );
+        let after = auth.validate_with_revision().await;
+        assert!(matches!(after.status, ValidationStatus::Expired));
+        assert!(after.revision > first.revision);
+        assert!(!auth.has_credential());
+        assert!(store.load().unwrap().is_none());
+        assert_eq!(server.sessions.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn a_published_identity_must_match_the_prepared_local_store() {
+        let (auth, _server, _store) = saved_session().await;
+        let valid = auth.validate_with_revision().await;
+        assert!(matches!(valid.status, ValidationStatus::Valid(_)));
+        assert_eq!(
+            valid.clone().for_prepared_account(Some("acct_test-123")),
+            valid
+        );
+        for prepared in [Some("another-account"), None] {
+            let mismatched = valid.clone().for_prepared_account(prepared);
+            assert_eq!(mismatched.revision, valid.revision);
+            let ValidationStatus::Unavailable(detail) = mismatched.status else {
+                panic!("a mismatched identity was published")
+            };
+            assert!(detail.contains("refresh account status"));
+        }
+        for status in [
+            ValidationStatus::Missing,
+            ValidationStatus::Expired,
+            ValidationStatus::Unavailable("offline".into()),
+        ] {
+            let other = VersionedValidationStatus {
+                status,
+                revision: 9,
+            };
+            assert_eq!(other.clone().for_prepared_account(None), other);
+            assert_eq!(
+                other.clone().for_prepared_account(Some("acct_test-123")),
+                other
+            );
+            assert!(auth.republish_validation(&other, Duration::ZERO).is_none());
+        }
     }
 
     #[tokio::test]

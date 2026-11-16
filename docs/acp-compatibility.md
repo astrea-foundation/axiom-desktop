@@ -146,6 +146,11 @@ phase `encrypting`, `moving_media`, `checking`, `finalizing` or `failed` and
 optional `completed`/`total` counters for that phase. During an upgrade the account
 state is `starting`, with no usable account/store context. Each progress update
 uses a newer account revision; final validation or failure has a later revision.
+After an account store opens, the final `valid` status is normally the validation
+that authorized opening it, re-published under that later revision without a
+second server request. The runtime validates again, after a `checking_sign_in`
+update, only when its authorization changed meanwhile or that result is no
+longer fresh.
 Clients must apply the usual account/runtime fences so delayed progress cannot
 replace a ready account. A failed upgrade publishes `unavailable`, recovery
 details and phase `failed`; `account/status` retries opening the existing store.
@@ -321,8 +326,10 @@ reject the action before sending any generation request. The model-facing tool
 uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
 32-pixel-grid output within the existing area cap. New images default to 2:3.
 
-`view_image` selects one conversation-local `image_id` for optional inspection,
-including a result generated earlier in the same turn. Native code supplies a
+`generate` automatically supplies a bounded preview to vision-capable models.
+No separate viewing call is needed to inspect the new result. `view_image`
+selects one conversation-local `image_id` absent from current visual context,
+including after compaction. Native code supplies a
 bounded visual observation after all replies in the tool-call batch, preserving
 provider tool-history ordering. The observation is application context, not a
 new user request. ACP receives a normal text tool result; image bytes go only to
@@ -360,8 +367,10 @@ reject the action before sending any generation request. The model-facing tool
 uses an enumerated `aspect_ratio`; client-side sizing fills the largest exact
 32-pixel-grid output within the existing area cap. New images default to 2:3.
 
-`view_image` selects one conversation-local `image_id` for optional inspection,
-including a result generated earlier in the same turn. Native code supplies a
+`generate` automatically supplies a bounded preview to vision-capable models.
+No separate viewing call is needed to inspect the new result. `view_image`
+selects one conversation-local `image_id` absent from current visual context,
+including after compaction. Native code supplies a
 bounded visual observation after all replies in the tool-call batch, preserving
 provider tool-history ordering. The observation is application context, not a
 new user request. ACP receives a normal text tool result; image bytes go only to
@@ -450,10 +459,13 @@ Security projections require the registered provider identity, accepted key
 fingerprints and hard expiry. NEAR require positive lease generation;
 Tinfoil intentionally omits it. The projection must preserve router-versus-worker
 and observed-versus-approved distinctions from [security](threat-model.md).
-The SDK's `ensureSecurity(threadId)` renews an idle thread's report through the
+The SDK's `ensureSecurity(threadId)` renews a loaded thread's report through the
 model-only `_axiom/security/prewarm` method and reusable native attestation cache.
-It fences account/runtime/model changes, running requests and newer request
-reports before applying a result. `verifySecurity(threadId)` uses
+It can renew during an already running image/tool turn without reserving or
+cancelling that work. Account/runtime/model changes, a request starting after
+an idle preflight, and newer request reports or active security states fence
+the result. Superseded warmups are discarded from the SDK cache.
+`verifySecurity(threadId)` requires an idle thread and uses
 `_axiom/security/verify` for an explicit fresh appraisal. Both retain the
 provider's original hard expiry and required public-evidence validation.
 

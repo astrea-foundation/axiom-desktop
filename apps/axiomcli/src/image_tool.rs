@@ -1,4 +1,4 @@
-//! Conversation-local image generation and optional visual inspection.
+//! Conversation-local image generation with automatic visual previews.
 use crate::{
     AxiomError, Result,
     app::AppEvent,
@@ -9,7 +9,7 @@ use crate::{
 use async_trait::async_trait;
 use axiom_inference::{ImageContent, PromptAttachment};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, imageops::FilterType};
+use image::ImageReader;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -56,7 +56,7 @@ pub(crate) fn configure_runtime_definition(
         "Omit aspect_ratio to retain a reference's shape."
     };
     tool.function.description = format!(
-        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically; if view_image is available, you may use it to inspect the result before answering.",
+        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically. Vision-capable chat models also receive a preview as visual input after the tool responses; inspect that preview directly without calling view_image again for the new result.",
         p.aspect_ratios.join(", "),
         p.default_aspect_ratio,
         size.width,
@@ -69,7 +69,10 @@ pub(crate) fn configure_runtime_definition(
 /// This catalog belongs to exactly one account runtime and conversation. Tool
 /// arguments can select its IDs, never a path, URL, database row or other thread.
 #[derive(Clone, Default)]
-pub struct ImageCatalog(Arc<Mutex<BTreeMap<String, LocalImage>>>);
+pub struct ImageCatalog(
+    Arc<Mutex<BTreeMap<String, LocalImage>>>,
+    Arc<axiom_secure_client::VisionCache>,
+);
 
 #[derive(Clone)]
 pub struct LocalImage {
@@ -232,13 +235,84 @@ impl ImageCatalog {
     /// display and saving. No file paths or remote URLs are resolved here.
     pub async fn view(&self, id: &str, cancellation: CancellationToken) -> Result<ImageContent> {
         let source = self.resolve(id)?;
+        let cache = Arc::clone(&self.1);
         tokio::select! {
             biased;
             () = cancellation.cancelled() => Err(AxiomError::Cancelled),
-            result = tokio::task::spawn_blocking(move || vision_copy(&source.image)) => {
+            result = tokio::task::spawn_blocking(move || cache.prepare(&source.image)) => {
                 result.map_err(|_| AxiomError::Tool("Could not prepare the image for viewing.".into()))?
+                    .map_err(|_| AxiomError::Tool("Could not prepare the image for viewing.".into()))
             }
         }
+    }
+
+    pub fn annotate_uploads(&self, message: &mut axiom_inference::ChatMessage) -> Result<()> {
+        if message.images.is_empty()
+            || message
+                .content
+                .contains("\n[Native image references (data): ")
+        {
+            return Ok(());
+        }
+        let catalog = self
+            .0
+            .lock()
+            .map_err(|_| AxiomError::Storage("image catalog unavailable".into()))?;
+        let references = message
+            .images
+            .iter()
+            .enumerate()
+            .filter_map(|(index, image)| {
+                let references = catalog
+                    .values()
+                    .filter(move |asset| asset.image.as_ref() == image)
+                    .map(|asset| json!({"image_id": asset.id, "name": asset.name}))
+                    .collect::<Vec<_>>();
+                (!references.is_empty())
+                    .then(|| json!({"image_index": index + 1, "references": references}))
+            })
+            .collect::<Vec<_>>();
+        if !references.is_empty() {
+            let annotation = format!(
+                "\n[Native image references (data): {}]",
+                serde_json::to_string(&references)?
+            );
+            if !message.content.contains(&annotation)
+                && message.content.len() + annotation.len()
+                    <= axiom_inference::MAX_MESSAGE_TEXT_BYTES
+            {
+                message.content.push_str(&annotation);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn already_inline(
+        &self,
+        id: &str,
+        messages: &[axiom_inference::ChatMessage],
+        pending: &[axiom_inference::ChatMessage],
+        cancel: CancellationToken,
+    ) -> bool {
+        let Ok(source) = self.resolve(id) else {
+            return false;
+        };
+        if messages
+            .iter()
+            .chain(pending)
+            .flat_map(|m| &m.images)
+            .any(|image| image == source.image.as_ref())
+        {
+            return true;
+        }
+        let Ok(copy) = self.view(id, cancel).await else {
+            return false;
+        };
+        messages
+            .iter()
+            .chain(pending)
+            .flat_map(|m| &m.images)
+            .any(|image| image == &copy)
     }
 
     pub fn manifest(&self) -> Result<String> {
@@ -252,50 +326,10 @@ impl ImageCatalog {
     }
 }
 
+#[cfg(test)]
 fn vision_copy(source: &ImageContent) -> Result<ImageContent> {
-    let invalid = || AxiomError::Tool("This image could not be decoded for viewing.".into());
-    let raw = STANDARD.decode(&source.data).map_err(|_| invalid())?;
-    let format = ImageFormat::from_mime_type(&source.mime_type).ok_or_else(invalid)?;
-    let mut reader = ImageReader::with_format(Cursor::new(raw), format);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let mut decoder = reader.into_decoder().map_err(|_| invalid())?;
-    let (width, height) = decoder.dimensions();
-    if u64::from(width) * u64::from(height) > 16 * 1024 * 1024 {
-        return Err(AxiomError::Tool(
-            "This image exceeds the viewing size limit.".into(),
-        ));
-    }
-    let orientation = decoder.orientation().map_err(|_| invalid())?;
-    let mut raster = DynamicImage::from_decoder(decoder).map_err(|_| invalid())?;
-    raster.apply_orientation(orientation);
-    let pixels = u64::from(raster.width()) * u64::from(raster.height());
-    if pixels > 1_048_576 {
-        let root = pixels.isqrt();
-        let divisor = root + u64::from(root * root < pixels);
-        let width = u32::try_from(u64::from(raster.width()) * 1024 / divisor)
-            .map_err(|_| invalid())?
-            .max(1);
-        let height = u32::try_from(u64::from(raster.height()) * 1024 / divisor)
-            .map_err(|_| invalid())?
-            .max(1);
-        raster = raster.resize_exact(width, height, FilterType::Triangle);
-    }
-    // Eight-bit RGBA bounds even incompressible PNG output below 5 MiB and
-    // keeps transparency. Re-encoding also strips private source metadata.
-    let mut output = Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(raster.to_rgba8())
-        .write_to(&mut output, ImageFormat::Png)
-        .map_err(|_| invalid())?;
-    let image = ImageContent {
-        mime_type: "image/png".into(),
-        data: STANDARD.encode(output.into_inner()),
-    };
-    image.validate().map_err(|_| invalid())?;
-    Ok(image)
+    axiom_secure_client::vision_image(source)
+        .map_err(|_| AxiomError::Tool("This image could not be prepared for viewing.".into()))
 }
 
 #[async_trait]
@@ -304,7 +338,7 @@ impl Tool for ViewImageTool {
         "view_image"
     }
     fn description(&self) -> &'static str {
-        "Inspect an uploaded, generated or edited image from this conversation. Use the exact image_id from the image inventory or an earlier generate result. The image is returned as visual input so you can check its appearance before answering or deciding on further edits. Generated images are not automatically visible to you. Viewing does not create or modify an image and does not require a separate user request for image creation."
+        "Inspect an uploaded or earlier generated image from this conversation using its exact image_id. Do not use this tool if the image is already displayed inline in your current visual context: an uploaded image, an automatic generated/edited preview, or an earlier view whose pixels remain in context. Inspect that inline image directly. Use view_image only when its pixels are absent from your current model input, for example after compaction. An image visible only in the user's interface is not proof that you received its pixels. Viewing does not create or modify an image and does not require a separate user request for image creation."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -353,7 +387,7 @@ fn image_result(
 ) -> Result<ToolResult> {
     let id = context.images.add_generated(&image)?;
     let mut result = ToolResult::success(format!(
-        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. If view_image is available, call it with this image_id to inspect the result. Use generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
+        "Created one {}×{} image. Image ID: {id}. It is displayed in this conversation. Cost: {} microUSD. Use generate with this image_id in reference_image_ids for further changes; do not invent a download URL.",
         image.width,
         image.height,
         image.usage.cost_microusd.as_deref().unwrap_or("unknown")
@@ -374,7 +408,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. If view_image is available, you may call it to inspect the result before answering."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. Vision-capable chat models receive a visual preview after the tool responses; inspect it directly without calling view_image again for the new result."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -519,9 +553,9 @@ impl Tool for ImageGenerationTool {
             references: &references,
             dimensions,
         };
-        let operation = self
-            .provider
-            .image_request_with_progress(request, sender, cancellation);
+        let operation =
+            self.provider
+                .image_request_with_progress(request, sender, cancellation.clone());
         tokio::pin!(operation);
         let mut open = true;
         let image = loop {
@@ -667,6 +701,7 @@ pub(crate) fn valid_image_id(id: &str) -> bool {
 pub(crate) mod tests {
     use super::*;
     use crate::app::{PermissionProfile, SessionId};
+    use image::{DynamicImage, ImageFormat};
     use std::{
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
@@ -756,6 +791,57 @@ pub(crate) mod tests {
             mime_type: "image/png".into(),
             data: STANDARD.encode(output.into_inner()),
         }
+    }
+
+    #[tokio::test]
+    async fn inline_images_are_reused_but_compacted_images_can_be_viewed_again() {
+        use axiom_inference::{ChatMessage, ChatRole};
+        let catalog = ImageCatalog::default();
+        let original = png(768, 512);
+        catalog
+            .add_uploads(
+                "session",
+                "turn",
+                &[PromptAttachment::Image {
+                    name: "reference.png".into(),
+                    image: original.clone(),
+                }],
+            )
+            .unwrap();
+        let id = catalog.0.lock().unwrap().keys().next().unwrap().clone();
+        let cancellation = CancellationToken::new();
+        let preview = catalog.view(&id, cancellation.clone()).await.unwrap();
+        let mut inline = ChatMessage::text(ChatRole::User, "Inspect this reference.");
+        inline.images.push(preview.clone());
+        assert!(
+            catalog
+                .already_inline(
+                    &id,
+                    std::slice::from_ref(&inline),
+                    &[],
+                    cancellation.clone()
+                )
+                .await
+        );
+        assert!(
+            catalog
+                .already_inline(&id, &[], &[inline], cancellation.clone())
+                .await
+        );
+        let compacted =
+            ChatMessage::text(ChatRole::User, format!("Summary retained image ID {id}."));
+        assert!(
+            !catalog
+                .already_inline(&id, &[compacted], &[], cancellation.clone())
+                .await
+        );
+        assert_eq!(catalog.view(&id, cancellation).await.unwrap(), preview);
+        assert_eq!(*catalog.resolve(&id).unwrap().image, original);
+        assert!(
+            ViewImageTool
+                .description()
+                .contains("already displayed inline")
+        );
     }
 
     pub(crate) fn generated_fixture() -> axiom_secure_client::GeneratedImage {
@@ -919,6 +1005,35 @@ pub(crate) mod tests {
         assert_eq!(catalog.0.lock().unwrap().len(), 50);
     }
 
+    #[test]
+    fn completed_generation_is_ready_without_preparing_a_model_preview() {
+        let context = ToolContext {
+            model_id: "vision".into(),
+            session_id: SessionId::new(),
+            cwd: PathBuf::from("."),
+            permission_profile: PermissionProfile::Web,
+            images: ImageCatalog::default(),
+            progress: None,
+        };
+        let generated = generated_fixture();
+        let image_id = format!("img_{}", generated.request_id);
+        let result = image_result(&context, generated.clone()).unwrap();
+        assert!(result.success);
+        assert!(result.images.is_empty());
+        assert!(
+            result
+                .content
+                .contains("It is displayed in this conversation")
+        );
+        assert!(result.events.iter().any(|event| matches!(event,
+            AppEvent::ImageGenerated { image, .. } if image.as_ref() == &generated
+        )));
+        assert_eq!(
+            context.images.resolve(&image_id).unwrap().image.data,
+            generated.data
+        );
+    }
+
     #[tokio::test]
     async fn view_image_returns_visual_input_for_uploads_generated_images_and_edits() {
         let context = ToolContext {
@@ -969,9 +1084,17 @@ pub(crate) mod tests {
             );
             let viewed = &result.images[0];
             viewed.validate().unwrap();
+            assert_eq!(viewed.mime_type, "image/webp");
             let decoded = image::load_from_memory(&STANDARD.decode(&viewed.data).unwrap()).unwrap();
             assert_eq!((decoded.width(), decoded.height()), dimensions);
-            assert_eq!(decoded.to_rgba8().get_pixel(0, 0).0, [20, 80, 140, 128]);
+            let pixel = decoded.to_rgba8().get_pixel(0, 0).0;
+            assert_eq!(pixel[3], 128);
+            assert!(
+                pixel[..3]
+                    .iter()
+                    .zip([20_u8, 80, 140])
+                    .all(|(a, b)| a.abs_diff(b) <= 8)
+            );
             assert!(!result.content.contains(&viewed.data));
             assert!(!format!("{result:?}").contains(&viewed.data));
         }
@@ -1077,8 +1200,11 @@ pub(crate) mod tests {
             .unwrap();
         let viewed = vision_copy(&source).unwrap();
         viewed.validate().unwrap();
-        let decoded = image::load_from_memory(&STANDARD.decode(viewed.data).unwrap()).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (1024, 1024));
+        assert_eq!(viewed.mime_type, "image/webp");
+        let raw = STANDARD.decode(viewed.data).unwrap();
+        assert!(raw.len() <= 512 * 1024);
+        let decoded = image::load_from_memory(&raw).unwrap();
+        assert!(u64::from(decoded.width()) * u64::from(decoded.height()) <= 1024 * 1024);
     }
 
     fn upload() -> PromptAttachment {

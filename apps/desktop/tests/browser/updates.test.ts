@@ -95,9 +95,9 @@ for (const theme of ['light','dark']) test(`Update and restart preserves visible
     await page.getByRole('progressbar',{name:'Update download'}).waitFor();
     assert.equal(await page.evaluate(() => (window as any).__updatesTest.installs()),1);
     await page.evaluate(() => (window as any).__updatesTest.update({download:{name:'Axiom.AppImage',received:50,total:100}}));
-    await page.waitForFunction(() => document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') === '50');
+    await page.waitForFunction(() => document.querySelector('[role="progressbar"][aria-label="Update download"]')?.getAttribute('aria-valuenow') === '50');
     await page.keyboard.press('Escape'); await settings(page).waitFor({state:'detached'});
-    await notice.click(); assert.equal(await page.getByRole('progressbar').getAttribute('aria-valuenow'),'50');
+    await notice.click(); assert.equal(await page.getByRole('progressbar',{name:'Update download',exact:true}).getAttribute('aria-valuenow'),'50');
     await capture(page,`${theme}-downloading`);
     await page.evaluate(() => (window as any).__updatesTest.finish());
     await page.getByText('Ready to restart',{exact:true}).waitFor();
@@ -129,7 +129,7 @@ test('fresh Windows startup shows progress, retry and continue before sign-in', 
     await startup.getByText('Getting the latest Axiom…',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'New thread',exact:true}).count(),0);
     await page.evaluate(() => (window as any).__updatesTest.update({status:'downloading',download:{name:'Axiom.exe',received:50,total:100}}));
-    await page.waitForFunction(() => document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') === '50');
+    await page.waitForFunction(() => document.querySelector('[role="progressbar"][aria-label="Update download"]')?.getAttribute('aria-valuenow') === '50');
     await page.evaluate(() => (window as any).__updatesTest.update({status:'error',error:'Offline',download:null}));
     await startup.getByRole('alert').getByText('Offline',{exact:true}).waitFor();
     await startup.getByRole('button',{name:'Retry update'}).click();

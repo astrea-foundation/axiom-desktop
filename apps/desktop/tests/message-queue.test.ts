@@ -31,10 +31,14 @@ test("the first native event during setup does not restore and pause a fresh out
       model: "test-model", thinkingLevel: "medium", updatedAt: "2026-10-20T00:00:00Z",
     } },
   });
+  client.state.flush();
   assert.equal(client.getState().runtimeInstanceId, capturedRuntime);
   assert.equal(f.queue.preparations("account")[0]?.status, "sending");
   assert.equal(f.queue.preparations("account")[0]?.error, undefined);
   client.state.addSession("thread", "");
+  // The renderer only sees a session after its state is published; ordinary
+  // changes are coalesced, so publish this one before using it.
+  client.state.flush();
   f.queue.bindPreparation(id, "thread");
   f.queue.ready(id, "thread");
   assert.deepEqual(f.calls.map(call => call.text), ["hi"]);

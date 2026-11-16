@@ -857,6 +857,11 @@ export interface ListModelsRequest {
 }
 export interface ListModelsResponse {
   models: ModelInfo[];
+  /**
+   * Offerings whose provider is temporarily unavailable. Clients show them
+   * greyed out and must not select them; they are never in `models`.
+   */
+  unavailableModels?: ModelInfo[];
   [k: string]: unknown;
 }
 export interface ModelInfo {

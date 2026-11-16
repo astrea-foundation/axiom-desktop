@@ -19,11 +19,57 @@ import {
 
 interface ModelPickerProps {
   models: ProviderModel[];
+  /** Models whose provider is temporarily down: listed greyed out, never selectable. */
+  unavailableModels?: ProviderModel[];
   selectedModelId: string;
   onSelect: (modelId: string) => void;
 }
 
 const MAX_ROW_TAGS = 3;
+const MAX_HEIGHT = 520;
+const MAX_WIDTH = 480;
+const CRAMPED_HEIGHT = 300;
+/** Gap kept between the picker and whatever would clip it. */
+const EDGE_GAP = 8;
+/** Desktop's window title bar; hosts without one are bounded by their own containers. */
+const SAFE_TOP = 52;
+
+interface Placement {
+  /** Pixels moved down and right from the anchored position above the model control. */
+  down: number;
+  right: number;
+  maxHeight: number | null;
+  maxWidth: number | null;
+}
+
+const UNPLACED: Placement = { down: 0, right: 0, maxHeight: null, maxWidth: null };
+
+/**
+ * The viewport rectangle the picker can occupy without being cut off: the
+ * window, narrowed by every ancestor that clips or scrolls its overflow.
+ */
+function visibleBounds(element: HTMLElement) {
+  let top = SAFE_TOP - EDGE_GAP;
+  let left = 0;
+  let right = document.documentElement.clientWidth;
+  let bottom = window.innerHeight;
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    const clipsX = style.overflowX !== "visible";
+    const clipsY = style.overflowY !== "visible";
+    if (!clipsX && !clipsY) continue;
+    const rect = node.getBoundingClientRect();
+    if (clipsX) {
+      left = Math.max(left, rect.left + node.clientLeft);
+      right = Math.min(right, rect.left + node.clientLeft + node.clientWidth);
+    }
+    if (clipsY) {
+      top = Math.max(top, rect.top + node.clientTop);
+      bottom = Math.min(bottom, rect.top + node.clientTop + node.clientHeight);
+    }
+  }
+  return { top: top + EDGE_GAP, left: left + EDGE_GAP, right: right - EDGE_GAP, bottom: bottom - EDGE_GAP };
+}
 
 const CAPABILITIES: Record<ModelCapability, { label: string; summary: string; Icon: typeof Image }> = {
   images: { label: "Only models that accept images", summary: "Images", Icon: Image },
@@ -49,11 +95,98 @@ function CountBadge({ count, active }: { count: number; active: boolean }) {
   );
 }
 
-export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerProps) {
+function ModelRow({ model, selected, unavailable, onSelect }: {
+  model: ProviderModel;
+  selected: boolean;
+  unavailable: boolean;
+  onSelect: (modelId: string) => void;
+}) {
+  const pricing = formatModelPricing(model);
+  const tags = model.tags ?? [];
+  const hiddenTags = tags.length - MAX_ROW_TAGS;
+  const dimmed = unavailable ? "opacity-45 grayscale" : "";
+  return (
+    <button
+      type="button"
+      title={unavailable ? `${model.providerLabel} is temporarily unavailable` : model.model}
+      aria-current={selected ? "true" : undefined}
+      disabled={unavailable}
+      data-model-unavailable={unavailable ? "true" : undefined}
+      onClick={() => onSelect(model.id)}
+      className="group/model flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)]/70 disabled:cursor-not-allowed"
+    >
+      <span className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors group-enabled/model:group-hover/model:border-[var(--color-border-strong)] ${dimmed}`}>
+        <ModelBrandIcon model={model} className="h-[14px] w-[14px]" />
+        {selected ? (
+          <span className="absolute -bottom-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-brand text-white ring-2 ring-[var(--surface-tile)]">
+            <Check size={7} strokeWidth={3.5} />
+          </span>
+        ) : null}
+      </span>
+      <span className={`min-w-0 flex-1 ${dimmed}`}>
+        <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
+          {model.label}
+          <span className="ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
+            {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
+            {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
+          </span>
+        </span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[10.5px] text-[var(--color-text-muted)]">
+          <ProviderBrandIcon providerId={model.providerId} providerLabel={model.providerLabel} className="h-[11px] w-[11px] shrink-0" />
+          <span className="shrink-0">{model.providerLabel}</span>
+          {tags.length ? (
+            <span className="flex min-w-0 gap-[3px] overflow-hidden pl-0.5">
+              {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
+                <span
+                  key={tag.id}
+                  data-model-tag-tone={tag.tone}
+                  className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-semibold"
+                >
+                  {tag.label}
+                </span>
+              ))}
+              {hiddenTags > 0 ? (
+                <span
+                  data-model-tag-tone="gray"
+                  title={tags.slice(MAX_ROW_TAGS).map((tag) => tag.label).join(", ")}
+                  className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-semibold"
+                >
+                  +{hiddenTags}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+        </span>
+      </span>
+      <span className="w-[8.25rem] shrink-0 text-right">
+        {unavailable ? (
+          <span className="block text-[10px] text-[var(--color-text-muted)]">
+            Temporarily unavailable
+          </span>
+        ) : pricing ? (
+          <>
+            <span className="block whitespace-nowrap text-[10px] font-medium tabular-nums text-[var(--color-text-secondary)]">
+              {pricing}
+            </span>
+            <span className="mt-0.5 block text-[9.5px] text-[var(--color-text-muted)]">
+              per 1M tokens
+            </span>
+          </>
+        ) : (
+          <span className="block text-[10px] text-[var(--color-text-muted)]">
+            Price unavailable
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+export function ModelPicker({ models, unavailableModels, selectedModelId, onSelect }: ModelPickerProps) {
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const downwardOffsetRef = useRef(0);
-  const [downwardOffset, setDownwardOffset] = useState(0);
+  const placementRef = useRef<Placement>(UNPLACED);
+  const [placement, setPlacement] = useState<Placement>(UNPLACED);
   const [search, setSearch] = useState("");
   const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedHosts, setSelectedHosts] = useState<ReadonlySet<string>>(() => new Set());
@@ -61,7 +194,12 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
 
   const sorted = useMemo(() => [...models].sort(compareModelPreference), [models]);
   const tagOptions = useMemo(() => catalogTags(sorted), [sorted]);
-  const hostOptions = useMemo(() => catalogHosts(sorted), [sorted]);
+  // A provider that is down keeps its rows and host chip, greyed out, instead of vanishing.
+  const unavailable = useMemo(
+    () => (unavailableModels ?? []).filter((model) => !models.some((available) => available.id === model.id)).sort(compareModelPreference),
+    [models, unavailableModels],
+  );
+  const hostOptions = useMemo(() => catalogHosts([...sorted, ...unavailable]), [sorted, unavailable]);
   const capabilityOptions = useMemo(() => catalogCapabilities(sorted), [sorted]);
 
   // A catalog refresh can withdraw a tag or host; ignore stale selections
@@ -73,6 +211,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
     capabilities: new Set([...selectedCapabilities].filter((capability) => capabilityOptions.includes(capability))),
   }), [search, selectedTags, selectedHosts, selectedCapabilities, tagOptions, hostOptions, capabilityOptions]);
   const visible = useMemo(() => sorted.filter((model) => matchesModelFilters(model, filters)), [sorted, filters]);
+  const visibleUnavailable = useMemo(() => unavailable.filter((model) => matchesModelFilters(model, filters)), [unavailable, filters]);
   const filtering = hasActiveModelFilters(filters);
   const showHosts = hostOptions.length > 1;
 
@@ -96,15 +235,28 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
   useLayoutEffect(() => {
     const picker = pickerRef.current;
     if (!picker) return;
-    const safeTop = 52;
     let frame = 0;
     const measure = () => {
-      const parentTop = picker.offsetParent?.getBoundingClientRect().top ?? 0;
-      const naturalTop = parentTop + picker.offsetTop - downwardOffsetRef.current;
-      const nextOffset = Math.max(0, Math.ceil(safeTop - naturalTop));
-      if (nextOffset === downwardOffsetRef.current) return;
-      downwardOffsetRef.current = nextOffset;
-      setDownwardOffset(nextOffset);
+      const bounds = visibleBounds(picker);
+      const current = placementRef.current;
+      const parent = picker.offsetParent?.getBoundingClientRect();
+      // Offsets, not the bounding box: the pop-in animation scales the box.
+      const naturalTop = (parent?.top ?? 0) + picker.offsetTop - current.down;
+      const naturalLeft = (parent?.left ?? 0) + picker.offsetLeft - current.right;
+      const maxHeight = Math.max(0, Math.floor(Math.min(MAX_HEIGHT, bounds.bottom - bounds.top)));
+      const maxWidth = Math.max(0, Math.floor(Math.min(MAX_WIDTH, bounds.right - bounds.left)));
+      // Keep the anchored position when it fits, otherwise slide to the nearest spot that does.
+      const lowest = Math.max(bounds.top, bounds.bottom - Math.min(picker.offsetHeight, maxHeight));
+      const rightmost = Math.max(bounds.left, bounds.right - Math.min(picker.offsetWidth, maxWidth));
+      const next = {
+        down: Math.round(Math.min(Math.max(naturalTop, bounds.top), lowest) - naturalTop),
+        right: Math.round(Math.min(Math.max(naturalLeft, bounds.left), rightmost) - naturalLeft),
+        maxHeight,
+        maxWidth,
+      };
+      if (next.down === current.down && next.right === current.right && next.maxHeight === current.maxHeight && next.maxWidth === current.maxWidth) return;
+      placementRef.current = next;
+      setPlacement(next);
     };
     const queueMeasurement = () => {
       window.cancelAnimationFrame(frame);
@@ -112,22 +264,33 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
     };
     const observer = new ResizeObserver(queueMeasurement);
     observer.observe(picker);
+    for (let node = picker.parentElement; node; node = node.parentElement) observer.observe(node);
     window.addEventListener("resize", queueMeasurement);
+    window.addEventListener("scroll", queueMeasurement, true);
     measure();
     return () => {
       window.cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", queueMeasurement);
+      window.removeEventListener("scroll", queueMeasurement, true);
     };
   }, []);
+
+  // Too short for a fixed header above a scrolling list: scroll the whole picker instead.
+  const cramped = placement.maxHeight !== null && placement.maxHeight < CRAMPED_HEIGHT;
 
   return (
     <div
       ref={pickerRef}
       role="dialog"
       aria-label="Choose a model"
-      style={{ bottom: `calc(2.5rem - ${downwardOffset}px)` }}
-      className="glass-panel-solid shadow-glass-pop animate-pop-in absolute left-0 z-40 flex max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col overflow-hidden rounded-[10px]"
+      style={{
+        bottom: `calc(2.5rem - ${placement.down}px)`,
+        left: placement.right,
+        ...(placement.maxHeight === null ? {} : { maxHeight: placement.maxHeight }),
+        ...(placement.maxWidth === null ? {} : { maxWidth: placement.maxWidth }),
+      }}
+      className={`glass-panel-solid shadow-glass-pop animate-pop-in absolute z-40 flex max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col rounded-[10px] ${cramped ? "overflow-y-auto" : "overflow-hidden"}`}
     >
       <div className="shrink-0 border-b border-[var(--color-border)] px-3 pb-1 pt-3">
         <label className="flex h-8 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)]">
@@ -187,11 +350,13 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
                 {hostOptions.map((host) => {
                   const active = filters.hosts.has(host.id);
                   const count = countModels(sorted, filters, { hosts: new Set([host.id]) });
+                  const down = !sorted.some((model) => model.providerId === host.id);
                   return (
                     <button
                       key={host.id}
                       type="button"
                       aria-pressed={active}
+                      title={down ? `${host.label} is temporarily unavailable` : undefined}
                       disabled={!active && count === 0}
                       onClick={() => setSelectedHosts(toggled(filters.hosts, host.id))}
                       className={[chipBase, "h-7 gap-1.5 rounded-[8px] pl-2 pr-1.5 text-[12px]", active ? chipActive : chipIdle].join(" ")}
@@ -239,6 +404,7 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         <span aria-live="polite" className="min-w-0 truncate">
           <span className="font-medium text-[var(--color-text-secondary)]">{visible.length}</span>
           {" "}{visible.length === 1 ? "model" : "models"}{summary ? `: ${summary}` : ""}
+          {visibleUnavailable.length ? `, ${visibleUnavailable.length} temporarily unavailable` : ""}
         </span>
         {filtering ? (
           <button
@@ -251,84 +417,16 @@ export function ModelPicker({ models, selectedModelId, onSelect }: ModelPickerPr
         ) : null}
       </div>
 
-      <div role="group" aria-label="Models" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto p-2 pt-1.5">
-        {visible.length ? (
-          visible.map((model) => {
-            const selected = model.id === selectedModelId;
-            const pricing = formatModelPricing(model);
-            const tags = model.tags ?? [];
-            const hiddenTags = tags.length - MAX_ROW_TAGS;
-            return (
-              <button
-                key={model.id}
-                type="button"
-                title={model.model}
-                aria-current={selected ? "true" : undefined}
-                onClick={() => onSelect(model.id)}
-                className="group/model flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-bg-surface-hover)]/70"
-              >
-                <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors group-hover/model:border-[var(--color-border-strong)]">
-                  <ModelBrandIcon model={model} className="h-[14px] w-[14px]" />
-                  {selected ? (
-                    <span className="absolute -bottom-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-brand text-white ring-2 ring-[var(--surface-tile)]">
-                      <Check size={7} strokeWidth={3.5} />
-                    </span>
-                  ) : null}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
-                    {model.label}
-                    <span className="ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
-                      {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
-                      {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[10.5px] text-[var(--color-text-muted)]">
-                    <ProviderBrandIcon providerId={model.providerId} providerLabel={model.providerLabel} className="h-[11px] w-[11px] shrink-0" />
-                    <span className="shrink-0">{model.providerLabel}</span>
-                    {tags.length ? (
-                      <span className="flex min-w-0 gap-[3px] overflow-hidden pl-0.5">
-                        {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
-                          <span
-                            key={tag.id}
-                            data-model-tag-tone={tag.tone}
-                            className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-semibold"
-                          >
-                            {tag.label}
-                          </span>
-                        ))}
-                        {hiddenTags > 0 ? (
-                          <span
-                            data-model-tag-tone="gray"
-                            title={tags.slice(MAX_ROW_TAGS).map((tag) => tag.label).join(", ")}
-                            className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-semibold"
-                          >
-                            +{hiddenTags}
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : null}
-                  </span>
-                </span>
-                <span className="w-[8.25rem] shrink-0 text-right">
-                  {pricing ? (
-                    <>
-                      <span className="block whitespace-nowrap text-[10px] font-medium tabular-nums text-[var(--color-text-secondary)]">
-                        {pricing}
-                      </span>
-                      <span className="mt-0.5 block text-[9.5px] text-[var(--color-text-muted)]">
-                        per 1M tokens
-                      </span>
-                    </>
-                  ) : (
-                    <span className="block text-[10px] text-[var(--color-text-muted)]">
-                      Price unavailable
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })
+      <div role="group" aria-label="Models" className={`flex flex-col gap-0.5 p-2 pt-1.5 ${cramped ? "shrink-0" : "min-h-0 overflow-y-auto"}`}>
+        {visible.length + visibleUnavailable.length ? (
+          <>
+            {visible.map((model) => (
+              <ModelRow key={model.id} model={model} selected={model.id === selectedModelId} unavailable={false} onSelect={onSelect} />
+            ))}
+            {visibleUnavailable.map((model) => (
+              <ModelRow key={model.id} model={model} selected={model.id === selectedModelId} unavailable onSelect={onSelect} />
+            ))}
+          </>
         ) : (
           <div className="flex min-h-28 flex-col items-center justify-center px-6 text-center">
             <Search size={17} className="mb-2 text-[var(--color-text-muted)]" />

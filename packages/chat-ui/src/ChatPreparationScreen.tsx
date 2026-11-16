@@ -3,6 +3,7 @@ import { Check, CircleAlert, LoaderCircle, LockKeyhole, RefreshCw, Settings, Shi
 import { useEffect, useId, useRef, useState } from "react";
 import type { AccountPresentation } from "@axiom/chat-core/account";
 import { AxiomMark } from "./AxiomLogo";
+import { LoadProgressBar } from "./LoadProgressBar";
 
 type Preparation = Extract<AccountPresentation, { kind: "starting" | "unavailable" }>;
 type Phase = NonNullable<Preparation["phase"]> | "starting";
@@ -14,13 +15,25 @@ const steps: Record<Phase, string> = {
   decrypting_chats: "Decrypt chats",
 };
 
+// Native preparation is a fixed pipeline; sign-in checks and account switches
+// occupy the same slot. Storage decryption itself is one indivisible SQLCipher
+// open, so the bar advances only on observed stage changes, never on a timer.
+const stepPosition: Record<Phase, number> = {
+  starting: 0,
+  checking_sign_in: 1,
+  switching_account: 1,
+  opening_chats: 2,
+  decrypting_chats: 3,
+};
+const stepCount = 4;
+
 function observePhase(previous: Phase[], phase: Phase): Phase[] {
   // Replace the generic connecting state once a specific native stage arrives.
   const observed: Phase[] = [...previous.filter(step => step !== phase && (phase === "starting" || step !== "starting")), phase];
   return observed.slice(-4);
 }
 
-/** Replaces the composer using observed native stages; never simulates progress. */
+/** Replaces the composer using observed native stages; progress never advances on a timer. */
 export function ChatPreparationScreen({ account, onRetry, onOpenSettings }: {
   account: Preparation;
   onRetry: () => void | Promise<unknown>;
@@ -84,7 +97,10 @@ export function ChatPreparationScreen({ account, onRetry, onOpenSettings }: {
           </button>
           {onOpenSettings ? <button type="button" onClick={event => onOpenSettings(event.currentTarget)} className="inline-flex items-center gap-2 rounded-full bg-[var(--wash-chip)] px-4 py-2 text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--wash-chip-hover)]"><Settings size={13} aria-hidden="true" />Open Settings</button> : null}
         </div>
-      </> : <div className="chat-preparation-activity absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-[var(--wash-chip)]" aria-hidden="true"><span /></div>}
+      </> : <LoadProgressBar className="mt-6" label="Chat preparation progress"
+        value={stepPosition[phase] / stepCount} active={1 / stepCount}
+        valueText={`Step ${stepPosition[phase] + 1} of ${stepCount}: ${steps[phase]}`}
+        start={steps[phase]} end={`Step ${stepPosition[phase] + 1} of ${stepCount}`} />}
     </div>
     {!failed ? <p className="mt-4 inline-flex items-center justify-center gap-1.5 text-[11.5px] text-[var(--color-text-secondary)]"><ShieldCheck size={12} aria-hidden="true" className="shrink-0" />Your saved chats stay encrypted on this device.</p> : null}
   </section>;

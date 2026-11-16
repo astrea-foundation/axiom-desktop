@@ -32,6 +32,16 @@ pub struct ProviderSecurityVerification {
 
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
+    /// Prepare disposable provider-bound inputs before context/byte planning.
+    /// Stored attachment assets and the conversation image catalog stay intact.
+    async fn prepare_request(
+        &self,
+        _model: &ModelInfo,
+        request: InferenceRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<InferenceRequest> {
+        Ok(request)
+    }
     /// Trusted local image-service configuration, including installed bundles.
     /// Remote model metadata cannot enable an unconfigured image service.
     fn has_image_service(&self) -> bool {
@@ -171,6 +181,12 @@ pub trait InferenceProvider: Send + Sync {
         Err(AxiomError::Provider(
             "provider does not support model discovery".into(),
         ))
+    }
+
+    /// Offerings the latest [`Self::models`] discovery reported as temporarily
+    /// unavailable. Display only; never selectable.
+    async fn unavailable_models(&self) -> Vec<ModelInfo> {
+        Vec::new()
     }
 }
 
@@ -327,6 +343,22 @@ impl std::fmt::Debug for SecureAxiomProvider {
 
 #[async_trait]
 impl InferenceProvider for SecureAxiomProvider {
+    async fn prepare_request(
+        &self,
+        model: &ModelInfo,
+        request: InferenceRequest,
+        cancellation: CancellationToken,
+    ) -> Result<InferenceRequest> {
+        if model.provider_id == "near" && model.supports_images {
+            self.client(&cancellation)
+                .await?
+                .prepare_vision_request(model, request, &cancellation)
+                .await
+                .map_err(map_secure_error)
+        } else {
+            Ok(request)
+        }
+    }
     fn has_image_service(&self) -> bool {
         self.config.direct.is_some()
     }
@@ -689,6 +721,13 @@ impl InferenceProvider for SecureAxiomProvider {
             .models(cancellation)
             .await
             .map_err(map_secure_error)
+    }
+
+    async fn unavailable_models(&self) -> Vec<ModelInfo> {
+        match self.client(&CancellationToken::new()).await {
+            Ok(client) => client.unavailable_models().await,
+            Err(_) => Vec::new(),
+        }
     }
 }
 

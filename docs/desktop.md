@@ -18,9 +18,35 @@ heading names the native operation: checking the saved sign-in, updating the
 local account, unlocking the saved key, or **Decrypting your chats**. Decryption
 is reported only after obtaining the key and immediately before opening an
 existing encrypted database. Fresh stores and legacy migrations do not report
-that decryption stage. The screen shows only stages actually observed, with a
-subtle activity sweep and reduced-motion support; it invents no percentages,
-counts or completion times.
+that decryption stage. The screen lists only stages actually observed. Its
+progress bar reports the observed position in the fixed four-step pipeline
+(start, sign-in or account update, key, decryption) as “Step N of 4”, with motion
+only inside the running step. SQLCipher opens the database in one indivisible
+step, so the bar never advances on a timer and invents no per-chat counts or
+completion times. Reduced motion stops the sweep.
+
+Opening a saved thread shows “Loading thread…” with an indeterminate progress
+bar until its native session and transcript are ready; it reports no percentage.
+For listed chats, the catalog already supplies the saved workspace, so opening
+skips the preliminary timeline peek. After `session/load`, the authoritative
+timeline and MCP selection are read concurrently. A rejected stale catalog
+workspace is re-read once before loading the actual saved location.
+
+State changes share immutable views of untouched sessions and coalesce bursts
+within one event-loop turn. Each window gets a complete initial state, followed
+by structural patches through IPC, preload and the context bridge. Untouched
+sessions and timeline rows keep their identity in the renderer. Account/runtime
+changes replace the complete state, and a missing patch triggers snapshot
+recovery before later patches are applied. Generated image identities retain
+the same document-scoped validation and resource lifecycle.
+
+The saved sign-in is checked with the server once per startup, before the local
+account store is opened. When the store is ready, the native runtime publishes
+that same result under a newer account revision instead of asking the server
+again. It repeats the check only if authorization changed while the store was
+opening (a different credential, account or session), the store was closed, or
+more than 30 seconds passed, as during a long storage update. A result for any
+account other than the one whose store was opened is reported as unavailable.
 
 The textbox, model picker, Web, Agent and Send controls are absent during
 preparation. Drafts remain in local state and return with the composer when the
@@ -258,10 +284,11 @@ originating chat model for regeneration.
 Images from chat models with the catalog's **Uncensored** tag (such as the
 abliterated DeepSeek V4.1 Flash and Qwen3.8 Uncensored) use the pinned uncensored
 LoRA at strength 0.9; other chat models use the base image model. Vision-capable
-chat models can optionally call `view_image` to inspect an uploaded or generated
-result before finishing a turn, including deciding whether a correction is
-needed. Its row names the
-inspected image ID; expand it to see that image. Expand an image request to see
+chat models automatically receive a bounded preview of each generated or edited
+result, so they can inspect it before finishing without a separate tool call.
+They can use `view_image` for an image absent from their current visual context,
+including after compaction. Its row names the inspected image ID; expand it to
+see that image. Expand an image request to see
 its prompt, aspect ratio, output size and any reference images as cards labelled
 `<image1>`, `<image2>`, etc., above the result. While the model is writing a
 tool call, a "Writing tool call…" row appears until the call itself is shown. Click a generated or edited
@@ -313,8 +340,15 @@ images directly to the provider instead of using `view_image` thumbnails. The
 provider normalizes them once onto the 32-pixel grid using Lanczos3 in linear
 light with premultiplied alpha, writes lossless PNG, and passes their dimensions
 through Comfy without another forced 1024 resize. Browser attachment preparation
-uses high quality canvas resampling and lossless PNG on that grid. Viewing copies
-remain bounded to one megapixel; display and Save retain the original output.
+uses high quality canvas resampling and lossless PNG on that grid. `view_image`
+returns a separate cached lossy WebP bounded to one megapixel and 512 KiB, with
+a quality and resolution floor. NEAR and Tinfoil also prepare these smaller
+copies for uploaded images before encryption. NEAR reserves actual text and tool
+overhead, sizes current uploads within its encrypted request budget, and compacts
+older image history while keeping originals by ID. The model is instructed to
+inspect pixels already inline; redundant `view_image` calls acknowledge the
+existing image without adding another copy. See [configuration](configuration.md#image-generation-and-editing).
+Display, Save and generation references retain their detailed local assets.
 2K RGBA outputs may be up to 20 MiB. The Turbo sampler and LoRA policy are unchanged.
 
 Copy and Regenerate appear after the full response turn finishes, including any
@@ -330,10 +364,10 @@ the accessible label for their meaning. The picker can filter by catalog tag,
 host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
 for tags, refreshes and unavailable models.
 
-Images are original PNG/JPEG/WebP/GIF bytes. File-capable Tinfoil models accept
+Image uploads accept PNG/JPEG/WebP/GIF. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files
 (DOCX/PPTX/XLSX). NEAR supports images where advertised, but currently advertises
-no general document uploads. Axiom reads original bytes without extraction,
+no general document uploads. Axiom reads original document bytes without extraction,
 OCR, conversion or rasterization. Document processing belongs to the attested
 provider. Unsupported files remain visible in the draft and block sending until
 you remove them or select a model that supports them.
@@ -343,16 +377,16 @@ and 144 MiB of text plus base64-encoded attachment payloads. Text remains bounde
 to 4 MiB. Model context and native budgets still apply; inputs are never silently
 truncated. Audio/video and remote URLs are unsupported.
 
-Original bytes and filenames reach the provider inside its authenticated E2EE
-request. Attachments remain in account-local history, survive edit/regeneration,
+Original document bytes, image vision copies and filenames reach the chat provider
+inside its authenticated E2EE request. Attachments remain in account-local history, survive edit/regeneration,
 and appear as wrapping cards in the draft, queue, and transcript. Image cards
 show local previews. Click an image card to view the full image in a larger
 overlay; close it with Escape, the close button, or a click outside the viewer.
 Sending retains these cards through thread setup and native
 acknowledgement, without waiting for the provider or reloading the original
 files. Saved image previews load from local history as they come into view.
-Compaction sends original image/file
-parts to a capable model and retains a textual successor summary; it never
+Compaction sends image/file parts through the same provider preparation to a
+capable model and retains a textual successor summary; it never
 inserts encoded file bytes as message text. Older extracted-text attachments are
 readable in saved history but cannot be submitted as new uploads.
 
@@ -371,12 +405,14 @@ rejected. Regeneration after steering targets the turn's original prompt.
 Already-performed file edits and other tool side effects are not rolled back.
 
 Compaction uses encrypted, tool-free model requests to build successor context.
-Automatic compaction is triggered only by context tokens, at the selected model's
-advertised threshold capped by local token limits. Uploaded images and successful
-`view_image` observations contribute visual tokens; generated images contribute
-only when viewed. Provider-reported usage takes precedence over estimates for
-existing context. Only new material is estimated until the next provider report.
-Image counts and encoded attachment sizes do not trigger compaction. The runtime
+Automatic compaction follows context tokens at the selected model's advertised
+threshold capped by local token limits. NEAR also compacts prepared history
+before its encrypted request would exceed the 10 MiB operating budget. Uploaded images, automatic
+generated previews and successful `view_image` observations contribute visual
+tokens for vision-capable models. Provider-reported usage takes precedence over
+estimates for existing context. Only new material is estimated until the next
+provider report.
+Image counts alone do not trigger compaction. The runtime
 uses one summary request whenever the conversation fits with room for summary
 output, reasoning and a safety margin. It passes historical messages and native
 image/file inputs together, preserving their order and association. Historical
@@ -400,10 +436,9 @@ unknown-outcome marker; recovery does not execute them. Older file formats that
 the newly selected model cannot read are omitted from context while their text
 remains available. New uploads still require a compatible model.
 
-The image tools keep a bounded catalog of recent conversation references. Older
-references expire as new images arrive, allowing further generation in the same
-thread. Saved images remain in local history; an expired reference may need to
-be attached again for another edit. A completed or cancelled response refreshes
+The image tools keep conversation-owned references independently of the bounded
+vision-copy cache. Compaction and cache eviction preserve original assets and
+their IDs for later viewing or editing. A completed or cancelled response refreshes
 thread state after any older timeline fetch, so a stale running snapshot cannot
 leave the composer waiting indefinitely.
 Late generated titles update the sidebar without reopening an unloaded thread.
@@ -413,11 +448,12 @@ Late generated titles update the sidebar without reopening an unloaded thread.
 The composer meter displays provider-reported input/output usage for the **last
 completed conversation request**, with that request's model capacity and effective
 compaction threshold. The 85% threshold controls when history is compacted.
-New uploads and successful `view_image` observations count toward the next
-request's context; the meter updates when the provider reports that request.
-Image generation alone does not add visual input to the chat model. Encoded
+New uploads, automatic generated previews and successful `view_image` observations
+count toward the next request's context; the meter updates when the provider
+reports that request.
+Generated previews enter vision-capable models' context automatically. Encoded
 image/file data has per-message native size limits. These transport limits are
-independent of compaction. Ten attachments is a per-message upload limit: later
+enforced alongside compaction. Ten attachments is a per-message upload limit: later
 messages can add ten more, and image views and generation have no conversation
 count limit. Compaction preserves saved assets and their reference IDs for later
 use.
@@ -428,7 +464,8 @@ to the provider.
 A verified `length` finish reason is shown as an output-limit notice, with the
 option to ask for continuation. The usage meter is not a draft estimate or cumulative charge. Reports
 survive reload, and model switches do not rescale old counts against a new model.
-No report is shown as unknown, rather than fabricated zero usage.
+The ring stays empty until a usage percentage is available; the usage panel
+describes missing reports as unavailable.
 
 Hover, focus or click the meter to see context use and the compaction threshold.
 Request records are selected by their start timestamps, independent of the random

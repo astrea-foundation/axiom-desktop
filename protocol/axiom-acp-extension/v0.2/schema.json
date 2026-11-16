@@ -2217,6 +2217,13 @@
           "items": {
             "$ref": "#/$defs/ModelInfo"
           }
+        },
+        "unavailableModels": {
+          "description": "Offerings whose provider is temporarily unavailable. Clients show them\ngreyed out and must not select them; they are never in `models`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelInfo"
+          }
         }
       },
       "required": [
