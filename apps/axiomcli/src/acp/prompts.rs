@@ -135,21 +135,19 @@ async fn prompt_with_invocation(
         } {
             Some(Ok(command)) => Some(command),
             Some(Err(error)) => {
-                send_text(connection, &session_id, format!("Command error: {error}"))?;
-                return responder
-                    .respond(protocol::PromptResponse::new(protocol::StopReason::EndTurn));
+                return responder.respond_with_error(
+                    agent_client_protocol::Error::invalid_params().data(error.to_string()),
+                );
             }
             None => None,
         };
     let deterministic_test_runner = cfg!(debug_assertions)
         && std::env::var("AXIOMCLI_TEST_RUNNER").is_ok_and(|value| !value.trim().is_empty());
     if command.is_none() && !ctx_auth.has_credential() && !deterministic_test_runner {
-        send_text(
-            connection,
-            &session_id,
-            "Authentication required. Run /login to connect an Axiom account.".into(),
-        )?;
-        return responder.respond(protocol::PromptResponse::new(protocol::StopReason::EndTurn));
+        return responder.respond_with_error(agent_client_protocol::Error::new(
+            -32001,
+            "Authentication required. Sign in to your Axiom account before sending a prompt.",
+        ));
     }
     let turn_id = command.is_none().then(TurnId::new);
     let mut work = SessionWork::new(
@@ -169,7 +167,12 @@ async fn prompt_with_invocation(
         if registry.active_work.contains_key(&internal_id) {
             return responder.respond_with_internal_error("session already has active work");
         }
-        if ctx_frontend == FrontendKind::DesktopChat {
+        // Explicit application commands reserve their own idle session work and
+        // carry no inference/Agent metadata. Only model prompts may adopt tool
+        // authority through the queued Agent/MCP revision fences. Applying a
+        // default revision zero to commands would reject /help or /compact as
+        // soon as an embedding client configured its Agent once.
+        if ctx_frontend == FrontendKind::DesktopChat && command.is_none() {
             if let Some(expected) = mcp_revision {
                 if !extension_enabled(&ctx_extension_state, ExtensionFeature::DesktopMcp) {
                     return responder.respond_with_error(extension_not_negotiated());
@@ -957,12 +960,7 @@ async fn prompt_with_invocation(
                                 Ok(protocol::StopReason::Cancelled)
                             }
                             Err(error) => {
-                                send_text(
-                                    &task_connection,
-                                    &session_id,
-                                    format!("AxiomCLI compaction error: {error}"),
-                                )?;
-                                Ok(protocol::StopReason::EndTurn)
+                                Err(agent_error(error))
                             }
                         }
                     }
@@ -1281,7 +1279,7 @@ async fn prompt_with_invocation(
                 )?;
             }
 
-            let (command, stop_reason, display_error) = match result {
+            let (command, stop_reason, terminal_error) = match result {
                 Ok(()) => (
                     AppCommand::FinishTurn {
                         session_id: internal_id.clone(),
@@ -1304,10 +1302,10 @@ async fn prompt_with_invocation(
                         AppCommand::FailTurn {
                             session_id: internal_id.clone(),
                             turn_id: turn_id.clone(),
-                            message: message.clone(),
+                            message,
                         },
                         protocol::StopReason::EndTurn,
-                        Some(message),
+                        Some(agent_error(error)),
                     )
                 }
             };
@@ -1319,12 +1317,13 @@ async fn prompt_with_invocation(
             if let Some(store) = &task_store {
                 store.append_all(&completed).map_err(agent_error)?;
             }
-            if let Some(error) = display_error {
-                send_text(
-                    &task_connection,
-                    &session_id,
-                    format!("AxiomCLI error: {error}"),
-                )?;
+            // The failed journal turn and its JSON-RPC request must agree.
+            // An uncorrelated text notice followed by EndTurn can be discarded
+            // by an embedding client's message ownership filter and appear as
+            // a successful empty response. Return the structured native failure
+            // after persistence; only transport failure may escape the handler.
+            if let Some(error) = terminal_error {
+                return Err(error);
             }
             Ok(stop_reason)
         }

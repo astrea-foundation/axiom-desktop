@@ -1366,16 +1366,10 @@ async fn slash_commands_are_advertised_and_execute_outside_model_turns() {
         "params":{"sessionId":session,"command":"/model arbitrary-id"}
     }))
     .await;
-    let mut invalid_model = String::new();
-    loop {
-        let value = acp.read().await;
-        invalid_model.push_str(&value.to_string());
-        if value.get("id").and_then(Value::as_i64) == Some(6) {
-            break;
-        }
-    }
-    assert!(invalid_model.contains("Command error"));
-    assert!(invalid_model.contains("/model"));
+    let invalid_model = acp.response(6).await;
+    assert_eq!(invalid_model["error"]["code"], -32602);
+    assert!(invalid_model.get("result").is_none());
+    assert!(invalid_model.to_string().contains("/model"));
 
     acp.send(&json!({
         "jsonrpc":"2.0","id":7,"method":"_axiom/session/command",
@@ -1642,19 +1636,26 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
     }))
     .await;
     let mut saw_closed_attention = false;
+    let mut saw_uncorrelated_error = false;
     loop {
         let value = acp.read().await;
         if value["method"] == "session/update" {
             saw_closed_attention |= value.to_string().contains("closed without answers");
+            saw_uncorrelated_error |= value.to_string().contains("AxiomCLI error:");
         }
         if value.get("id").and_then(Value::as_i64) == Some(3) {
-            assert_eq!(value["result"]["stopReason"], "end_turn");
+            assert!(value.get("error").is_some(), "{value}");
+            assert!(value.get("result").is_none(), "{value}");
             break;
         }
     }
     assert!(
         !saw_closed_attention,
         "failed question state must not be duplicated as standard transcript content"
+    );
+    assert!(
+        !saw_uncorrelated_error,
+        "failed prompts must use a structured RPC error, not unowned transcript text"
     );
     acp.send(&json!({
         "jsonrpc":"2.0","id":4,"method":"_axiom/thread/timeline",
@@ -1682,7 +1683,8 @@ async fn unsupported_structured_questions_close_cleanly_instead_of_sticking() {
     loop {
         let value = acp.read().await;
         if value.get("id").and_then(Value::as_i64) == Some(5) {
-            assert_eq!(value["result"]["stopReason"], "end_turn", "{value}");
+            assert!(value.get("error").is_some(), "{value}");
+            assert!(value.get("result").is_none(), "{value}");
             break;
         }
     }
@@ -2527,4 +2529,76 @@ async fn slash_text_in_acp_prompts_is_literal_and_commands_require_explicit_invo
         }
         acp.close().await;
     }
+}
+
+#[tokio::test]
+async fn desktop_commands_work_after_agent_configuration_without_bypassing_prompt_revisions() {
+    let state = tempfile::tempdir().expect("isolated desktop state");
+    let workspace = tempfile::tempdir().expect("isolated Agent workspace");
+    let mut acp = AcpProcess::spawn_inner("echo", state.path(), None, Some("desktop-chat"), None);
+    acp.initialize_with_capabilities(json!({"_meta":{"axiom":{
+        "protocolVersion":"0.2", "features":{
+            "desktopChat":1,"desktopAgent":1,"timeline":2,"commandInvocation":1
+        }
+    }}}))
+    .await;
+    acp.send(&json!({"jsonrpc":"2.0","id":2,"method":"_axiom/desktop/bootstrap","params":{}}))
+        .await;
+    let bootstrap = acp.response(2).await;
+    let session = acp
+        .new_session(
+            3,
+            Path::new(bootstrap["result"]["chatCwd"].as_str().unwrap()),
+        )
+        .await;
+    acp.send(
+        &json!({"jsonrpc":"2.0","id":4,"method":"_axiom/desktop/agent/configure",
+        "params":{"threadId":session,"expectedRevision":0,"enabled":true,
+            "permission":"full_access","workingDirectory":workspace.path()}}),
+    )
+    .await;
+    let configured = acp.response(4).await;
+    assert_eq!(configured["result"]["agent"]["revision"], 1, "{configured}");
+
+    for (id, command) in [
+        (5, "/help"),
+        (6, "/compact preserve the native command boundary"),
+    ] {
+        acp.send(
+            &json!({"jsonrpc":"2.0","id":id,"method":"_axiom/session/command",
+            "params":{"sessionId":session,"command":command}}),
+        )
+        .await;
+        let mut text = String::new();
+        loop {
+            let value = acp.read().await;
+            if value["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+                && let Some(chunk) = value["params"]["update"]["content"]["text"].as_str()
+            {
+                text.push_str(chunk);
+            }
+            if value["id"] == id {
+                assert_eq!(value["result"]["stopReason"], "end_turn", "{value}");
+                break;
+            }
+        }
+        assert!(!text.contains("AxiomCLI received:"), "{text}");
+        assert!(
+            if id == 5 {
+                text.contains("/compact")
+            } else {
+                text.contains("Context compacted")
+            },
+            "{text}"
+        );
+    }
+
+    // The command exemption cannot grant inference with a stale Agent revision.
+    acp.send(&json!({"jsonrpc":"2.0","id":7,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"/help"}],
+            "_meta":{"axiom":{"clientItemId":"stale-literal-prompt","webEnabled":false,"agentRevision":0}}}})).await;
+    let rejected_prompt = acp.response(7).await;
+    assert!(rejected_prompt.get("error").is_some(), "{rejected_prompt}");
+    assert!(rejected_prompt.get("result").is_none(), "{rejected_prompt}");
+    acp.close().await;
 }
