@@ -74,6 +74,18 @@ test("a visible warning after a pending response does not add another indicator"
   assert.match(html, /Retrying request/);
 });
 
+test("stopping immediately replaces tool drafting, generation and compaction indicators without completing the reply", () => {
+  const current = session([user, { ...pending, kind: "reasoning", text: "Partial reasoning" }]);
+  current.activeTurnId = current.toolCallDraftTurnId = "turn-1";
+  current.compaction = { completed: 0, total: 2, generatedTokens: 12, estimated: true };
+  const html = renderToStaticMarkup(createElement(TimelineView, { session: current, isStopping: true }));
+  assert.equal(html.match(/Stopping…/g)?.length, 1);
+  assert.match(html, /role="status" aria-live="polite" aria-atomic="true" data-timeline-kind="stopping"/);
+  assert.doesNotMatch(html, /Writing tool call|Generating|Compacting context|aria-label="Copy"/);
+  assert.equal(current.running, true);
+  assert.equal(current.timeline[1]?.status, "in_progress");
+});
+
 test("streamed text does not gain a second empty response after provider status", () => {
   const html = render([user, { ...pending, text: "Partial answer" }, provider]);
   assert.match(html, /Partial answer/);

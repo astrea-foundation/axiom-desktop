@@ -82,6 +82,18 @@ The composer disables model selection during preparation and streaming, dismisse
 an open model picker when either starts, and restores selection when the turn
 ends. Hosts must keep `isStreaming` true through tool calls and cancellation
 cleanup and reject model changes against an active run in their settings handler.
+
+Stop goes through the shared queue's `stop(threadId)` action. It publishes intent
+before contacting the runtime, pauses older queued messages, and keeps that
+thread's `isStopRequested` state until cancellation is delivered and both the run
+and its prompt settle. Hosts pass this state as `ChatView.isStopping`, which
+immediately replaces the Stop button and active generation/tool-drafting labels
+with accessible “Stopping…” feedback. The composer remains editable and model
+selection stays locked through cleanup. Failure restores Stop for an explicit
+retry and reports the error; it does not resume queued messages. Cancellation
+state survives navigation and resets on account/runtime changes. Send now retains
+its queue indication and leaves Stop available to withdraw the selected send.
+
 Hosts may supply `onEnsureSecurity` for automatic, cache-aware report renewal;
 `onVerifySecurity` remains the explicit Refresh action. Without that optional
 callback, automatic renewal retains the existing verification callback. An

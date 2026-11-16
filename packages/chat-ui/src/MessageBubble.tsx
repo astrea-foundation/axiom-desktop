@@ -12,11 +12,12 @@ function thoughtLabel(durationMs?: number): string {
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, onContinue, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, copyContent }: {
+export function MessageBubble({ message, onRevise, onContinue, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, showGenerationIndicator = true, copyContent }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
   onContinue?: () => Promise<void>;
   showFailureNotice?: boolean;
   responseActive?: boolean;
+  showGenerationIndicator?: boolean;
   /** Whole reply body for the turn when it was split by tool calls. */
   copyContent?: string;
 }) {
@@ -113,7 +114,7 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
             <summary className="cursor-pointer text-[12px] text-[var(--color-text-tertiary)]">Interrupted attempt · Show partial answer</summary>
             <ChatMarkdown text={message.content} />
           </details> : <ChatMarkdown text={message.content} /> : null}
-          {isStreaming && !message.content && !message.continues ? (
+          {showGenerationIndicator && isStreaming && !message.content && !message.continues ? (
             <div className="flex items-center gap-2 py-1 text-[13px] text-[var(--color-text-tertiary)]">
               <span className="flex items-center gap-1">
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] dot-bounce" />

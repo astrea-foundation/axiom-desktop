@@ -241,6 +241,14 @@ button removes a queued message, including while Send now is stopping a reply.
 Cancelling that pending send leaves the remaining queue paused. Once a message
 has been sent, use Stop on its reply.
 
+**Stop** immediately changes to **Stopping…**, including while the model is
+writing a tool call. The transcript shows the same status while cancellation
+and cleanup finish in the background. You can keep editing your draft or switch
+chats; returning to the stopping chat retains its status. Older queued messages
+stay paused, and model selection remains locked until cleanup finishes. Repeated
+Stop requests do not send duplicate cancellations. If cancellation fails, Stop
+becomes available for retry and an error explains that sending remains paused.
+
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
 New queue reservations allow at most 32 messages and 64 MiB of payloads, scoped to
