@@ -65,16 +65,28 @@ async function open(clock = false, initiallyHidden = false) {
   await page.getByRole("button",{name:"Enable automatic top-up",exact:true}).waitFor();
   return {page,errors};
 }
+async function alignedPlanCards(page: import("playwright").Page) {
+  const cards = await page.locator('.subscription-plan-grid > div').evaluateAll(cards => cards.map(card => ({
+    row: Math.round(card.getBoundingClientRect().top),
+    lines: [...card.children].map(line => line.getBoundingClientRect().top),
+  })));
+  for (const card of cards) for (const other of cards.filter(other => other.row === card.row)) {
+    assert(card.lines.every((line, index) => Math.abs(line - other.lines[index]!) < 1), "plan names, prices, credit lines and buttons share row positions");
+  }
+}
 test("native credit controls separate balances and require explicit saved-card charge consent", async () => {
   const {page,errors}=await open();
   try {
     assert.match(await page.locator("body").innerText(),/Weekly credits.*482.*Purchased credit.*\$8\.00/s);
     assert.match(await page.locator("body").innerText(),/1,250 credits \/ week/);
-    for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month (4 weeks)`, {exact:true}).waitFor();
+    for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month`, {exact:true}).waitFor();
+    await alignedPlanCards(page);
+    assert(!(await page.locator('section[aria-label="Subscription plans"]').innerText()).includes('(4 weeks)'));
     if (process.env.AXIOM_UI_ARTIFACT_DIR) await page.locator('section[aria-label="Subscription plans"]').screenshot({path:`${process.env.AXIOM_UI_ARTIFACT_DIR}/native-monthly-plan-totals.png`});
     await page.setViewportSize({width:320,height:1000});
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "monthly plan totals fit a narrow screen");
-    for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month (4 weeks)`, {exact:true}).waitFor();
+    for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month`, {exact:true}).waitFor();
+    await alignedPlanCards(page);
     await page.setViewportSize({width:800,height:1000});
     assert.equal(await page.getByLabel("Balance threshold (USD)",{exact:true}).inputValue(), "5.00");
     assert(await page.getByRole("button",{name:"Enable automatic top-up",exact:true}).isDisabled());
@@ -100,7 +112,7 @@ for (const state of ["expired", "canceled"]) test(`an ${state} subscription star
     await page.evaluate(state => {(window as any).__billingTest.subscription(state); window.dispatchEvent(new Event("focus"));}, state);
     await page.getByText(`Subscription: ${state}`,{exact:true}).waitFor();
     await page.getByRole("button",{name:"Subscribe",exact:true}).first().click();
-    await page.getByRole("dialog",{name:"Confirm subscription plan"}).getByText("Monthly total: 5,000 credits (4 weeks).",{exact:true}).waitFor();
+    await page.getByRole("dialog",{name:"Confirm subscription plan"}).getByText("Monthly total: 5,000 credits.",{exact:true}).waitFor();
     await page.getByRole("button",{name:"Confirm",exact:true}).click();
     await page.getByText("Complete your subscription in the browser, then return here.",{exact:true}).waitFor();
     const actions=await page.evaluate(()=>(window as any).__billingTest.calls.map((call:any)=>call.action));

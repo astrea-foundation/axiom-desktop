@@ -16,9 +16,11 @@ The default credit value is $0.001 (0.1 cent): $1 of reference API usage consume
 credits. Weekly defaults are 1,250/5,000/12,500/50,000 credits for unchanged
 $2.50/$10/$25/$100 monthly payments. Plans and credit values come from the server;
 the client keeps their exact amounts and does not assume a one-cent credit.
-Plans also show monthly totals of 5,000/20,000/50,000/200,000 credits, explicitly
-based on four weekly grants. Current plan details and confirmations use the same
-four-week basis. Credits still refresh every seven days, and a calendar month
+Plans also show monthly totals of 5,000/20,000/50,000/200,000 credits. Plan names,
+prices, allowance lines and action buttons align across the cards. One timing
+note below the plans explains that totals use four weekly grants; the basis
+is not repeated after each amount. Current plan details and confirmations use
+the same totals. Credits still refresh every seven days, and a calendar month
 can include five grants.
 While a request is running, its reservation can reduce available dollars below
 the posted balance. Billing refreshes and gift redemption still report the valid
