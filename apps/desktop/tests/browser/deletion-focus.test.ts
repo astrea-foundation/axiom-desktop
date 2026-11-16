@@ -3848,7 +3848,9 @@ test("model picker greys out the models of a temporarily unavailable provider", 
     assert.equal(await near.isDisabled(), true);
     assert.equal(await near.getAttribute("title"), "NEAR AI is temporarily unavailable");
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
-    await picker.screenshot({ path: "/Users/salt/local-projects/axiom/artifacts/model-picker-unavailable-provider.png" });
+    if (process.env.AXIOM_UNAVAILABLE_MODEL_SCREENSHOT) {
+      await picker.screenshot({ path: process.env.AXIOM_UNAVAILABLE_MODEL_SCREENSHOT });
+    }
 
     // An unavailable row cannot become the selection.
     await rows.nth(2).click({ force: true });
