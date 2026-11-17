@@ -262,6 +262,14 @@ stay paused, and model selection remains locked until cleanup finishes. Repeated
 Stop requests do not send duplicate cancellations. If cancellation fails, Stop
 becomes available for retry and an error explains that sending remains paused.
 
+**Retry** and **Continue** resume the preserved model history through a native
+continuation control. Its instruction is supplied to the model behind the scenes;
+it creates no user-message bubble, queued message, or new attachment submission.
+Reloading the conversation keeps that instruction out of the transcript. Earlier
+messages, completed tools, partial replies and the current draft remain intact.
+The controls retain the current Web choice and Agent/MCP settings and use the
+normal security, cancellation and account boundaries.
+
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
 New queue reservations allow at most 32 messages and 64 MiB of payloads, scoped to

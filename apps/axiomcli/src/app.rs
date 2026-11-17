@@ -304,6 +304,10 @@ pub enum AppCommand {
         session_id: SessionId,
         turn_id: TurnId,
     },
+    ContinuePrompt {
+        session_id: SessionId,
+        turn_id: TurnId,
+    },
     CancelTurn {
         session_id: SessionId,
         turn_id: TurnId,
@@ -357,6 +361,7 @@ impl AppCommand {
             | Self::ResumeSession { session_id, .. }
             | Self::SubmitPrompt { session_id, .. }
             | Self::StartImageGeneration { session_id, .. }
+            | Self::ContinuePrompt { session_id, .. }
             | Self::CancelTurn { session_id, .. }
             | Self::FinishTurn { session_id, .. }
             | Self::FailTurn { session_id, .. }
@@ -409,6 +414,10 @@ pub enum AppEvent {
         attachments: Vec<axiom_inference::PromptAttachment>,
     },
     TurnStarted {
+        turn_id: TurnId,
+    },
+    /// Native continuation control; never a user transcript message.
+    PromptContinued {
         turn_id: TurnId,
     },
     TextDelta {
@@ -593,6 +602,7 @@ impl AppEvent {
             Self::SteeringApplied { turn_id, .. }
             | Self::PromptAccepted { turn_id, .. }
             | Self::TurnStarted { turn_id }
+            | Self::PromptContinued { turn_id }
             | Self::TextDelta { turn_id, .. }
             | Self::ReasoningDelta { turn_id, .. }
             | Self::ToolCallDrafting { turn_id }
@@ -817,6 +827,27 @@ impl Kernel {
                         attachments,
                     },
                     AppEvent::TurnStarted { turn_id },
+                ]
+            }
+            AppCommand::ContinuePrompt {
+                session_id,
+                turn_id,
+            } => {
+                let session = self.session_mut(&session_id)?;
+                if session.lifecycle != SessionLifecycle::Ready
+                    || session.terminal_turns.contains(&turn_id)
+                {
+                    return Err(AxiomError::InvalidTransition(
+                        "continuation requires an idle session and a fresh turn".into(),
+                    ));
+                }
+                session.lifecycle = SessionLifecycle::Running;
+                session.active_turn = Some(turn_id.clone());
+                vec![
+                    AppEvent::TurnStarted {
+                        turn_id: turn_id.clone(),
+                    },
+                    AppEvent::PromptContinued { turn_id },
                 ]
             }
             AppCommand::StartImageGeneration {

@@ -1708,6 +1708,7 @@ struct PendingDelete {
 
 #[derive(Clone, Copy)]
 enum ExtensionFeature {
+    SessionContinuation = 1 << 29,
     LegacyPayloadImport = 1 << 27,
     LocalPayload = 1 << 23,
     CommandInvocation = 1 << 22,
@@ -1786,6 +1787,9 @@ impl ExtensionState {
         }
         if features.command_invocation >= 1 {
             mask |= ExtensionFeature::CommandInvocation as u64;
+        }
+        if features.session_continuation >= 1 {
+            mask |= ExtensionFeature::SessionContinuation as u64;
         }
         if features.image_resources >= 1 {
             mask |= ExtensionFeature::ImageResources as u64;

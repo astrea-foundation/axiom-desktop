@@ -145,6 +145,14 @@ pub async fn serve_stdio(
         protocol::PromptResponse
     );
     let builder = request_handler!(
+        async,
+        builder,
+        context,
+        prompts::continue_session,
+        extension::SessionContinuationRequest,
+        protocol::PromptResponse
+    );
+    let builder = request_handler!(
         sync_ref,
         builder,
         context,

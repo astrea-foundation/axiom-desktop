@@ -221,6 +221,11 @@ function installAgentIpc(): void {
     validatePrompt(text, attachments);
     return sidecar.prompt(boundedString(sessionId, "thread ID", 128), text, boundedString(clientItemId, "client item ID", 512), webEnabled, agentRevision(revision), undefined, attachments, mcpRevision === undefined ? undefined : agentRevision(mcpRevision));
   });
+  agentHandle("agent:session-continue", (_event, sessionId: unknown, webEnabled: unknown, revision: unknown, mcpRevision: unknown) => {
+    if (typeof webEnabled !== "boolean") throw new Error("webEnabled must be a boolean");
+    return sidecar.continueSession(boundedString(sessionId, "thread ID", 128), webEnabled,
+      agentRevision(revision), mcpRevision === undefined ? undefined : agentRevision(mcpRevision));
+  });
   agentHandle("agent:attachments", (_event, threadId: unknown, userItemId: unknown) =>
     sidecar.getAttachments(boundedString(threadId, "thread ID", 128), boundedString(userItemId, "user message ID", 512)));
   agentHandle("agent:image-regenerate", (_event, threadId: unknown, callId: unknown) =>

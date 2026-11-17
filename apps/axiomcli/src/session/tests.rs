@@ -1044,6 +1044,74 @@ fn prompt_transaction_creates_turn_user_and_assistant_with_client_identity() {
 }
 
 #[test]
+fn continuation_survives_restart_without_creating_a_user_message() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("continuation.sqlite3");
+    let store = SessionStore::open(&path).unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let original = TurnId::new();
+    begin_turn(&store, &id, &original, Some("original-message"));
+    store
+        .append(&envelope(
+            &id,
+            4,
+            AppEvent::TurnCompleted { turn_id: original },
+        ))
+        .unwrap();
+    let continued = TurnId::new();
+    for (index, event) in [
+        AppEvent::TurnStarted {
+            turn_id: continued.clone(),
+        },
+        AppEvent::PromptContinued {
+            turn_id: continued.clone(),
+        },
+        AppEvent::TextDelta {
+            turn_id: continued.clone(),
+            text: "Continued answer".into(),
+        },
+        AppEvent::TurnCompleted {
+            turn_id: continued.clone(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store
+            .append(&envelope(&id, 5 + index as u64, event))
+            .unwrap();
+    }
+    drop(store);
+    let reopened = SessionStore::open(&path).unwrap();
+    let snapshot = reopened.thread_snapshot(&id, None, 100).unwrap();
+    assert_eq!(
+        snapshot
+            .items
+            .iter()
+            .filter(|item| item.kind == TimelineItemKind::UserMessage)
+            .count(),
+        1
+    );
+    assert!(
+        snapshot
+            .items
+            .iter()
+            .any(|item| item.content == "Continued answer")
+    );
+    assert_eq!(snapshot.turns.len(), 2);
+    assert!(
+        snapshot
+            .turns
+            .iter()
+            .all(|turn| turn.status == TurnStatus::Completed)
+    );
+    let history = reopened.load(&id).unwrap();
+    assert!(history.iter().any(|event| matches!(&event.event,
+        AppEvent::PromptContinued { turn_id } if turn_id == &continued)));
+}
+
+#[test]
 fn streaming_updates_mutate_single_items_and_terminal_commit_finishes_them() {
     let store = SessionStore::in_memory().expect("store");
     let id = SessionId::new();

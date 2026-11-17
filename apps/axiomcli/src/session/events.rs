@@ -461,6 +461,28 @@ pub(super) fn persist_event(
                 )
                 .map_err(storage_error)?;
         }
+        AppEvent::PromptContinued { turn_id } => {
+            let (assistant_item_id, _) = insert_timeline_item(
+                transaction,
+                &thread_id,
+                TimelineItemWrite {
+                    turn_id: Some(&turn_id.to_string()),
+                    kind: TimelineItemKind::AssistantMessage,
+                    status: TimelineItemStatus::InProgress,
+                    client_item_id: None,
+                    external_id: None,
+                    content: "",
+                    metadata: json!({"continuation": true}),
+                    now: &now,
+                },
+            )?;
+            transaction
+                .execute(
+                    "UPDATE turns SET assistant_item_id=?3 WHERE thread_id=?1 AND id=?2",
+                    params![thread_id, turn_id.to_string(), assistant_item_id],
+                )
+                .map_err(storage_error)?;
+        }
         AppEvent::TurnStarted { turn_id } => {
             ensure_thread(transaction, &envelope.session_id)?;
             transaction

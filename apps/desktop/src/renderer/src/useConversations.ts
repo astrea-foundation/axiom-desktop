@@ -309,6 +309,25 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     }
   };
 
+  const continueReply = async () => {
+    const api = window.axiomDesktop?.agent;
+    const threadId = activeThreadId;
+    const contextRevision = connection.revision;
+    if (!api?.continueSession || !threadId || !activeSession || activeSession.running) {
+      const error = new Error("Restart Axiom and wait for the current reply before continuing.");
+      setUiError(error.message); throw error;
+    }
+    setUiError(null);
+    try {
+      await api.continueSession(threadId, webAccess.enabled, activeSession.desktopAgent?.revision ?? 0, agentState.mcp?.revision);
+    } catch (error) {
+      if (connection.latest.current === contextRevision && activeThreadIdRef.current === threadId) {
+        setUiError(error instanceof Error ? error.message : "Could not continue the reply. Try again.");
+      }
+      throw error;
+    }
+  };
+
   const acceptOutdatedTee = async (expectedModelId: string) => {
     const api = window.axiomDesktop?.agent;
     const threadId = activeThreadId;
@@ -498,5 +517,5 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     }
   };
 
-  return { acceptOutdatedTee, reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
+  return { acceptOutdatedTee, continueReply, reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
 }

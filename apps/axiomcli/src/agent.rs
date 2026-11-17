@@ -34,6 +34,9 @@ use crate::{
 /// consume memory.
 pub const APP_EVENT_QUEUE_CAPACITY: usize = 256;
 
+/// Application control input for Retry/Continue, retained only in model history.
+pub const CONTINUATION_PROMPT: &str = "[APPLICATION-GENERATED CONTINUATION]\nContinue from where you stopped. Preserve completed work and do not repeat completed tool actions.\n[END CONTINUATION]";
+
 /// Bound CPU-only restore work between scheduler hand-offs. A persisted thread
 /// may contain up to 100k timeline events, so replay must remain cooperative on
 /// the single-thread Tokio runtimes used by embedders and tests as well.
@@ -2408,6 +2411,10 @@ impl TurnRunner for AgentEngine {
                     };
                     messages.push(axiom_inference::user_message(text, &usable));
                 }
+                AppEvent::PromptContinued { .. } => {
+                    last_used_model = Some(active_model.clone());
+                    messages.push(ChatMessage::text(ChatRole::User, CONTINUATION_PROMPT));
+                }
                 AppEvent::SteeringApplied { text, .. } => {
                     last_used_model = Some(active_model.clone());
                     messages.push(ChatMessage::text(ChatRole::User, text.clone()));
@@ -3136,7 +3143,6 @@ impl TurnRunner for AgentEngine {
         }
         messages.push(user_message);
         let mut known_context_tokens = prospective_context_tokens;
-        let mut last_call = None;
         let mut all_responses_verified = true;
         let mut recoveries = 0;
         let mut continued_output = false;
@@ -3170,7 +3176,6 @@ impl TurnRunner for AgentEngine {
                         })
                         .await
                         .map_err(|_| AxiomError::Cancelled)?;
-                    last_call = None;
                 }
             }
             if step > 0
@@ -3477,14 +3482,6 @@ impl TurnRunner for AgentEngine {
                     messages.push(tool_error_message(call.id, &call.function.name, reason));
                     continue;
                 }
-                let signature = format!("{}:{}", call.function.name, call.function.arguments);
-                if last_call.as_ref() == Some(&signature) {
-                    return Err(AxiomError::Tool(format!(
-                        "model repeated identical tool call `{}`",
-                        call.function.name
-                    )));
-                }
-                last_call = Some(signature);
                 let arguments: serde_json::Value = match serde_json::from_str(
                     &call.function.arguments,
                 ) {
@@ -9944,33 +9941,116 @@ mod engine_tests {
     }
 
     #[tokio::test]
-    async fn repeated_tool_call_is_bounded() {
-        let call = ToolCall {
-            id: "call-1".into(),
-            kind: "function".into(),
-            function: FunctionCall {
-                name: "missing".into(),
-                arguments: "{}".into(),
-            },
-        };
-        let provider = Arc::new(ScriptedProvider::new(vec![
-            AssistantTurn {
-                reasoning: None,
-                text: String::new(),
-                tool_calls: vec![call.clone()],
-            },
-            AssistantTurn {
-                reasoning: None,
-                text: String::new(),
-                tool_calls: vec![call],
-            },
-        ]));
+    async fn continuation_restores_its_model_instruction_without_a_user_prompt_event() {
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
         let engine = AgentEngine::new(provider, Arc::new(ToolRegistry::new()), "test", 3);
-        let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
-        let result = engine
-            .run(context(), "hello".into(), tx, CancellationToken::new())
-            .await;
-        assert!(result.is_err());
+        let session_id = SessionId::new();
+        let original = TurnId::new();
+        let continued = TurnId::new();
+        let events = [
+            AppEvent::SessionCreated {
+                cwd: PathBuf::from("/tmp/continuation-test"),
+                origin: Origin::Test,
+                profile: PermissionProfile::Confirm,
+            },
+            AppEvent::PromptAccepted {
+                turn_id: original.clone(),
+                text: "Original request".into(),
+                attachments: Vec::new(),
+            },
+            AppEvent::TurnStarted {
+                turn_id: original.clone(),
+            },
+            AppEvent::TextDelta {
+                turn_id: original.clone(),
+                text: "Partial answer".into(),
+            },
+            AppEvent::TurnCompleted { turn_id: original },
+            AppEvent::TurnStarted {
+                turn_id: continued.clone(),
+            },
+            AppEvent::PromptContinued {
+                turn_id: continued.clone(),
+            },
+            AppEvent::TextDelta {
+                turn_id: continued.clone(),
+                text: "Continued answer".into(),
+            },
+            AppEvent::TurnCompleted { turn_id: continued },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| EventEnvelope {
+            schema_version: 1,
+            turn_id: event.turn_id().cloned(),
+            sequence: index as u64 + 1,
+            occurred_at: chrono::Utc::now(),
+            correlation_id: CorrelationId::new(),
+            origin: Origin::Test,
+            session_id: session_id.clone(),
+            event,
+        })
+        .collect::<Vec<_>>();
+        engine.restore_session(&session_id, &events).await.unwrap();
+        let histories = engine.histories.lock().await;
+        let history = &histories[&session_id];
+        let user_inputs = history
+            .iter()
+            .filter(|message| message.role == ChatRole::User)
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(user_inputs, ["Original request", CONTINUATION_PROMPT]);
+        assert!(
+            history
+                .iter()
+                .any(|message| message.content == "Partial answer")
+        );
+        assert!(
+            history
+                .iter()
+                .any(|message| message.content == "Continued answer")
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_identical_tool_calls_run_after_success_and_failure() {
+        for fails in [false, true] {
+            let (tools, executions) = fake_registry("ok", fails);
+            let provider = Arc::new(ScriptedProvider::new(vec![
+                AssistantTurn {
+                    reasoning: None,
+                    text: String::new(),
+                    tool_calls: vec![
+                        tool_call("one", "fake", r#"{"value":1}"#),
+                        tool_call("two", "fake", r#"{"value":1}"#),
+                    ],
+                },
+                AssistantTurn {
+                    reasoning: None,
+                    text: String::new(),
+                    tool_calls: vec![tool_call("three", "fake", r#"{"value":1}"#)],
+                },
+                AssistantTurn {
+                    reasoning: None,
+                    text: "done".into(),
+                    tool_calls: Vec::new(),
+                },
+            ]));
+            let engine = AgentEngine::new(provider, tools, "test", 3);
+            let (tx, _rx) = mpsc::channel(APP_EVENT_QUEUE_CAPACITY);
+            let mut turn_context = context();
+            turn_context.permission_profile = PermissionProfile::FullAccess;
+            engine
+                .run(
+                    turn_context,
+                    "use tools".into(),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("identical calls must not abort the turn");
+            assert_eq!(executions.load(Ordering::SeqCst), 3);
+        }
     }
 
     #[tokio::test]

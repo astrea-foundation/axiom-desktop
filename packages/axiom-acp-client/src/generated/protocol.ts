@@ -327,6 +327,7 @@ export interface ProtocolSchema {
   desktopBootstrapResponse: DesktopBootstrapResponse;
   promptMetadata: PromptMetadata;
   sessionCommandRequest: SessionCommandRequest;
+  sessionContinuationRequest: SessionContinuationRequest;
   getAttachmentsRequest: GetAttachmentsRequest;
   getAttachmentsResponse: GetAttachmentsResponse;
   regenerateImageRequest: RegenerateImageRequest;
@@ -574,6 +575,10 @@ export interface FeatureVersions {
    * Explicit application command invocation; prompt text stays literal.
    */
   commandInvocation?: number;
+  /**
+   * Retry/Continue without submitting a visible user message.
+   */
+  sessionContinuation?: number;
   [k: string]: unknown;
 }
 export interface DesktopBootstrapRequest {
@@ -658,6 +663,15 @@ export interface SessionCommandRequest {
    * A slash command selected intentionally, such as `/thinking high`.
    */
   command: string;
+}
+/**
+ * Resume the existing model history using a native application instruction.
+ */
+export interface SessionContinuationRequest {
+  sessionId: string;
+  webEnabled: boolean;
+  agentRevision: number;
+  mcpRevision?: number | null;
 }
 export interface GetAttachmentsRequest {
   threadId: string;

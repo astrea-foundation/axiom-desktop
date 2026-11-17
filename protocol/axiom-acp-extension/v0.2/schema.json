@@ -37,6 +37,9 @@
     "sessionCommandRequest": {
       "$ref": "#/$defs/SessionCommandRequest"
     },
+    "sessionContinuationRequest": {
+      "$ref": "#/$defs/SessionContinuationRequest"
+    },
     "getAttachmentsRequest": {
       "$ref": "#/$defs/GetAttachmentsRequest"
     },
@@ -264,6 +267,7 @@
     "desktopBootstrapResponse",
     "promptMetadata",
     "sessionCommandRequest",
+    "sessionContinuationRequest",
     "getAttachmentsRequest",
     "getAttachmentsResponse",
     "regenerateImageRequest",
@@ -1217,6 +1221,14 @@
           "minimum": 0,
           "maximum": 65535,
           "default": 0
+        },
+        "sessionContinuation": {
+          "description": "Retry/Continue without submitting a visible user message.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
         }
       }
     },
@@ -1463,6 +1475,37 @@
       "required": [
         "sessionId",
         "command"
+      ]
+    },
+    "SessionContinuationRequest": {
+      "description": "Resume the existing model history using a native application instruction.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "webEnabled": {
+          "type": "boolean"
+        },
+        "agentRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mcpRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "webEnabled",
+        "agentRevision"
       ]
     },
     "GetAttachmentsRequest": {

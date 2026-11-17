@@ -104,8 +104,19 @@ Other advertised features are version **1**:
 `desktopChat`, `desktopAgent`, `threadCatalog`, `modelCatalog`,
 `profilePreferences`, `collections`, `usage`,
 `webConsent`, `steering`, `messageRevision`, `compaction`, and
-`commandInvocation`.
+`commandInvocation`, and `sessionContinuation`.
 The source `FeatureVersions` and generated schema are authoritative.
+
+`sessionContinuation@1` adds `_axiom/session/continue` for the explicit Retry and
+Continue controls. It accepts `sessionId`, current per-action `webEnabled`,
+`agentRevision` and optional `mcpRevision`; it accepts no prompt text or attachments.
+Native code constructs the continuation instruction, starts a fresh owned turn,
+and retains `PromptContinued` in semantic model history. It creates no user
+timeline item and sends no ACP user-message echo. The original prompt, completed
+tools and partial response remain available to the model. Normal account, idle
+session, cancellation, security and Agent/MCP revision checks still apply.
+Clients without this optional feature fail before sending instead of falling
+back to a synthetic visible message.
 
 `securityEvidence@4` carries verified hardware, key, freshness and provenance
 evidence plus `outdated` (awaiting consent) and `degraded` (explicitly accepted)

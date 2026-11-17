@@ -85,6 +85,7 @@ const EXTENSION_CAPABILITIES = {
     compaction: 1,
     activity: 2,
     commandInvocation: 1,
+    sessionContinuation: 1,
   },
 } as const;
 
@@ -164,13 +165,14 @@ export class AxiomAcpClient extends EventEmitter {
     context: number; promise: Promise<VerifySecurityResponse>; pending: boolean; validUntil: number; retryAt: number; failures: number;
   }>();
   private readonly securityVerifications = new Map<string, { context: object; promise: Promise<VerifySecurityResponse> }>();
-  private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean }>();
+  private readonly pendingPrompts = new Set<{ threadId: string; cancelled: boolean; cancelWait?: () => void }>();
   private readonly pendingImageRequests = new Map<string, AbortController>();
   private fullResync: Promise<void> | null = null;
   private fullResyncRequired = false;
   private initialized = false;
   private supportsMessageRevision = false;
   private supportsCommandInvocation = false;
+  private supportsSessionContinuation = false;
   private supportsMcp = false;
   private supportsLocalPayload = false;
   private supportsLegacyPayloadImport = false;
@@ -259,6 +261,7 @@ export class AxiomAcpClient extends EventEmitter {
     // cannot masquerade as a restart and invalidate an in-flight submission.
     this.state.initializeRuntime(meta?.runtimeInstanceId);
     this.supportsCommandInvocation = (meta?.features?.commandInvocation ?? 0) >= 1;
+    this.supportsSessionContinuation = (meta?.features?.sessionContinuation ?? 0) >= 1;
     this.supportsMessageRevision = (meta?.features?.messageRevision ?? 0) >= 1;
     this.supportsMcp = (meta?.features?.desktopMcp ?? 0) >= 1;
     this.supportsLocalPayload = (meta?.features?.localPayload ?? 0) >= 1;
@@ -489,6 +492,45 @@ export class AxiomAcpClient extends EventEmitter {
     }
   }
 
+  /** Retry/Continue is a native control, never a synthetic user message. */
+  async continueSession(threadId: string, webEnabled = false,
+    agentRevision = this.state.snapshot().sessions[threadId]?.desktopAgent?.revision ?? 0,
+    mcpRevision?: number): Promise<PromptResult> {
+    if (!this.supportsSessionContinuation) throw new ProtocolError("Restart Axiom to continue replies without adding a message.");
+    if (!threadId || threadId.length > 128 || !this.state.snapshot().sessions[threadId]) throw new ProtocolError("Invalid conversation");
+    if (typeof webEnabled !== "boolean" || !Number.isSafeInteger(agentRevision) || agentRevision < 0
+      || (mcpRevision !== undefined && (!this.supportsMcp || !Number.isSafeInteger(mcpRevision) || mcpRevision < 0))) {
+      throw new ProtocolError("Invalid continuation settings");
+    }
+    if (this.state.snapshot().sessions[threadId]?.running || [...this.pendingPrompts].some(item => item.threadId === threadId)) {
+      throw new ProtocolError("Wait for the current response or stop it first.");
+    }
+    const context = this.state.accountContextToken();
+    let cancelWait!: () => void;
+    const stopped = new Promise<void>(resolve => { cancelWait = resolve; });
+    const pending = { threadId, cancelled: false, cancelWait };
+    this.pendingPrompts.add(pending);
+    this.state.setRunning(threadId, true);
+    let submitted = false;
+    try {
+      await Promise.race([this.waitForSecurityPreflight(threadId), stopped]);
+      this.assertAccountContext(context);
+      if (pending.cancelled) return { stopReason: "cancelled" };
+      submitted = true;
+      const result = await this.process.request<PromptResult>("_axiom/session/continue", {
+        sessionId: threadId, webEnabled, agentRevision, ...(mcpRevision !== undefined ? { mcpRevision } : {}),
+      }, 0);
+      this.assertAccountContext(context);
+      return result;
+    } finally {
+      this.pendingPrompts.delete(pending);
+      if (this.state.accountContextToken() === context) {
+        this.state.setRunning(threadId, false);
+        if (submitted) await this.refreshThread(threadId, true).catch(() => undefined);
+      }
+    }
+  }
+
   async regenerateImage(threadId: string, callId: string): Promise<{ callId: string }> {
     if (!this.supportsImageRegeneration) throw new ProtocolError("Restart Axiom to regenerate individual images.");
     if (!callId || callId.length > 512 || !threadId || threadId.length > 128) throw new ProtocolError("Invalid image identity");
@@ -547,7 +589,10 @@ export class AxiomAcpClient extends EventEmitter {
   async cancel(threadId: string): Promise<void> {
     this.pendingImageRequests.get(threadId)?.abort();
     // A prompt waiting for attestation must not start after Stop was sent.
-    for (const pending of this.pendingPrompts) if (pending.threadId === threadId) pending.cancelled = true;
+    for (const pending of this.pendingPrompts) if (pending.threadId === threadId) {
+      pending.cancelled = true;
+      pending.cancelWait?.();
+    }
     try {
       await this.process.notify("session/cancel", { sessionId: threadId });
     } finally {

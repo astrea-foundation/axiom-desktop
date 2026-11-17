@@ -69,7 +69,7 @@ export function App() {
   const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
-    ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread,
+    ensureThreadLoaded, loadThread, showWelcome, reviseMessage, continueReply, submitDraft, stopStream, deleteThread,
     messageQueue, threadLoads } = conversations;
   const composeDraft = (text: string) => {
     setDraft(text);
@@ -313,10 +313,7 @@ export function App() {
                 preparation={preparation}
                 attachmentPreviews={conversations.attachmentPreviews}
                 onRevise={!isStreaming && agentState.account?.state === "valid" ? reviseMessage : undefined}
-                onContinue={!isStreaming && activeThreadId && agentState.account?.state === "valid" ? async () => {
-                  const queued = messageQueue.enqueue(activeThreadId, "Continue from where you stopped. Preserve completed work and do not repeat completed tool actions.", webAccess.enabled);
-                  messageQueue.sendNow(queued);
-                } : undefined}
+                onContinue={!isStreaming && activeThreadId && agentState.account?.state === "valid" ? continueReply : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}

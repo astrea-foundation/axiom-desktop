@@ -129,6 +129,14 @@ pub(super) fn project_runtime_events(
                     turn_id: turn_id.clone(),
                 },
             );
+            if item.metadata.get("continuation").and_then(Value::as_bool) == Some(true) {
+                projection.push(
+                    parse_time(&item.created_at),
+                    AppEvent::PromptContinued {
+                        turn_id: turn_id.clone(),
+                    },
+                );
+            }
             active_turn = item.turn_id.as_deref();
         }
         match item.kind {

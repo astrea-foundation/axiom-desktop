@@ -24,6 +24,11 @@ The TUI and proxy call the secure client directly. Desktop chat uses ACP; its
 optional Proxy screen supervises a separate account-bound loopback process.
 The [ACP guide](acp-compatibility.md) owns the control contract.
 
+The agent executes consecutive tool calls with identical names and arguments;
+there is no duplicate-call guard. Each call passes the normal validation and
+authorization path. Cancellation, configured step/deadline limits and the
+provider's execution ownership and response authentication still apply.
+
 ## Frontend code organization
 
 [ACP registration](../apps/axiomcli/src/acp/server.rs) creates one typed server

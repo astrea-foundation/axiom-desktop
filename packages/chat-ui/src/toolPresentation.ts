@@ -97,6 +97,7 @@ export function toolFailureReason(tool: ToolActivity): string | null {
   if (tool.status === "interrupted") return "Interrupted";
   const fetch = isFetchTool(tool);
   const search = toolName(tool) === "web_search";
+  const image = ["generate", "generate_image", "edit_image"].includes(toolName(tool));
   // Read only bounded output text, never inputs or the whole raw object.
   const error = tool.content.slice(-8).map((entry) => {
     const block = object(entry);
@@ -106,6 +107,7 @@ export function toolFailureReason(tool: ToolActivity): string | null {
   if (/web is off/i.test(error)) return "Web is off";
   if (/sign in to Axiom again/i.test(error)) return "Sign in to Axiom again";
   if (/search limit reached/i.test(error)) return "Search limit reached";
+  if (image && /AstreaAI is (?:temporarily busy|busy(?: preparing a secure connection)?|overloaded)/i.test(error)) return "Image service busy";
   if (/local network destinations|non-public|private.*address|credential-bearing URLs/i.test(error)) return "Blocked for safety";
   const status = Number(error.match(/\b(?:HTTP(?: status)?|status(?: code)?)\s*[:=]?\s*(\d{3})\b/i)?.[1]);
   if (status === 403) return fetch ? "Blocked by website" : "Access denied";

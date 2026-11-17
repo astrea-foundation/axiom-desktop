@@ -19,6 +19,8 @@ export function messageRevisionSources(items: ClientTimelineItem[]): Map<string,
       if (item.turnId) turns.set(item.turnId, item);
       sources.set(item.id, item);
     } else if (item.kind === "assistant" || item.kind === "reasoning") {
+      const metadata = (item.raw as { metadata?: { continuation?: boolean } } | undefined)?.metadata;
+      if (metadata?.continuation && item.turnId && latest) turns.set(item.turnId, latest);
       const source = item.turnId ? turns.get(item.turnId) : latest;
       if (source) sources.set(item.id, source);
     }
