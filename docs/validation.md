@@ -424,6 +424,13 @@ filenames for generated images and repeated Save actions. The matching
 worker/backend rollout and actual GPU preview-progress behavior still
 require live qualification; local encrypted fixtures do not establish it.
 
+Signed installed-image acceptance gives Desktop and standalone CLI distinct
+native sessions, fresh data profiles and temporary User-domain Keychains. Tests
+reject duplicate client identities, session IDs, refresh seeds and mismatched
+release versions before either product starts. Reopening the same profile never
+reseeds its consumed token. Per-product isolation preserves fresh default-model
+selection and the profile-scoped credential-vault migration boundary.
+
 | Area | Required evidence |
 |---|---|
 | Installation | Fresh install and uninstall on Windows x64/ARM64, macOS Intel/Apple Silicon, and each supported Linux package; expected publisher, notarization and architecture |

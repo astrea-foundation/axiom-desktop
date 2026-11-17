@@ -26,7 +26,8 @@ environment secrets. The names below match the workflow exactly.
 | `AXIOM_EVAL_API_KEY` | An Axiom automation API key for the funded release evaluation account. It is not a NEAR or Tinfoil provider key. |
 | `AXIOM_EVAL_BASE_URL` | Relay HTTPS base URL used by the live release gate. The current workflow reads it as a secret even though the URL is not confidential. |
 | `AXIOM_EVAL_MODEL` | Available model ID for the live attested E2EE gate. The current workflow reads it as a secret even though the model ID is not confidential. |
-| `AXIOM_INSTALLED_NATIVE_QA` | Fresh dedicated QA native-session JSON for the installed image check: `version`, `accountId`, `clientId`, `refreshToken`, `sessionId`. Provision through normal native authorization before each release run; revoke after qualification. Automation API keys cannot replace native account authentication. See [installed image qualification](releasing.md#build-and-publish). |
+| `AXIOM_INSTALLED_NATIVE_QA` | Fresh dedicated Desktop QA native-session JSON: `version`, `accountId`, `clientId`, `refreshToken`, `sessionId`. Provision through normal native authorization before each release run; revoke after qualification. |
+| `AXIOM_INSTALLED_CLI_NATIVE_QA` | Separate fresh standalone CLI QA native-session JSON with the same release version and distinct client ID, session and refresh token. Each product uses its own isolated profile and temporary Keychain. Never reuse a consumed Desktop seed in the CLI profile. Automation API keys cannot replace either native session. See [installed image qualification](releasing.md#build-and-publish). |
 | `AXIOM_RELEASES_TOKEN` | Fine-grained GitHub credential with Contents write on the public installer distribution repository. Needed for automated mirror publication. |
 | `AXIOM_PLATFORM_RELEASE_TOKEN` | Fine-grained GitHub credential with Actions write on the private platform repository. Needed to dispatch its publisher workflow. |
 

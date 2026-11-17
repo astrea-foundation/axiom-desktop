@@ -252,9 +252,16 @@ jobs:
             xcrun stapler validate "$file"
             spctl --assess --type install --verbose=2 "$file"
           done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-release-mac-universal
+          retention-days: 7
+          path: apps/desktop/dist/*.pkg
+          if-no-files-found: error
       - name: Generate and view an authenticated image from both signed installations
         env:
           AXIOM_INSTALLED_NATIVE_QA: ${{ secrets.AXIOM_INSTALLED_NATIVE_QA }}
+          AXIOM_INSTALLED_CLI_NATIVE_QA: ${{ secrets.AXIOM_INSTALLED_CLI_NATIVE_QA }}
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
@@ -280,12 +287,6 @@ jobs:
             ${{ runner.temp }}/installed-image-cli/receipt.json
             ${{ runner.temp }}/installed-image-cli/image-*.png
           if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
-        with:
-          name: axiom-release-mac-universal
-          retention-days: 7
-          path: apps/desktop/dist/*.pkg
-          if-no-files-found: error
 
   windows-desktop:
     needs: live-evaluation
