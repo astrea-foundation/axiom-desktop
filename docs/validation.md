@@ -418,8 +418,9 @@ deliveries to verify selection by request timestamps.
 Image-progress checks cover authenticated request/sequence binding, rounded
 sampling percentages, truncation and forged-update rejection, queue cancellation,
 clean transport completion, native propagation and durable tool metadata. Browser
-checks cover percentage bars, the 99%-to-100% completion boundary, and distinct
-random filenames for generated images and repeated Save actions. The matching
+checks cover sampling percentage bars, indeterminate receiving progress (also
+with reduced motion), its removal at verified completion, and distinct random
+filenames for generated images and repeated Save actions. The matching
 worker/backend rollout and actual GPU preview-progress behavior still
 require live qualification; local encrypted fixtures do not establish it.
 

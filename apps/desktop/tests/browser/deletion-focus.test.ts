@@ -4383,7 +4383,7 @@ test("regenerating one image keeps the original and chat response and sends only
   } finally {await page.close();}
 });
 
-test("image generation percentages update live and saved images have distinct random PNG filenames", async () => {
+test("image sampling switches to indeterminate delivery before verified images and distinct random saves", async () => {
   const {page, errors} = await openApp("linux", false, [], "medium", true, false);
   try {
     await page.locator('[data-thread-id="old-thread"]').click();
@@ -4404,8 +4404,14 @@ test("image generation percentages update live and saved images have distinct ra
         input: {}, content: [], locations: [], imageProgress: {stage: "finishing", percent: 99},
       }}]);
     });
-    await page.getByText("Finishing image (99%)", {exact: true}).waitFor();
-    assert.equal(await bar.getAttribute("aria-valuenow"), "99");
+    await page.getByText("Receiving image…", {exact: true}).waitFor();
+    assert.equal(await bar.getAttribute("aria-valuenow"), null);
+    assert.equal(await bar.getAttribute("aria-valuetext"), "Receiving image");
+    assert.equal(await page.getByText(/99%|100%/).count(), 0);
+    assert.equal(await page.getByRole("link", {name: "Save image", exact: true}).count(), 0);
+    await page.emulateMedia({reducedMotion: "reduce"});
+    assert.equal(await bar.locator(".load-progress-sweep").evaluate(element => getComputedStyle(element).animationName), "none");
+    if (process.env.AXIOM_IMAGE_RECEIVING_CAPTURE) await page.screenshot({path: process.env.AXIOM_IMAGE_RECEIVING_CAPTURE, animations: "disabled"});
     await page.evaluate(() => {
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1024;
       const context = canvas.getContext("2d")!;

@@ -271,9 +271,11 @@ unavailable; it does not repeat generation.
 
 Desktop receives the verified original and image-tool completion before the
 native client prepares the chat model's visual preview. Image-only regeneration
-does not prepare a model preview. The 99% finishing indicator starts when the
-worker announces the generated image; image transfer, authenticated completion
-and local storage still have to finish before display.
+does not prepare a model preview. When the worker announces the generated image,
+Desktop shows “Receiving image…” with an indeterminate bar: image transfer,
+authenticated completion and local storage still have to finish before display.
+The native `finishing` progress value remains 99 for protocol compatibility; it
+is not an estimate of how much end-to-end work or time remains.
 
 Native code enables `generate` when the installed image service passes its
 verified capability preflight, independently of chat vision support. It withholds

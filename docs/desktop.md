@@ -321,8 +321,11 @@ Copy image, which puts the image itself on the system clipboard, or Save image a
 to select a destination. Generated images are attributed to AstreaAI beneath the result.
 Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
-live percentage and progress bar. Queued work displays 0%; finishing stays at
-99% until the verified result is ready; the percentage and bar then disappear.
+sampling percentage and progress bar. Queued work displays 0%. Once the worker
+announces the PNG, the row changes to “Receiving image…” with an indeterminate
+bar while transfer, authenticated completion and local storage finish. This
+phase has no percentage or remaining-time estimate; the bar disappears when the
+verified result is ready.
 Chat models without vision can create images and edit earlier generated images
 by their conversation-local IDs, but cannot inspect results or accept new image
 uploads. A failed image-service preflight withholds image tools and supplies
