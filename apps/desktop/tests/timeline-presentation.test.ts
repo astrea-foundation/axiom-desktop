@@ -46,6 +46,17 @@ test("authoritative assistant-before-reasoning records render as one response", 
   assert.equal(rows[0].message.status, "complete");
 });
 
+test("native continuation responses retain the original prompt as their revision source", () => {
+  const original = item("user", "original", "first-turn", "Original request");
+  const continued = { ...item("assistant", "continuation-start", "continued-turn", ""), raw: { metadata: { continuation: true } } };
+  const reply = item("assistant", "continued-reply", "continued-turn", "Continued answer");
+  const timeline = [original, item("assistant", "partial", "first-turn", "Partial answer"), continued, reply];
+  assert.equal(messageRevisionSources(timeline).get(reply.id), original);
+  const rows = presentTimeline(timeline);
+  assert.equal(rows.filter(row => row.kind === "message" && row.message.role === "user").length, 1);
+  assert.equal(rows.some(row => row.key === continued.id), false);
+});
+
 test("live reasoning-before-assistant records render as one response", () => {
   const rows = presentTimeline([
     item("reasoning", "reasoning:turn-1", "turn-1", "private thought", "streaming"),

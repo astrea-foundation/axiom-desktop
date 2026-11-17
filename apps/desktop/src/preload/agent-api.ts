@@ -62,6 +62,7 @@ export interface AgentApi {
   // must never send through a preload/main process that ignores Web consent.
   promptWithWebConsent: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision?: number, mcpRevision?: number) => Promise<PromptResult>;
   promptWithAttachments: (sessionId: string, text: string, clientItemId: string, webEnabled: boolean, agentRevision: number, attachments: PromptAttachment[], mcpRevision?: number) => Promise<PromptResult>;
+  continueSession: (sessionId: string, webEnabled: boolean, agentRevision: number, mcpRevision?: number) => Promise<PromptResult>;
   getAttachments: (threadId: string, userItemId: string) => Promise<GetAttachmentsResponse>;
   regenerateImage: (threadId: string, callId: string) => Promise<{ callId: string }>;
   resolveImage: (threadId: string, imageId: string) => Promise<ResolveImageResponse>;
@@ -186,6 +187,7 @@ export const agentApi: AgentApi = {
   loadChat: (sessionId) => invoke("chat-load", sessionId),
   promptWithWebConsent: (sessionId, text, clientItemId, webEnabled, agentRevision = 0, mcpRevision) => invoke("prompt-with-agent-context", sessionId, text, clientItemId, webEnabled, agentRevision, mcpRevision),
   promptWithAttachments: (sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision) => invoke("prompt-with-attachments", sessionId, text, clientItemId, webEnabled, agentRevision, attachments, mcpRevision),
+  continueSession: (sessionId, webEnabled, agentRevision, mcpRevision) => invoke("session-continue", sessionId, webEnabled, agentRevision, mcpRevision),
   getAttachments: (threadId, userItemId) => invoke("attachments", threadId, userItemId),
   regenerateImage: (threadId, callId) => invoke("image-regenerate", threadId, callId),
   resolveImage: (threadId, imageId) => invoke("image-resolve", threadId, imageId),

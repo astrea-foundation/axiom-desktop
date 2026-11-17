@@ -43,6 +43,16 @@ test("fallback appears once before the assistant placeholder arrives", () => {
   assert.equal(render([user, provider]).match(/Generating/g)?.length, 1);
 });
 
+test("a failed hidden continuation keeps Retry on its own error without adding a user bubble", () => {
+  const current = session([user, { ...pending, status: "failed", text: "Partial answer" },
+    { id: "retry-failure", turnId: "continued-turn", kind: "error", status: "failed", text: "Temporary service failure" }]);
+  current.running = false;
+  const html = renderToStaticMarkup(createElement(TimelineView, { session: current, onContinue: async () => {} }));
+  assert.equal(html.match(/data-timeline-kind="user"/g)?.length, 1);
+  assert.match(html, />Retry</);
+  assert.doesNotMatch(html, /Continue from where you stopped/);
+});
+
 test("compaction replaces the empty generation placeholder with live work counters and a spinner", () => {
   const current = session([user, pending]);
   current.compaction = { completed: 1, total: 3, generatedTokens: 1246, estimated: true };

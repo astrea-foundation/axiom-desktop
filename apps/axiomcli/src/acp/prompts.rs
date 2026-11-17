@@ -2,6 +2,13 @@
 
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptInvocation {
+    User,
+    Command,
+    Continuation,
+}
+
 fn publish_title(
     connection: &ConnectionTo<Client>,
     session_id: &protocol::SessionId,
@@ -37,7 +44,14 @@ pub(super) async fn prompt(
     responder: Responder<protocol::PromptResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
-    prompt_with_invocation(context, request, responder, connection, false).await
+    prompt_with_invocation(
+        context,
+        request,
+        responder,
+        connection,
+        PromptInvocation::User,
+    )
+    .await
 }
 
 pub(super) async fn invoke_command(
@@ -63,7 +77,53 @@ pub(super) async fn invoke_command(
             request.command,
         ))],
     );
-    prompt_with_invocation(context, prompt, responder, connection, true).await
+    prompt_with_invocation(
+        context,
+        prompt,
+        responder,
+        connection,
+        PromptInvocation::Command,
+    )
+    .await
+}
+
+pub(super) async fn continue_session(
+    context: &ServerContext,
+    request: extension::SessionContinuationRequest,
+    responder: Responder<protocol::PromptResponse>,
+    connection: &ConnectionTo<Client>,
+) -> agent_client_protocol::Result<()> {
+    if !extension_enabled(
+        &context.extension_state,
+        ExtensionFeature::SessionContinuation,
+    ) {
+        return responder.respond_with_error(extension_not_negotiated());
+    }
+    let mut metadata = protocol::Meta::new();
+    metadata.insert(
+        "axiom".into(),
+        serde_json::json!({
+            "clientItemId": uuid::Uuid::new_v4().to_string(),
+            "webEnabled": request.web_enabled,
+            "agentRevision": request.agent_revision,
+            "mcpRevision": request.mcp_revision,
+        }),
+    );
+    let prompt = protocol::PromptRequest::new(
+        protocol::SessionId::new(request.session_id),
+        vec![protocol::ContentBlock::Text(protocol::TextContent::new(
+            crate::agent::CONTINUATION_PROMPT,
+        ))],
+    )
+    .meta(metadata);
+    prompt_with_invocation(
+        context,
+        prompt,
+        responder,
+        connection,
+        PromptInvocation::Continuation,
+    )
+    .await
 }
 
 async fn prompt_with_invocation(
@@ -71,7 +131,7 @@ async fn prompt_with_invocation(
     request: protocol::PromptRequest,
     responder: Responder<protocol::PromptResponse>,
     connection: &ConnectionTo<Client>,
-    explicit_command: bool,
+    invocation: PromptInvocation,
 ) -> agent_client_protocol::Result<()> {
     let ctx_account_transition = context.account_transition.clone();
     let ctx_account_work = context.account_work.clone();
@@ -111,7 +171,9 @@ async fn prompt_with_invocation(
     {
         return responder.respond_with_error(extension_not_negotiated());
     }
-    let client_item_id = prompt_metadata.map(|metadata| metadata.client_item_id);
+    let client_item_id = prompt_metadata
+        .filter(|_| invocation != PromptInvocation::Continuation)
+        .map(|metadata| metadata.client_item_id);
     let prompt = match prompt_input(&request.prompt) {
         Ok((prompt, embedded)) => {
             attachments.extend(embedded);
@@ -127,20 +189,22 @@ async fn prompt_with_invocation(
     let session_id = request.session_id.clone();
     // Prompt text is always data. Only the dedicated negotiated command
     // request can enter application-control routing.
-    let command =
-        match if !explicit_command || message_revision.is_some() || !attachments.is_empty() {
-            None
-        } else {
-            slash::parse(&prompt)
-        } {
-            Some(Ok(command)) => Some(command),
-            Some(Err(error)) => {
-                return responder.respond_with_error(
-                    agent_client_protocol::Error::invalid_params().data(error.to_string()),
-                );
-            }
-            None => None,
-        };
+    let command = match if invocation != PromptInvocation::Command
+        || message_revision.is_some()
+        || !attachments.is_empty()
+    {
+        None
+    } else {
+        slash::parse(&prompt)
+    } {
+        Some(Ok(command)) => Some(command),
+        Some(Err(error)) => {
+            return responder.respond_with_error(
+                agent_client_protocol::Error::invalid_params().data(error.to_string()),
+            );
+        }
+        None => None,
+    };
     let deterministic_test_runner = cfg!(debug_assertions)
         && std::env::var("AXIOMCLI_TEST_RUNNER").is_ok_and(|value| !value.trim().is_empty());
     if command.is_none() && !ctx_auth.has_credential() && !deterministic_test_runner {
@@ -163,6 +227,11 @@ async fn prompt_with_invocation(
         let Some(session) = registry.get(&session_id) else {
             return responder.respond_with_internal_error("unknown ACP session");
         };
+        if invocation == PromptInvocation::Continuation && !session.has_prompt {
+            return responder.respond_with_internal_error(
+                "Send a message before continuing this conversation.",
+            );
+        }
         let internal_id = session.internal_id.clone();
         if registry.active_work.contains_key(&internal_id) {
             return responder.respond_with_internal_error("session already has active work");
@@ -218,7 +287,9 @@ async fn prompt_with_invocation(
         let session = registry
             .get_mut(&session_id)
             .expect("session remained loaded while reserving work");
-        let should_generate_title = turn_id.is_some() && !session.has_prompt;
+        let should_generate_title = invocation != PromptInvocation::Continuation
+            && turn_id.is_some()
+            && !session.has_prompt;
         if turn_id.is_some() {
             session.has_prompt = true;
         }
@@ -1029,12 +1100,17 @@ async fn prompt_with_invocation(
     }
 
     let submitted = match ctx_runtime
-        .dispatch(AppCommand::SubmitPrompt {
+        .dispatch(if invocation == PromptInvocation::Continuation {
+            AppCommand::ContinuePrompt {
+                session_id: internal_id.clone(),
+                turn_id: turn_id.clone(),
+            }
+        } else { AppCommand::SubmitPrompt {
             session_id: internal_id.clone(),
             turn_id: turn_id.clone(),
             text: prompt.clone(),
             attachments: attachments.clone(),
-        })
+        } })
         .await
     {
         Ok(submitted) => submitted,

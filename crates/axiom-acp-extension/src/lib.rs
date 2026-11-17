@@ -97,6 +97,8 @@ pub struct FeatureVersions {
     pub activity: u16,
     /// Explicit application command invocation; prompt text stays literal.
     pub command_invocation: u16,
+    /// Retry/Continue without submitting a visible user message.
+    pub session_continuation: u16,
 }
 
 impl FeatureVersions {
@@ -125,6 +127,7 @@ impl FeatureVersions {
             compaction: 1,
             activity: 2,
             command_invocation: 1,
+            session_continuation: 1,
         }
     }
 }
@@ -213,6 +216,18 @@ pub struct SessionCommandRequest {
 }
 
 pub type SessionCommandResponse = agent_client_protocol::schema::v1::PromptResponse;
+
+/// Resume the existing model history using a native application instruction.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, JsonRpcRequest)]
+#[request(method = "_axiom/session/continue", response = SessionCommandResponse)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionContinuationRequest {
+    pub session_id: String,
+    pub web_enabled: bool,
+    pub agent_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_revision: Option<u64>,
+}
 
 /// Metadata Axiom Desktop attaches beneath the standard ACP `_meta.axiom`
 /// namespace when submitting a user message.
@@ -1663,6 +1678,7 @@ pub struct ProtocolSchema {
     pub desktop_bootstrap_response: DesktopBootstrapResponse,
     pub prompt_metadata: PromptMetadata,
     pub session_command_request: SessionCommandRequest,
+    pub session_continuation_request: SessionContinuationRequest,
     pub get_attachments_request: GetAttachmentsRequest,
     pub get_attachments_response: GetAttachmentsResponse,
     pub regenerate_image_request: RegenerateImageRequest,

@@ -44,6 +44,15 @@ test("the unified image tool labels generation and reference edits, including sa
   assert.equal(toolLabel({ ...edit, name: "edit_image", title: "edit_image" }), "Edited image");
 });
 
+test("image capacity failures identify a busy service, including saved connection-preparation wording", () => {
+  for (const detail of ["AstreaAI is temporarily busy. Your request was not submitted; try again shortly.",
+    "AstreaAI is busy preparing a secure connection. Your request was not submitted; try again shortly."]) {
+    const tool: ToolActivity = { callId: "image", name: "generate", title: "generate", kind: "other", status: "failed",
+      input: { prompt: "A mug" }, content: [{ type: "text", text: detail }], locations: [] };
+    assert.equal(toolLabel(tool), "Image generation failed: Image service busy");
+  }
+});
+
 test("generate renders ordered references and preserves percentage progress", () => {
   const image: ToolActivity = {callId: "new-image", name: "generate", title: "generate", kind: "other", status: "in_progress",
     input: {prompt: "Use <image1>", reference_image_ids: ["img_" + "a".repeat(32)]}, content: [], locations: [],

@@ -258,7 +258,8 @@ impl AcpProcess {
                         "securityEvidence": 4,
                         "compaction": 1,
                         "activity": 1,
-                        "commandInvocation": 1
+                        "commandInvocation": 1,
+                        "sessionContinuation": 1
                     }
                 }
             },
@@ -686,6 +687,60 @@ async fn model_changes_reconcile_disjoint_reasoning_capabilities_atomically() {
         preferences["result"]["preferences"]["thinkingLevel"],
         "medium"
     );
+    acp.close().await;
+}
+
+#[tokio::test]
+async fn native_continuation_never_echoes_or_saves_a_synthetic_user_message() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut acp = AcpProcess::spawn("echo");
+    acp.initialize_extension().await;
+    let session = acp.new_session(2, workspace.path()).await;
+    acp.send(
+        &json!({"jsonrpc":"2.0","id":3,"method":"_axiom/session/continue",
+        "params":{"sessionId":session,"webEnabled":false,"agentRevision":0}}),
+    )
+    .await;
+    assert!(
+        acp.response(3).await.get("error").is_some(),
+        "an empty conversation cannot be continued"
+    );
+    acp.send(&json!({"jsonrpc":"2.0","id":4,"method":"session/prompt",
+        "params":{"sessionId":session,"prompt":[{"type":"text","text":"Original request"}]}}))
+        .await;
+    assert_eq!(acp.response(4).await["result"]["stopReason"], "end_turn");
+    for id in [5, 6] {
+        acp.send(
+            &json!({"jsonrpc":"2.0","id":id,"method":"_axiom/session/continue",
+            "params":{"sessionId":session,"webEnabled":false,"agentRevision":0}}),
+        )
+        .await;
+        loop {
+            let value = acp.read().await;
+            assert_ne!(
+                value["params"]["update"]["sessionUpdate"], "user_message_chunk",
+                "continuation must not echo a user message: {value}"
+            );
+            if value["id"] == id {
+                assert_eq!(value["result"]["stopReason"], "end_turn", "{value}");
+                break;
+            }
+        }
+    }
+    acp.send(
+        &json!({"jsonrpc":"2.0","id":7,"method":"_axiom/thread/timeline",
+        "params":{"threadId":session,"limit":100}}),
+    )
+    .await;
+    let snapshot = acp.response(7).await;
+    let users = snapshot["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "user_message")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 1, "{snapshot}");
+    assert_eq!(users[0]["content"], "Original request");
     acp.close().await;
 }
 

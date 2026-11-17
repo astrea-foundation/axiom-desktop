@@ -17,6 +17,7 @@ must be recorded against the actual source revision and signed installers.
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Encrypted local storage](local-storage.md) | Binary assets, forward migration, OS-protected keys and recovery |
 | [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
+| [0.1.24 release notes](releases/0.1.24.md) | Internal Retry/Continue, repeated tool calls and image capacity handling |
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |
 | [0.1.17 release notes](releases/0.1.17.md) | Account-authorized AstreaAI, bundled verifiers and installer path handling |
 | [0.1.18 release notes](releases/0.1.18.md) | Restore NEAR AI and Tinfoil alongside AstreaAI |

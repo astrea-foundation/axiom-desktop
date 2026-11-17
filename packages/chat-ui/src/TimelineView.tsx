@@ -34,7 +34,7 @@ function ActivityRow({ item, onRetry }: { item: ClientTimelineItem; onRetry?: ()
   );
   if (error) return <DismissibleNotice data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--color-danger-soft)] px-3 py-2 text-[12.5px] text-[var(--color-danger-strong)]">
     <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
-    <span className="min-w-0 break-words">{item.text}{onRetry ? <button type="button" className="ml-3 rounded px-2 py-1 text-[var(--color-cherry)]" onClick={() => void onRetry().catch(() => {})}>Retry</button> : null}</span>
+    <span className="min-w-0 break-words"><span>{item.text}</span>{onRetry ? <button type="button" className="ml-3 rounded px-2 py-1 text-[var(--color-cherry)]" onClick={() => void onRetry().catch(() => {})}>Retry</button> : null}</span>
   </DismissibleNotice>;
   return (
     <div role="status" data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--wash-row)] px-3 py-2 text-[12.5px] text-[var(--color-text-tertiary)]">
@@ -63,7 +63,11 @@ export function TimelineView({
   const sources = messageRevisionSources(session.timeline);
   const turnsByItem = new Map(session.timeline.map((item) => [item.id, item.turnId]));
   let latestUser: ClientTimelineItem | undefined;
-  for (const item of session.timeline) if (item.kind === "user") latestUser = item;
+  let latestReplyTurn: string | undefined;
+  for (const item of session.timeline) {
+    if (item.kind === "user") latestUser = item;
+    if (item.turnId && ["user", "assistant", "reasoning", "tool", "error"].includes(item.kind)) latestReplyTurn = item.turnId;
+  }
   const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
   const responseActive = session.running || isStopping;
   // A turn split by tool calls renders several assistant segments; the final
@@ -86,7 +90,7 @@ export function TimelineView({
         {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
           initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
         <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
-        onContinue={!responseActive && source?.id === latestUser?.id ? onContinue : undefined}
+        onContinue={!responseActive && turnId === latestReplyTurn ? onContinue : undefined}
         responseActive={responseActive && (turnId && activeTurnId
           ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
         showGenerationIndicator={!isStopping}
@@ -98,7 +102,7 @@ export function TimelineView({
       return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={responseActive} /></div>;
     }
     return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item}
-      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestUser?.turnId ? onContinue : undefined} />;
+      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestReplyTurn ? onContinue : undefined} />;
   });
   const showPendingUser = Boolean(
     pendingUserMessage

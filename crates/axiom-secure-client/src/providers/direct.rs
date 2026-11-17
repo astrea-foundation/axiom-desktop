@@ -45,7 +45,7 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
     if let Some(capacity) = error.downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>() {
         let detail = match capacity {
             axiom_pool_client::direct::CapacityUnavailable::Preparation => {
-                "AstreaAI is busy preparing a secure connection. Your request was not submitted; try again shortly."
+                "AstreaAI is temporarily busy. Your request was not submitted; try again shortly."
             }
             axiom_pool_client::direct::CapacityUnavailable::Exchange => {
                 "AstreaAI is overloaded. Your request did not complete; it was not replayed."
