@@ -62,6 +62,19 @@ The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
 0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
 pulldown-cmark to 0.13.6. These retain the existing security audit gate.
 
+The 0.1.24 release audit updates `libz-sys` to 1.1.33, the patched range for
+[RUSTSEC-2026-0544](https://github.com/RustSec/advisory-db/blob/main/crates/libz-sys/RUSTSEC-2026-0544.md)
+in the bundled Git dependency. The vulnerability remains enforced by the audit.
+Chrono 0.4.45 also has an
+[informational unmaintained advisory](https://github.com/RustSec/advisory-db/blob/main/crates/chrono/RUSTSEC-2026-0543.md),
+following its maintainer's [maintenance announcement](https://github.com/chronotope/chrono/issues/1768).
+The current DCAP verifier, MCP/OAuth dependencies, SQL storage and ACP schemas
+still require Chrono alongside Axiom's timestamps. A scoped exception records
+only that maintenance advisory; timestamp parsing, expiry, fresh attestation and
+authenticated completion checks remain required. Remove it when direct and
+transitive users migrate to maintained datetime implementations. This exception
+does not apply to any vulnerability advisory.
+
 Native pool ES256 proof-key generation/signing uses P-256 0.14 and
 crypto-bigint 0.7.10, beyond the fix for
 [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
