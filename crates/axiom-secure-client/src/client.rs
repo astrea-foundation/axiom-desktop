@@ -125,16 +125,6 @@ impl SecureClient {
             .await
     }
 
-    /// The uncensored image adapter is temporarily disabled for every chat
-    /// model, including tagged models and regeneration of older images.
-    async fn uncensored_image_policy(
-        &self,
-        _chat_model_id: &str,
-        _cancellation: &CancellationToken,
-    ) -> Result<bool> {
-        Ok(false)
-    }
-
     pub async fn generate_image(
         &self,
         chat_model_id: &str,
@@ -178,12 +168,10 @@ impl SecureClient {
         cancellation: CancellationToken,
     ) -> Result<crate::GeneratedImage> {
         let provider = self.image_provider()?;
-        let uncensored = self
-            .uncensored_image_policy(request.chat_model_id, &cancellation)
-            .await?;
         let policy = self.trust_policy(cancellation.clone()).await?;
+        // The image adapter remains paused for every chat model and regeneration.
         provider
-            .image_request(&policy, request, uncensored, Some(progress), cancellation)
+            .image_request(&policy, request, false, Some(progress), cancellation)
             .await
     }
 
@@ -592,10 +580,14 @@ mod tests {
             &self,
             _: &TrustPolicy,
             _: axiom_inference::ImageGenerationRequest<'_>,
-            _: bool,
+            uncensored: bool,
             progress: Option<tokio::sync::mpsc::Sender<axiom_inference::ImageGenerationProgress>>,
             _: CancellationToken,
         ) -> Result<crate::GeneratedImage> {
+            assert!(
+                !uncensored,
+                "the paused image adapter must never reach the provider"
+            );
             if let Some(progress) = progress {
                 for percent in [0, 1, 99] {
                     let _ = progress
@@ -619,7 +611,12 @@ mod tests {
     #[tokio::test]
     async fn image_adapter_stays_disabled_for_tagged_and_untagged_models() {
         let config = installed_direct_config("https://relay.example");
-        let client = SecureClient::new(config, ApiCredential::new("synthetic")).unwrap();
+        let mut client = SecureClient::new(config, ApiCredential::new("synthetic")).unwrap();
+        client.providers = ProviderRegistry::new([
+            Arc::new(ImageProgressFixture) as Arc<dyn crate::provider::SecureProvider>
+        ])
+        .unwrap();
+        client.trust_policy.write().await.refreshed_at = Some(Instant::now());
         let tag = |id: &str| axiom_inference::ModelTag {
             id: id.into(),
             label: id.into(),
@@ -643,17 +640,20 @@ mod tests {
             unavailable: Vec::new(),
         });
         let cancel = CancellationToken::new();
-        for (chat_model, expected) in [
-            ("deepseek-v4-1-flash-1017-abliterated", false),
-            ("tinfoil-deepseek-v4-1-flash", false),
-            ("withdrawn-model", false),
+        for chat_model in [
+            "deepseek-v4-1-flash-1017-abliterated",
+            "tinfoil-deepseek-v4-1-flash",
+            "withdrawn-model",
         ] {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                client.generate_image(chat_model, "A dog", cancel.clone()),
+            )
+            .await
+            .expect("paused adapter policy must reach the image provider without catalog requests");
             assert_eq!(
-                client
-                    .uncensored_image_policy(chat_model, &cancel)
-                    .await
-                    .unwrap(),
-                expected,
+                result.unwrap_err().safe_detail(),
+                "image fixture completed",
                 "{chat_model}"
             );
         }
