@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 // @ts-expect-error Release scripts run directly in Node.
 import { nativeQaFixture, prepareNativeReleaseQa } from '../../../scripts/native-release-qa.mjs';
+// @ts-expect-error Release scripts run directly in Node.
+import { installedQaSource } from '../../../scripts/verify-installed-image.mjs';
 
 const fixture = { version: '0.1.21', accountId: '11111111-1111-4111-8111-111111111111',
   clientId: 'c'.repeat(43), refreshToken: 'axr_' + 'r'.repeat(43), sessionId: 'e'.repeat(32) };
@@ -14,7 +16,7 @@ test('native acceptance rejects automation keys and non-disposable hosts', () =>
   assert.throws(() => nativeQaFixture({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'macOS', RUNNER_TEMP: '/tmp', AXIOM_API_KEY: 'axm_fake' }), /native-session QA credential/);
 });
 
-test('both installed products reuse the rotated native credential without reseeding its old token', () => {
+test('reopening the same acceptance profile never reseeds its consumed native credential', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'axiom-native-release-'));
   try {
     const source = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'macOS', RUNNER_TEMP: root, AXIOM_INSTALLED_NATIVE_QA: JSON.stringify(fixture) };
@@ -23,7 +25,7 @@ test('both installed products reuse the rotated native credential without reseed
     assert.throws(() => prepareNativeReleaseQa(source, { XDG_DATA_HOME: root }, '0.1.22', run), /different release/);
     assert.throws(() => nativeQaFixture({ ...source, RUNNER_ENVIRONMENT: 'self-hosted' }), /disposable/);
     const desktop = { XDG_DATA_HOME: path.join(root, 'desktop/data') };
-    const cli = { XDG_DATA_HOME: path.join(root, 'cli/data') };
+    const cli = { XDG_DATA_HOME: desktop.XDG_DATA_HOME };
     assert.deepEqual(prepareNativeReleaseQa(source, desktop, fixture.version, run), { accountId: fixture.accountId, sessionId: fixture.sessionId });
     const seeded = calls.length;
     prepareNativeReleaseQa(source, cli, fixture.version, run);
@@ -43,5 +45,34 @@ test('native credential setup failures cannot leak a refresh token in release lo
   try {
     const source = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'macOS', RUNNER_TEMP: root, AXIOM_INSTALLED_NATIVE_QA: JSON.stringify(fixture) };
     assert.throws(() => prepareNativeReleaseQa(source, { XDG_DATA_HOME: path.join(root, 'data') }, fixture.version, () => { throw new Error(fixture.refreshToken); }), error => error instanceof Error && !error.message.includes(fixture.refreshToken));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Desktop and CLI seed independent temporary Keychains and preserve each profile rotation marker', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'axiom-native-products-'));
+  try {
+    const cli = { ...fixture, clientId: 'd'.repeat(43), refreshToken: 'axr_' + 's'.repeat(43), sessionId: 'f'.repeat(32) };
+    const source = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'macOS', RUNNER_TEMP: root,
+      AXIOM_INSTALLED_NATIVE_QA: JSON.stringify(fixture), AXIOM_INSTALLED_CLI_NATIVE_QA: JSON.stringify(cli) };
+    const calls: { args: string[]; input?: string }[] = [];
+    const run = (args: string[], input?: string) => { calls.push({ args, input }); };
+    for (const [frontend, identity] of [['desktop-chat', fixture], ['cli', cli]] as const) {
+      const output = path.join(root, frontend); mkdirSync(output);
+      const selected = installedQaSource(source, output, frontend);
+      const environment = { XDG_DATA_HOME: path.join(output, 'data') };
+      prepareNativeReleaseQa(selected, environment, fixture.version, run);
+      const seeded = calls.length;
+      prepareNativeReleaseQa(selected, environment, fixture.version, run);
+      assert.equal(calls.length, seeded, 'reopening a product must never restore its consumed seed');
+      const marker = JSON.parse(readFileSync(path.join(output, 'axiom-installed-native-qa.json'), 'utf8'));
+      assert.equal(marker.sessionId, identity.sessionId);
+      assert.equal(marker.clientId, identity.clientId);
+      assert.equal(readFileSync(path.join(environment.XDG_DATA_HOME, 'axiom/shared/identity/client-id'), 'utf8').trim(), identity.clientId);
+    }
+    assert.equal(calls.filter(call => call.input?.includes('add-generic-password')).length, 2);
+    const selectedKeychains = calls.filter(call => call.input?.startsWith('default-keychain -d user -s ')).map(call => call.input);
+    assert.equal(selectedKeychains.length, 2);
+    assert.notEqual(selectedKeychains[0], selectedKeychains[1], 'a fresh data-profile vault cannot inherit the other product keychain');
+    assert(calls.every(call => !call.args.join(' ').includes(fixture.refreshToken) && !call.args.join(' ').includes(cli.refreshToken)));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

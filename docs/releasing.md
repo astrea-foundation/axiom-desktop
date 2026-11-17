@@ -156,20 +156,24 @@ test.
 
 The macOS signing job installs each signed PKG on its disposable runner and runs
 `scripts/verify-installed-image.mjs` against the installed CLI. An isolated profile
-and a fresh native-session QA credential keep this check separate from
-maintainer accounts. Before dispatch, provision `AXIOM_INSTALLED_NATIVE_QA` in the
-protected `release` environment using a dedicated funded QA account and the normal
-native authorization/PKCE exchange. Its JSON contains `version`, `accountId`,
-`clientId`, `refreshToken`, and `sessionId`. An automation API key cannot access
+and fresh native-session QA credentials keep this check separate from
+maintainer accounts. Before dispatch, provision `AXIOM_INSTALLED_NATIVE_QA` for
+Desktop and `AXIOM_INSTALLED_CLI_NATIVE_QA` for standalone CLI in the protected
+`release` environment using a dedicated funded QA account and two normal native
+authorization/PKCE exchanges. Each JSON contains `version`, `accountId`,
+`clientId`, `refreshToken`, and `sessionId`. Both versions must match; client IDs,
+sessions and refresh tokens must be distinct. An automation API key cannot access
 native account sessions and cannot substitute for this credential.
 
 The harness accepts only a disposable GitHub-hosted macOS runner, creates a
 separate temporary Keychain, makes it the runner's default User-domain Keychain,
-and installs that session's client identity in each
-isolated profile. Desktop and standalone CLI share the rotating Keychain entry;
-the original refresh token is seeded once, never restored after rotation. If a
-run consumes the token before failing, authorize a fresh QA native session before
-another dispatch. Revoke the QA session and remove the temporary secret after
+and installs each session's client identity in its
+isolated profile. Desktop and standalone CLI have separate temporary Keychains
+and independent native sessions. Native vault migration removes the legacy
+rotating entry, so a fresh profile cannot reuse another profile's migrated login.
+Each seed is installed once in its own Keychain, never restored after rotation.
+If a run consumes a seed before failing, authorize a fresh session for that
+product before another dispatch. Revoke both QA sessions and remove both temporary secrets after
 qualification. Never seed this fixture into a maintainer's login Keychain.
 The child process inherits no provider configuration or test
 overrides. It must register image tools, generate and view one image, finish ready,
@@ -185,6 +189,20 @@ generation or retries an attempted view. Exactly one image, completed generation
 and viewing tools, authenticated settled usage, and a ready session remain
 required. Private diagnostics contain only tool identities/statuses and image
 metadata, without prompts, model output, or credentials.
+
+The unpublished 0.1.23 assembly can be completed using
+`release-0.1.23-recovery.yml` on promoted tag `v0.1.23-packaging.1`. Its immutable
+application source and stable tag remain
+`b35564d0717bef145a2e601f1039c9b5e13d74a1`. It reuses the qualified native inputs
+and signed Windows/Linux packages from run `44005059308`, then assembles and
+qualifies Mac packages with independent per-product native sessions and Keychains.
+The guard requires the original live/native/Windows gates and Mac notarization
+to have passed, the installed-image assertion to have failed, and publication to
+have been skipped. Assembly changes are limited to the reviewed acceptance,
+workflow, tests and documentation paths; runtime and version changes are rejected.
+Fresh unused Desktop and CLI QA seeds are required. Signed Mac packages are
+retained before acceptance; publication still requires successful authenticated
+generation/viewing and settled image usage from both signed installations.
 
 The unpublished 0.1.22 assembly can be completed using
 `release-0.1.22-recovery.yml` on promoted tag `v0.1.22-packaging.1`. It keeps the

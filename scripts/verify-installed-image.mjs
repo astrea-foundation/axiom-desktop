@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { prepareNativeReleaseQa } from './native-release-qa.mjs';
+import { nativeQaFixture, prepareNativeReleaseQa } from './native-release-qa.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const imageTestModel = 'direct:qwen3.8-27b';
@@ -18,6 +18,24 @@ export function installedEnvironment(source, root) {
   return { ...environment,
     XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data'),
     XDG_CACHE_HOME: path.join(root, 'cache') };
+}
+
+// Vaults are scoped to the native data profile. A migrated legacy rotating
+// token is removed, so a different product's fresh profile must have its own
+// native authorization and temporary User-domain Keychain.
+export function installedQaSource(source, output, frontend) {
+  if (!['desktop-chat', 'cli'].includes(frontend)) throw new Error('Unknown installed acceptance frontend');
+  const desktop = nativeQaFixture(source);
+  const cli = nativeQaFixture({ ...source, AXIOM_INSTALLED_NATIVE_QA: source.AXIOM_INSTALLED_CLI_NATIVE_QA });
+  if (desktop.version !== cli.version || desktop.clientId === cli.clientId
+      || desktop.sessionId === cli.sessionId || desktop.refreshToken === cli.refreshToken) {
+    throw new Error('Desktop and CLI acceptance require distinct native authorizations for the same release');
+  }
+  const root = path.resolve(output);
+  const runner = path.resolve(source.RUNNER_TEMP);
+  if (!root.startsWith(runner + path.sep)) throw new Error('Installed acceptance must stay inside runner temporary storage');
+  return { ...source, RUNNER_TEMP: root,
+    AXIOM_INSTALLED_NATIVE_QA: frontend === 'cli' ? source.AXIOM_INSTALLED_CLI_NATIVE_QA : source.AXIOM_INSTALLED_NATIVE_QA };
 }
 
 export function requiredReleaseDefault(models) {
@@ -64,11 +82,11 @@ export async function verifyInstalledImage(binary, installer, output, version, s
   if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('A stable release version is required');
   output = path.resolve(output);
   mkdirSync(output, { recursive: true, mode: 0o700 });
+  const frontend = path.basename(installer).startsWith('AxiomCLI-') ? 'cli' : 'desktop-chat';
   const environment = installedEnvironment(source, output);
-  const nativeQa = prepareNativeReleaseQa(source, environment, version);
+  const nativeQa = prepareNativeReleaseQa(installedQaSource(source, output, frontend), environment, version);
   const installedVersion = execFileSync(binary, ['--version'], { env: environment, encoding: 'utf8', timeout: 30000 }).trim();
   if (installedVersion !== `axiomcli ${version}`) throw new Error('Installed CLI version does not match the release');
-  const frontend = path.basename(installer).startsWith('AxiomCLI-') ? 'cli' : 'desktop-chat';
   const child = spawn(binary, ['acp', '--frontend', frontend, ...(process.platform === 'darwin' ? ['--no-keychain-ui'] : [])],
     { cwd: output, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
   let buffer = '', sequence = 0, sessionId, closed = false;
