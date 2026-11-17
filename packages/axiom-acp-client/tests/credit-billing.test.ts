@@ -43,6 +43,8 @@ test("credit summaries reject inconsistent buckets and preserve exact fractional
   validateCreditBalances(balances());
   assert.equal(creditAmount("9000000000000000", true), "9,000,000,000");
   assert.equal(creditAmount("1", true), "0.000001");
+  assert.equal(creditAmount("1", true, 4n), "0.000004");
+  assert.equal(creditAmount("9000000000000000", true, 4n), "36,000,000,000");
   assert.equal(creditAmount("1"), "Less than 1");
   for (const bad of ["-0", "01", "1e6", "9000000000000001"]) assert.throws(() => creditAmount(bad));
   const invalid = balances(); invalid.purchased.available_units = "1";

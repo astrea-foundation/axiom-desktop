@@ -126,7 +126,9 @@ including NEAR or Tinfoil. Chat vision is required for image uploads and
 `view_image`, not generation. Its model ID is image provenance, not a selector
 for the image worker. AstreaAI still verifies its own worker, keys, signed image result and
 account-owned usage; image evidence and billing remain attributed to AstreaAI.
-The uncensored model selects its pinned image LoRA. Document uploads remain
+The image LoRA is temporarily disabled for all models, including edits and
+regeneration. Native requests use the base image model, and the measured GPU
+enforces that choice for older clients too. Document uploads remain
 unavailable.
 The legacy operator connection uses free operator grants. The production account
 connection uses its immutable published prices and account-owned reservations;

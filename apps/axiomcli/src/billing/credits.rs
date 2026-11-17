@@ -561,17 +561,17 @@ mod tests {
     fn server_subscription_summary_decodes_and_validates() {
         let value = json!({
             "format": "credits@3", "enabled": true, "scale": "1000000", "revision": "1",
-            "policy_version": "credits-v3", "reference_microusd_per_credit": 10_000,
+            "policy_version": "credits-v4", "reference_microusd_per_credit": 1_000,
             "default_multiplier_ppm": 1_000_000, "paid_fallback": true,
             "payment_review_required": false,
             "purchased": {"currency": "usd", "scale": "100000000", "posted_units": "100000000",
                 "held_units": "25000000", "available_units": "75000000"},
             "trial": {"posted_units": "0", "held_units": "0"},
-            "allowance": {"limit_units": "125000000", "remaining_units": "125000000",
+            "allowance": {"limit_units": "1250000000", "remaining_units": "1250000000",
                 "held_units": "0", "generation": "1", "resets_at": "2026-11-20T00:00:00Z",
                 "effective_until": "2026-12-13T00:00:00Z"},
             "subscription": {"id": "20000000-0000-4000-8000-000000000001", "plan_key": "starter",
-                "amount_cents": 250, "weekly_units": "125000000", "state": "active",
+                "amount_cents": 250, "weekly_units": "1250000000", "state": "active",
                 "paid_through_at": "2026-12-13T00:00:00Z", "cancel_at_period_end": false,
                 "pending_plan_key": null},
             "capabilities": {"subscriptions": true, "auto_topup": true, "card": true,
@@ -581,7 +581,7 @@ mod tests {
         validate_credit_summary(&summary).unwrap();
         let subscription = summary.subscription.unwrap();
         assert_eq!(subscription.amount_cents, 250);
-        assert_eq!(subscription.weekly_units, "125000000");
+        assert_eq!(subscription.weekly_units, "1250000000");
         for (field, invalid_value) in [
             ("amount_cents", json!(0)),
             ("amount_cents", json!(1_000_001)),

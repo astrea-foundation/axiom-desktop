@@ -377,6 +377,17 @@ pub trait TurnRunner: Send + Sync {
         self.set_thinking_level(session_id, settings.thinking).await
     }
 
+    /// Restore settings projected from the local journal. This does not grant
+    /// provider access: model selection and inference still validate the live
+    /// catalog. Stateful production runners apply these without network work.
+    async fn restore_model_settings(
+        &self,
+        _session_id: &SessionId,
+        _settings: &ModelSettings,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Models currently exposed by the configured provider. Front ends use
     /// this at new-session bootstrap to reject stale durable preferences and
     /// lazily when the user opens a model picker.
@@ -3886,6 +3897,19 @@ impl TurnRunner for AgentEngine {
         proposed.model.clone_from(&selection.model);
         let model = self.model_info(&proposed, CancellationToken::new()).await?;
         let selection = reconcile_model_settings(&model, selection.thinking);
+        self.restore_model_settings(session_id, &selection).await
+    }
+
+    async fn restore_model_settings(
+        &self,
+        session_id: &SessionId,
+        selection: &ModelSettings,
+    ) -> Result<()> {
+        if selection.model.trim().is_empty() || selection.model.chars().any(char::is_whitespace) {
+            return Err(AxiomError::InvalidTransition(
+                "model ID must be a non-empty value without whitespace".into(),
+            ));
+        }
         let mut settings = self.settings.lock().await;
         let current = settings
             .entry(session_id.clone())
@@ -6121,6 +6145,39 @@ mod engine_tests {
             }
             Ok(self.models.clone())
         }
+    }
+
+    #[tokio::test]
+    async fn restored_model_settings_need_no_catalog_but_new_selections_still_do() {
+        let engine = AgentEngine::new(
+            Arc::new(CatalogOnlyProvider { models: Vec::new() }),
+            Arc::new(ToolRegistry::new()),
+            "default-model",
+            1,
+        );
+        let session = SessionId::new();
+        let saved = ModelSettings {
+            model: "retired-model".into(),
+            thinking: ThinkingLevel::ExtraHigh,
+            supports_reasoning: false,
+        };
+        engine
+            .restore_model_settings(&session, &saved)
+            .await
+            .unwrap();
+        let restored = engine.settings_for(&session).await;
+        assert_eq!(restored.model, saved.model);
+        assert_eq!(restored.thinking, saved.thinking);
+        assert!(engine.set_model_settings(&session, &saved).await.is_err());
+        assert!(
+            engine
+                .set_thinking_level(&session, ThinkingLevel::Low)
+                .await
+                .is_err()
+        );
+        let unchanged = engine.settings_for(&session).await;
+        assert_eq!(unchanged.model, saved.model);
+        assert_eq!(unchanged.thinking, saved.thinking);
     }
 
     #[tokio::test]

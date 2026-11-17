@@ -52,6 +52,14 @@ a restart, preventing the legacy implicit command parser from handling them.
 CLI/TUI command entry retains its intentional local parsing. Older clients can continue submitting literal ACP
 prompts and can use standard mode/configuration methods for controls.
 
+Prompt generation failures, missing authentication, invalid explicit commands
+and failed command compaction return JSON-RPC errors. After an admitted prompt
+fails, native code first persists its failed turn and then returns the error;
+an uncorrelated text notice followed by successful `end_turn` is not its failure
+contract. Cancellation remains the distinct `cancelled` stop reason. Explicit
+commands retain idle session ownership but do not carry inference Agent/MCP
+revision metadata; those revision fences continue to apply to model prompts.
+
 ## Extension negotiation
 
 `localPayload@1` provides `_axiom/desktop/local-payload` for Desktop's encrypted drafts
@@ -237,6 +245,11 @@ A Desktop client with the timeline extension may send
 `_meta.axiom.skipHistoryReplay: true` on `session/load`. Native runtime history
 still restores, including damaged-record recovery, while Desktop fetches its
 authoritative timeline once. Standard ACP clients retain transcript replay.
+The Desktop frontend restores saved model/thinking settings without provider
+discovery. Its initial config exposes only the saved model and current thinking
+value; the independent model catalog supplies selectable capabilities. New
+selections and inference still require live provider validation. Other ACP
+frontends retain catalog reconciliation during load.
 
 ## Desktop authority and revisions
 

@@ -332,6 +332,7 @@ export function App() {
                 onSubmit={() => void submitDraft()}
                 onStop={stopStream}
                 isStreaming={isStreaming}
+                isStopping={!!activeThreadId && messageQueue.isStopRequested(activeThreadId)}
                 models={models}
                 unavailableModels={unavailableModels}
                 selectedModelId={modelId || models[0]?.id || ""}

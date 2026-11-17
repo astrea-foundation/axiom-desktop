@@ -556,6 +556,108 @@ for (const ending of ["completion", "stop", "failure"]) test(`model selection st
   } finally { await page.close(); }
 });
 
+for (const theme of ["light", "dark"]) test(`Stop responds immediately while a tool call is being written (${theme})`, async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.emulateMedia({ colorScheme: theme as "light" | "dark", reducedMotion: "reduce" });
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    await page.evaluate(() => {
+      const app = (window as any).__deletionTest;
+      app.setTimeline([
+        { id: "user", turnId: "active-test-turn", kind: "user", text: "Update the report with the latest results.", status: "completed" },
+        { id: "intro", turnId: "active-test-turn", kind: "assistant", text: "I'll prepare the update.", status: "completed" },
+      ], true);
+      app.setToolCallDraft("active-test-turn");
+      app.holdSetup("cancel");
+    });
+    const transcript = page.getByRole("region", { name: "Chat messages" });
+    await transcript.getByText("Writing tool call…", { exact: true }).waitFor();
+    await page.locator("textarea[data-chat-input]").fill("Review this before continuing.");
+    await page.getByRole("button", { name: "Queue message", exact: true }).click();
+    const queue = page.getByRole("region", { name: "Message queue", exact: true });
+    await queue.getByText("Review this before continuing.", { exact: true }).waitFor();
+    await page.locator("textarea[data-chat-input]").fill("Keep this draft while stopping.");
+    await page.getByRole("button", { name: "Stop generating", exact: true }).click();
+    const stopping = page.getByRole("button", { name: "Stopping response", exact: true });
+    await stopping.waitFor();
+    assert.equal(await stopping.isDisabled(), true);
+    assert.equal(await stopping.getAttribute("aria-busy"), "true");
+    await transcript.locator('[data-timeline-kind="stopping"]').getByText("Stopping…", { exact: true }).waitFor();
+    assert.doesNotMatch(await transcript.innerText(), /Writing tool call|Generating/);
+    assert.equal(await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].running), true,
+      "feedback must appear while cancellation is still blocked");
+    assert.equal(await page.locator('.composer-shell button[aria-haspopup="menu"]').first().isDisabled(), true);
+    await stopping.evaluate((button: HTMLButtonElement) => button.click());
+    assert.equal((await calls(page)).filter(call => call.method === "cancel").length, 1);
+
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    assert.equal(await stopping.count(), 0, "another chat does not inherit Stop feedback");
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await stopping.waitFor();
+    await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]")?.value === "Keep this draft while stopping.");
+    if (process.env.AXIOM_STOP_CAPTURE_DIR) await page.screenshot({ path: `${process.env.AXIOM_STOP_CAPTURE_DIR}/stopping-${theme}.png`, animations: "disabled" });
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
+    await stopping.waitFor({ state: "hidden" });
+    assert.equal(await transcript.locator('[data-timeline-kind="stopping"]').count(), 0);
+    assert.equal(await page.locator("textarea[data-chat-input]").inputValue(), "Keep this draft while stopping.");
+    await queue.getByText("Review this before continuing.", { exact: true }).waitFor();
+    assert.deepEqual((await calls(page)).filter(call => ["prompt", "cancel"].includes(call.method)).map(call => call.method), ["cancel"]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a failed Stop restores its button for retry and reports the failure", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    await page.evaluate(() => {
+      const app = (window as any).__deletionTest;
+      app.setTimeline([{ id: "intro", kind: "assistant", text: "Preparing the update.", status: "completed" }], true);
+      app.setToolCallDraft("active-test-turn"); app.holdSetup("cancel");
+    });
+    await page.getByRole("button", { name: "Stop generating", exact: true }).click();
+    await page.getByRole("button", { name: "Stopping response", exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel", "Synthetic cancellation failure"));
+    await page.getByText("Couldn’t stop the reply. Try again. Sending stays paused.", { exact: true }).waitFor();
+    const stop = page.getByRole("button", { name: "Stop generating", exact: true });
+    await stop.waitFor();
+    assert.equal(await stop.isEnabled(), true);
+    await page.getByText("Writing tool call…", { exact: true }).waitFor();
+    await stop.click();
+    await page.getByRole("button", { name: "Send", exact: true }).waitFor();
+    assert.equal((await calls(page)).filter(call => call.method === "cancel").length, 2);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Stop withdraws a pending Send now without sending cancellation twice", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    await page.locator("[data-chat-scroll]").waitFor();
+    await page.evaluate(() => {
+      const app = (window as any).__deletionTest;
+      app.setTimeline([{ id: "intro", kind: "assistant", text: "Working on the report.", status: "streaming" }], true);
+      app.holdSetup("cancel");
+    });
+    await page.locator("textarea[data-chat-input]").fill("Send this instead.");
+    await page.getByRole("button", { name: "Queue message", exact: true }).click();
+    const queue = page.getByRole("region", { name: "Message queue", exact: true });
+    await queue.getByRole("button", { name: "Send now", exact: true }).click();
+    await queue.getByText("Stopping…", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Stop generating", exact: true }).click();
+    await page.getByRole("button", { name: "Stopping response", exact: true }).waitFor();
+    await queue.getByText("Paused", { exact: true }).waitFor();
+    await page.evaluate(() => (window as any).__deletionTest.releaseSetup("cancel"));
+    await page.getByRole("button", { name: "Stopping response", exact: true }).waitFor({ state: "hidden" });
+    await queue.getByText("Send this instead.", { exact: true }).waitFor();
+    assert.deepEqual((await calls(page)).filter(call => ["prompt", "cancel"].includes(call.method)).map(call => call.method), ["cancel"]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("Desktop automatic TEE renewal uses its cached-report action and explicit Refresh forces verification", async () => {
   const { page, errors } = await openApp();
   try {
@@ -4281,7 +4383,7 @@ test("regenerating one image keeps the original and chat response and sends only
   } finally {await page.close();}
 });
 
-test("image generation percentages update live and saved images have distinct random PNG filenames", async () => {
+test("image sampling switches to indeterminate delivery before verified images and distinct random saves", async () => {
   const {page, errors} = await openApp("linux", false, [], "medium", true, false);
   try {
     await page.locator('[data-thread-id="old-thread"]').click();
@@ -4302,8 +4404,14 @@ test("image generation percentages update live and saved images have distinct ra
         input: {}, content: [], locations: [], imageProgress: {stage: "finishing", percent: 99},
       }}]);
     });
-    await page.getByText("Finishing image (99%)", {exact: true}).waitFor();
-    assert.equal(await bar.getAttribute("aria-valuenow"), "99");
+    await page.getByText("Receiving image…", {exact: true}).waitFor();
+    assert.equal(await bar.getAttribute("aria-valuenow"), null);
+    assert.equal(await bar.getAttribute("aria-valuetext"), "Receiving image");
+    assert.equal(await page.getByText(/99%|100%/).count(), 0);
+    assert.equal(await page.getByRole("link", {name: "Save image", exact: true}).count(), 0);
+    await page.emulateMedia({reducedMotion: "reduce"});
+    assert.equal(await bar.locator(".load-progress-sweep").evaluate(element => getComputedStyle(element).animationName), "none");
+    if (process.env.AXIOM_IMAGE_RECEIVING_CAPTURE) await page.screenshot({path: process.env.AXIOM_IMAGE_RECEIVING_CAPTURE, animations: "disabled"});
     await page.evaluate(() => {
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1024;
       const context = canvas.getContext("2d")!;

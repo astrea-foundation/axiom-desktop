@@ -193,14 +193,17 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
       {summary.payment_review_required ? <p role="alert" className="text-[var(--color-warning-strong)]">Spending is paused while a payment is reviewed.</p> : null}
       {plans.length ? <section aria-label="Subscription plans"><h3 className="mb-1 font-medium">Choose your plan</h3>
         <p className="mb-3 text-[12px] text-[var(--color-text-secondary)]">Billed monthly. Credits refresh every 7 days.</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{plans.map(plan => { const current = currentSubscription?.plan_key === plan.key; return <div key={plan.key} className={`flex flex-col rounded-xl border p-3 ${current ? "border-[var(--color-border-accent)] bg-[var(--wash-row)]" : "border-[var(--color-border)]"}`}>
+        <div className="subscription-plan-grid grid grid-cols-2 gap-x-2 gap-y-1 sm:grid-cols-4">{plans.map(plan => { const current = currentSubscription?.plan_key === plan.key; return <div key={plan.key} className={`row-span-5 grid grid-rows-subgrid rounded-xl border p-3 ${current ? "border-[var(--color-border-accent)] bg-[var(--wash-row)]" : "border-[var(--color-border)]"}`}>
           <p className="text-[12px] font-medium">{plan.name}</p>
           <p className="mt-2 text-[22px] font-semibold tabular-nums tracking-[-0.03em]">{money(plan.amount_cents)}<span className="text-[11px] font-normal text-[var(--color-text-tertiary)]">/mo</span></p>
-          <p className="mt-1 mb-3 text-[12px] text-[var(--color-text-secondary)]"><span className="font-semibold text-[var(--color-text-primary)]">{creditAmount(plan.weekly_units, true)}</span> credits / week</p>
+          <p className="mt-1 text-[12px] text-[var(--color-text-secondary)]"><span className="font-semibold text-[var(--color-text-primary)]">{creditAmount(plan.weekly_units, true)}</span> credits / week</p>
+          <p className="mt-1 mb-3 text-[11px] text-[var(--color-text-tertiary)]">{creditAmount(plan.weekly_units, true, 4n)} credits/month</p>
           <button className={`${button} mt-auto w-full justify-center`} disabled={busy || !connected || current || !!currentSubscription?.pending_plan_key || (!!currentSubscription && !canChangePlan)} onClick={() => setChosen(plan)}>{current ? "Current plan" : currentSubscription ? "Change plan" : "Subscribe"}</button>
         </div>; })}</div>
+        <p className="mt-3 text-[11px] text-[var(--color-text-tertiary)]">Monthly totals show 4 weekly grants; a calendar month can include 5.</p>
         {chosen ? <div role="dialog" aria-label="Confirm subscription plan" className="mt-3 rounded-xl bg-[var(--wash-row)] p-4">
           <p>{canChangePlan ? `Change to ${chosen.name} at your next monthly renewal for ${money(chosen.amount_cents)} per month.` : `Subscribe to ${chosen.name} for ${money(chosen.amount_cents)} per month with ${creditAmount(chosen.weekly_units, true)} credits each week.`}</p>
+          <p className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Monthly total: {creditAmount(chosen.weekly_units, true, 4n)} credits.</p>
           <div className="mt-3 flex gap-2"><button className={button} disabled={busy} onClick={() => void perform(async () => {
             const operation = await call({kind: canChangePlan ? "change" : "checkout", id: intent(accountId, `plan.${chosen.key}.${chosen.version}.${currentSubscription?.id ?? "new"}`), plan_key: chosen.key, catalog_version: chosen.version}, "operation");
             if (["expired", "canceled", "failed", "succeeded"].includes(operation.state)) retireIntent(accountId, operation.id);
@@ -210,6 +213,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
         </div> : null}
       </section> : null}
       {summary.subscription ? <div className="space-y-2"><p>Subscription: {summary.subscription.state}{summary.subscription.cancel_at_period_end ? " · Cancels at the end of paid coverage" : ""}{summary.subscription.pending_plan_key ? ` · ${summary.subscription.pending_plan_key} at next renewal` : ""}</p>
+        {currentSubscription ? <p>Monthly total: {creditAmount(currentSubscription.weekly_units, true, 4n)} credits.</p> : null}
         <button className={button} disabled={busy || !connected} onClick={() => void perform(() => call({kind: "portal"}, "portal"))}><ExternalLink size={13} />Manage payment method or cancel</button>
         {pendingSubscription ? <button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "operation", id: summary.subscription!.id}, "operation"))}>Resume subscription checkout</button> : null}
       </div> : null}

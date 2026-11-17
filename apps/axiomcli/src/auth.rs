@@ -33,9 +33,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{AxiomError, Result};
 
-#[cfg(target_os = "macos")]
-mod macos_keychain;
-
 pub(crate) const KEYRING_SERVICE: &str = "stream.axiom.axiomcli";
 const KEYRING_ACCOUNT_PREFIX: &str = "native-refresh-token-v1";
 const MAX_TOKEN_BYTES: usize = 8 * 1024;
@@ -222,9 +219,12 @@ struct KeyringStore {
     client_id_path: PathBuf,
     refresh_lock_path: PathBuf,
     account_name: String,
+    #[cfg(target_os = "macos")]
+    data_root: PathBuf,
 }
 
 impl KeyringStore {
+    #[cfg(not(target_os = "macos"))]
     fn entry(&self) -> std::result::Result<keyring::Entry, String> {
         keyring::Entry::new(KEYRING_SERVICE, &self.account_name)
             .map_err(|error| format!("system credential store is unavailable: {error}"))
@@ -238,7 +238,7 @@ impl CredentialStore for KeyringStore {
 
     #[cfg(target_os = "macos")]
     fn initial_credential(&self) -> std::result::Result<InitialCredential, String> {
-        if macos_keychain::contains(KEYRING_SERVICE, &self.account_name)? {
+        if crate::native_secrets::contains(&self.data_root, KEYRING_SERVICE, &self.account_name)? {
             Ok(InitialCredential::Deferred)
         } else {
             Ok(InitialCredential::Loaded(None))
@@ -246,6 +246,17 @@ impl CredentialStore for KeyringStore {
     }
 
     fn load(&self) -> std::result::Result<Option<String>, String> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::native_secrets::read(&self.data_root, KEYRING_SERVICE, &self.account_name)?
+                .map(|bytes| {
+                    std::str::from_utf8(&bytes)
+                        .map(str::to_owned)
+                        .map_err(|_| "Saved sign-in credential has an invalid format".into())
+                })
+                .transpose()
+        }
+        #[cfg(not(target_os = "macos"))]
         match self.entry()?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -258,8 +269,13 @@ impl CredentialStore for KeyringStore {
     fn save(&self, credential: &str) -> std::result::Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            macos_keychain::save(KEYRING_SERVICE, &self.account_name, credential.as_bytes())
-                .map_err(|error| format!("could not write the system credential store: {error}"))
+            crate::native_secrets::write(
+                &self.data_root,
+                KEYRING_SERVICE,
+                &self.account_name,
+                credential.as_bytes(),
+            )
+            .map_err(|error| format!("could not write the system credential store: {error}"))
         }
         #[cfg(not(target_os = "macos"))]
         self.entry()?
@@ -268,6 +284,11 @@ impl CredentialStore for KeyringStore {
     }
 
     fn delete(&self) -> std::result::Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::native_secrets::delete(&self.data_root, KEYRING_SERVICE, &self.account_name)
+        }
+        #[cfg(not(target_os = "macos"))]
         match self.entry()?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!(
@@ -827,6 +848,8 @@ impl AuthManager {
                 client_id_path: paths.identity_path(),
                 refresh_lock_path,
                 account_name: keyring_account,
+                #[cfg(target_os = "macos")]
+                data_root: paths.data_root().to_owned(),
             })
         };
         let _credential_lock = acquire_refresh_file_lock(keyring.refresh_lock_path())?;

@@ -175,9 +175,11 @@ export function toolLabel(tool: ToolActivity): string {
   }
   const progress = toolImageProgress(tool);
   if (progress) {
-    if (!done && progress.stage === "queued") label = "Waiting for GPU";
-    if (!done && progress.stage === "finishing") label = "Finishing image";
-    label += ` (${progress.percent}%)`;
+    if (progress.stage === "finishing") label = "Receiving image…";
+    else {
+      if (progress.stage === "queued") label = "Waiting for GPU";
+      label += ` (${progress.percent}%)`;
+    }
   }
   return compact(label, 220);
 }

@@ -11,20 +11,25 @@ const search: ToolActivity = {
   input: { query: "current news" }, content: [], locations: [],
 };
 
-test("image progress displays percentages and disappears after completion", () => {
+test("image sampling shows percentages, delivery is indeterminate, and completion clears progress", () => {
   const image: ToolActivity = {callId: "image", name: "generate_image", title: "generate_image", kind: "other", status: "in_progress",
     input: {prompt: "A mug"}, content: [], locations: [], imageProgress: {stage: "generating", percent: 38}};
   assert.equal(toolLabel(image), "Generating image (38%)");
   assert.equal(toolLabel({...image, input: {image_id: "img_example"}}), "Editing image (38%)");
-  assert.equal(toolLabel({...image, imageProgress: {stage: "finishing", percent: 99}}), "Finishing image (99%)");
+  const receiving: ToolActivity = {...image, imageProgress: {stage: "finishing", percent: 99}};
+  assert.equal(toolLabel(receiving), "Receiving image…");
+  const receivingHtml = renderToStaticMarkup(createElement(ToolCallCard, {tool: receiving}));
+  assert.match(receivingHtml, /role="progressbar"/);
+  assert.match(receivingHtml, /aria-valuetext="Receiving image"/);
+  assert.doesNotMatch(receivingHtml, /aria-valuenow|99%|100%/);
   assert.equal(toolLabel({...image, status: "completed"}), "Generated image");
-  const completed = renderToStaticMarkup(createElement(ToolCallCard, {tool: {...image, status: "completed"}}));
+  const completed = renderToStaticMarkup(createElement(ToolCallCard, {tool: {...receiving, status: "completed"}}));
   assert.doesNotMatch(completed, /progressbar|100%/);
   const html = renderToStaticMarkup(createElement(ToolCallCard, {tool: image}));
   assert.match(html, /role="progressbar"/);
   assert.match(html, /aria-valuenow="38"/);
   assert.doesNotMatch(html, /step|38\s*(?:of|\/)\s*100/i);
-  const failed = renderToStaticMarkup(createElement(ToolCallCard, {tool: {...image, status: "failed"}}));
+  const failed = renderToStaticMarkup(createElement(ToolCallCard, {tool: {...receiving, status: "failed"}}));
   assert.doesNotMatch(failed, /progressbar|100%/);
 });
 

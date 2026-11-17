@@ -111,10 +111,14 @@ impl SessionStore {
                 |row| row.get(0),
             )
             .map_err(storage_error)?;
-        assets.verify_and_clean_with_progress(
-            &transaction,
-            if pending { progress } else { &|_| {} },
-        )?;
+        if pending {
+            assets.verify_and_clean_with_progress(&transaction, progress)?;
+        } else {
+            // Ordinary opens need only metadata and orphan cleanup. Each asset
+            // read still checks ownership, AEAD, length and its content hash;
+            // decrypting all account media here would delay unrelated chats.
+            assets.clean_orphans(&transaction)?;
+        }
         transaction.commit().map_err(storage_error)?;
         if pending {
             storage_progress::phase(progress, Phase::Finalizing);

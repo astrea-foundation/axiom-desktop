@@ -9,10 +9,34 @@ managed image/file payloads as base64 JSON or BLOBs.
 ## Keys and account boundaries
 
 Each store has a random 256-bit root secret in the operating-system credential
-store, under the `stream.axiom.local-storage` service. Native code derives separate
+store. Native code derives separate
 database, asset and recovery-wrapping keys. The secret is independent of sign-in
 and refresh tokens; it is absent from configuration, renderer IPC and logs.
 The credential identity separates data roots, accounts and frontends.
+
+On macOS, the `stream.axiom.native-secrets` Keychain item holds independent
+sign-in and storage entries for one canonical native data profile. Restoring
+sign-in and opening chats share the same protected read; only the native process
+caches the unlocked values. Token rotation updates the item in place, with an
+atomic revision used to invalidate other native processes' caches. Shared
+coordination prevents concurrent Desktop/CLI updates from losing another entry.
+No secret values are stored in the coordination or migration-marker files.
+Signing out removes the login entry, clears the memory snapshot and retains
+the independently generated chat keys in Keychain.
+
+The first upgrade imports existing `stream.axiom.axiomcli` and
+`stream.axiom.local-storage` entries as they are accessed. macOS may request
+approval of each legacy item during this one-time migration; subsequent starts
+use the combined item. Old storage-key entries remain protected for recovery.
+Old login tokens are removed only after verifying their combined protected copy,
+preventing an older process from reusing a stale rotating token.
+Deletion tombstones prevent a signed-out legacy token from being adopted again.
+A missing or damaged combined item fails closed instead of recreating keys or
+silently adopting old credentials. Explicit backup recovery can reinstall a
+missing item after the supplied key unlocks the preserved database; it cannot
+replace a damaged item that may contain other accounts' unique keys, and it
+never revives old sign-in tokens. Windows and Linux retain the individual
+`stream.axiom.local-storage` service entries.
 
 macOS uses Keychain, Windows uses its native credential store, and Linux uses
 Secret Service. A locked/unavailable store or missing key produces a recoverable
@@ -33,6 +57,13 @@ remain distinct. Runtime readers hydrate the existing message types when needed;
 base64 may still appear in an in-memory protocol requiring it. Catalog and
 conversation image counts have no lifetime limit; model/token and per-request
 resource bounds still apply.
+
+Ordinary startup opens the encrypted database and cleans orphan asset files
+without reading or decrypting every saved image and document. Assets are still
+authorized, authenticated, length-checked and hashed on each access; damaged or
+missing bytes stay unavailable and their recoverable records are retained.
+Full asset verification remains part of migration finalization, explicit
+integrity checks, recovery and backup/export validation.
 
 ## Forward migration
 

@@ -27,6 +27,7 @@ interface ChatViewProps {
   onRevise?: (userItemId: string, text: string) => Promise<void>;
   onContinue?: () => Promise<void>;
   isStreaming: boolean;
+  isStopping?: boolean;
   models: ProviderModel[];
   unavailableModels?: ProviderModel[];
   selectedModelId: string;
@@ -61,6 +62,7 @@ export function ChatView({
   onRevise,
   onContinue,
   isStreaming,
+  isStopping = false,
   models,
   unavailableModels,
   selectedModelId,
@@ -97,7 +99,7 @@ export function ChatView({
         {...autoScroll.handlers}
       >
         <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView key={securityScope} session={session} pendingUserMessage={pendingUserMessage} onRevise={onRevise} onContinue={onContinue} attachmentPreviews={attachmentPreviews} />
+          <TimelineView key={securityScope} session={session} isStopping={isStopping} pendingUserMessage={pendingUserMessage} onRevise={onRevise} onContinue={onContinue} attachmentPreviews={attachmentPreviews} />
         </div>
       </div>
 
@@ -118,7 +120,7 @@ export function ChatView({
       <div className="shrink-0 px-6 pb-5 pt-2">
         <div className="mx-auto w-full max-w-[760px]">
           {!preparation && onAcceptOutdatedTee ? <OutdatedTeeNotice key={`${securityScope}:${session?.sessionId}:${selectedModelId}`} state={outdatedTeeState(session, selectedModelId)}
-            disabled={isStreaming || !!securityRefreshDisabledReason} onContinue={onAcceptOutdatedTee} /> : null}
+            disabled={isStreaming || isStopping || !!securityRefreshDisabledReason} onContinue={onAcceptOutdatedTee} /> : null}
           {!preparation && queue}
           <ChatComposer
             preparing={!!preparation}
@@ -132,6 +134,7 @@ export function ChatView({
             onSubmit={onSubmit}
             onStop={onStop}
             isStreaming={isStreaming}
+            isStopping={isStopping}
             models={models}
             unavailableModels={unavailableModels}
             selectedModelId={selectedModelId}

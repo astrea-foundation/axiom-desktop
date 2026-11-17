@@ -25,12 +25,25 @@ only inside the running step. SQLCipher opens the database in one indivisible
 step, so the bar never advances on a timer and invents no per-chat counts or
 completion times. Reduced motion stops the sweep.
 
+On macOS, saved sign-in and chat keys use a shared Keychain unlock, keeping
+their secret values independent. The first upgrade may still request approval
+for each older Keychain item while migrating it. Later starts read the combined
+item once and reuse the native memory snapshot to open chats. Signing out keeps
+the chat keys protected in Keychain and clears the unlocked snapshot. See
+[encrypted local storage](local-storage.md#keys-and-account-boundaries).
+
 Opening a saved thread shows “Loading thread…” with an indeterminate progress
 bar until its native session and transcript are ready; it reports no percentage.
 For listed chats, the catalog already supplies the saved workspace, so opening
 skips the preliminary timeline peek. After `session/load`, the authoritative
 timeline and MCP selection are read concurrently. A rejected stale catalog
 workspace is re-read once before loading the actual saved location.
+Saved threads restore their journaled model and thinking settings without
+waiting for online model discovery. The initial session config reports only
+those saved values; the independent model catalog supplies selectable
+capabilities. Provider availability and supported settings are checked when
+selecting a model or starting inference. An unavailable provider does not
+prevent reading local history.
 
 State changes share immutable views of untouched sessions and coalesce bursts
 within one event-loop turn. Each window gets a complete initial state, followed
@@ -241,6 +254,14 @@ button removes a queued message, including while Send now is stopping a reply.
 Cancelling that pending send leaves the remaining queue paused. Once a message
 has been sent, use Stop on its reply.
 
+**Stop** immediately changes to **Stopping…**, including while the model is
+writing a tool call. The transcript shows the same status while cancellation
+and cleanup finish in the background. You can keep editing your draft or switch
+chats; returning to the stopping chat retains its status. Older queued messages
+stay paused, and model selection remains locked until cleanup finishes. Repeated
+Stop requests do not send duplicate cancellations. If cancellation fails, Stop
+becomes available for retry and an error explains that sending remains paused.
+
 Prompt text may use up to **4 MiB of UTF-8**; direct file bounds are listed below.
 The model's context capacity and the configured native context budget still apply.
 New queue reservations allow at most 32 messages and 64 MiB of payloads, scoped to
@@ -300,8 +321,11 @@ Copy image, which puts the image itself on the system clipboard, or Save image a
 to select a destination. Generated images are attributed to AstreaAI beneath the result.
 Save image also remains available beneath the result;
 each save suggests a fresh random PNG filename. Image generation and editing show a
-live percentage and progress bar. Queued work displays 0%; finishing stays at
-99% until the verified result is ready; the percentage and bar then disappear.
+sampling percentage and progress bar. Queued work displays 0%. Once the worker
+announces the PNG, the row changes to “Receiving image…” with an indeterminate
+bar while transfer, authenticated completion and local storage finish. This
+phase has no percentage or remaining-time estimate; the bar disappears when the
+verified result is ready.
 Chat models without vision can create images and edit earlier generated images
 by their conversation-local IDs, but cannot inspect results or accept new image
 uploads. A failed image-service preflight withholds image tools and supplies

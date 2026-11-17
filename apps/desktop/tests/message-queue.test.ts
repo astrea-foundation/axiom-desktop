@@ -84,6 +84,78 @@ function fixture(running = true) {
   return { queue, api, state, calls, pending, storage, values, errors, sync, echo, finish };
 }
 
+test("Stop publishes intent immediately, sends cancellation once, and leaves older messages paused", async () => {
+  const f = fixture();
+  let release!: () => void;
+  f.api.cancel = async threadId => {
+    assert.equal(f.queue.isStopRequested(threadId), true, "intent is visible before the runtime is called");
+    f.calls.push({ type: "cancel", id: threadId, text: "", web: false });
+    await new Promise<void>(resolve => { release = resolve; });
+  };
+  const held = f.queue.enqueue("thread", "keep for review", false);
+  f.queue.stop("thread"); f.queue.stop("thread");
+  assert.equal(f.queue.isStopping("thread"), true);
+  assert.equal(f.queue.isStopRequested("other"), false);
+  assert.equal(f.queue.isPaused("thread"), true);
+  assert.deepEqual(f.calls.map(call => call.type), ["cancel"]);
+  release(); await settle();
+  assert.equal(f.queue.isStopRequested("thread"), true, "delivery of cancellation is not completion");
+  f.state.sessions.thread!.running = false; f.sync();
+  assert.equal(f.queue.isStopping("thread"), false);
+  assert.equal(f.queue.isStopRequested("thread"), false);
+  assert.equal(f.queue.isPaused("thread"), true);
+  assert.deepEqual(f.queue.list("thread").map(item => item.id), [held]);
+  assert.equal(f.calls.length, 1);
+});
+
+test("Stop keeps its indication and gates new sends until the old prompt also settles", async () => {
+  const f = fixture(false);
+  const running = f.queue.enqueue("thread", "current request", false);
+  f.echo(running);
+  const held = f.queue.enqueue("thread", "older queued work", false);
+  f.queue.stop("thread"); await settle();
+  f.state.sessions.thread!.running = false; f.sync();
+  assert.equal(f.queue.isStopRequested("thread"), true);
+  const fresh = f.queue.enqueue("thread", "new instruction", false);
+  assert.deepEqual(f.calls.map(call => call.type), ["prompt", "cancel"]);
+  f.pending.get(running)!.resolve({ stopReason: "cancelled" }); await settle();
+  assert.equal(f.queue.isStopRequested("thread"), false);
+  assert.equal(f.calls.at(-1)?.id, fresh);
+  await f.finish(fresh);
+  assert.deepEqual(f.queue.list("thread").map(item => item.id), [held]);
+});
+
+test("failed Stop reports the failure, clears its indication, and permits an explicit retry", async () => {
+  const f = fixture();
+  const held = f.queue.enqueue("thread", "keep queued", false);
+  f.api.cancel = async () => { throw new Error("offline"); };
+  f.queue.stop("thread"); await settle();
+  assert.equal(f.queue.isStopRequested("thread"), false);
+  assert.equal(f.queue.isPaused("thread"), true);
+  assert.deepEqual(f.errors, ["Couldn’t stop the reply. Try again. Sending stays paused."]);
+  f.api.cancel = async threadId => { f.calls.push({ type: "cancel", id: threadId, text: "", web: false }); };
+  f.queue.stop("thread"); await settle();
+  assert.equal(f.queue.isStopRequested("thread"), true);
+  f.state.sessions.thread!.running = false; f.sync();
+  assert.equal(f.queue.isStopRequested("thread"), false);
+  assert.deepEqual(f.queue.list("thread").map(item => item.id), [held]);
+  assert.equal(f.calls.length, 1);
+});
+
+for (const change of ["account", "runtime", "disconnect"] as const) test(`Stop feedback and late failures cannot cross a ${change} change`, async () => {
+  const f = fixture();
+  let reject!: (error: Error) => void;
+  f.api.cancel = () => new Promise<void>((_resolve, fail) => { reject = fail; });
+  f.queue.stop("thread");
+  if (change === "account") f.state.account!.account!.id = "other-account";
+  if (change === "runtime") f.state.runtimeInstanceId = "other-runtime";
+  if (change === "disconnect") f.state.connected = false;
+  f.sync();
+  assert.equal(f.queue.isStopRequested("thread"), false);
+  reject(new Error("old cancellation failed")); await settle();
+  assert.deepEqual(f.errors, []);
+});
+
 test("Send now cancels once, waits for idle, and prioritizes the selected message", async () => {
   const f = fixture();
   const first = f.queue.enqueue("thread", "follow up", false);
@@ -133,7 +205,10 @@ test("queued cancellation also works during Send now and keeps remaining work pa
 test("Stop withdraws Send now without deleting the saved message", async () => {
   const f = fixture();
   const id = f.queue.enqueue("thread", "review later", false);
-  f.queue.sendNow(id); f.queue.pause("thread");
+  f.queue.sendNow(id);
+  assert.equal(f.queue.isStopRequested("thread"), false, "Stop remains available to withdraw Send now");
+  f.queue.stop("thread");
+  assert.equal(f.queue.isStopRequested("thread"), true);
   await settle(); f.state.sessions.thread!.running = false; f.sync();
   assert.deepEqual(f.calls.map((call) => call.type), ["cancel"]);
   assert.equal(f.queue.list("thread")[0]?.status, "queued");

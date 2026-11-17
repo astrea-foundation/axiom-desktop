@@ -46,12 +46,14 @@ function ActivityRow({ item, onRetry }: { item: ClientTimelineItem; onRetry?: ()
 
 export function TimelineView({
   session,
+  isStopping = false,
   pendingUserMessage,
   onRevise,
   onContinue,
   attachmentPreviews,
 }: {
   session: ClientSessionState;
+  isStopping?: boolean;
   pendingUserMessage?: PendingUserMessage | null;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
   onContinue?: () => Promise<void>;
@@ -63,6 +65,7 @@ export function TimelineView({
   let latestUser: ClientTimelineItem | undefined;
   for (const item of session.timeline) if (item.kind === "user") latestUser = item;
   const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
+  const responseActive = session.running || isStopping;
   // A turn split by tool calls renders several assistant segments; the final
   // segment's Copy action copies the reply body of the whole turn.
   const turnReplies = new Map<string, string[]>();
@@ -75,7 +78,7 @@ export function TimelineView({
   const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
-      if (session.compaction && row.message.role === "assistant" && !row.message.content && !row.message.reasoningContent) return null;
+      if ((session.compaction || isStopping) && row.message.role === "assistant" && !row.message.content && !row.message.reasoningContent) return null;
       const source = sources.get(row.message.id);
       const turnId = turnsByItem.get(row.message.id);
       const summaries = attachmentSummaries(source?.raw);
@@ -83,18 +86,19 @@ export function TimelineView({
         {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
           initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
         <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
-        onContinue={!session.running && source?.id === latestUser?.id ? onContinue : undefined}
-        responseActive={session.running && (turnId && activeTurnId
+        onContinue={!responseActive && source?.id === latestUser?.id ? onContinue : undefined}
+        responseActive={responseActive && (turnId && activeTurnId
           ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
+        showGenerationIndicator={!isStopping}
         showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
         copyContent={turnId && row.message.role === "assistant" && !["failed", "interrupted", "cancelled"].includes(row.message.status) ? turnReplies.get(turnId)?.join("\n\n") : undefined}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
     }
     if (row.kind === "tool" && row.item.tool) {
-      return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={session.running} /></div>;
+      return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={responseActive} /></div>;
     }
     return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item}
-      onRetry={!session.running && row.item.kind === "error" && row.item.turnId === latestUser?.turnId ? onContinue : undefined} />;
+      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestUser?.turnId ? onContinue : undefined} />;
   });
   const showPendingUser = Boolean(
     pendingUserMessage
@@ -123,7 +127,13 @@ export function TimelineView({
   return (
     <div className="chat-timeline">
       {rows}
-      {session.compaction ? (
+      {isStopping ? (
+        <div role="status" aria-live="polite" aria-atomic="true" data-timeline-kind="stopping"
+          className="flex items-center gap-2 px-1 py-3 text-[13px] text-[var(--color-text-secondary)]">
+          <LoaderCircle aria-hidden="true" size={14} className="shrink-0 animate-spin motion-reduce:animate-none" />
+          <span>Stopping…</span>
+        </div>
+      ) : session.compaction ? (
         <div role="status" aria-live="polite" aria-atomic="true" data-timeline-kind="compaction"
           className="flex items-center gap-2 px-1 py-3 text-[12.5px] text-[var(--color-text-secondary)]">
           <LoaderCircle aria-hidden="true" size={15} className="shrink-0 animate-spin motion-reduce:animate-none" />
@@ -133,14 +143,14 @@ export function TimelineView({
           </span>
         </div>
       ) : null}
-      {draftingToolCall && !session.compaction ? (
+      {!isStopping && draftingToolCall && !session.compaction ? (
         <div data-timeline-kind="tool" data-tool-call-draft role="status" className="min-w-0 text-[13px]">
           <div className="flex min-h-8 max-w-full items-center gap-2 rounded-md px-1.5 py-1 leading-5 text-[var(--color-text-secondary)]">
             <span className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true"><LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /></span>
             <span className="min-w-0 truncate">Writing tool call…</span>
           </div>
         </div>
-      ) : session.running && !session.compaction && !lastAlreadyShowsGeneration ? (
+      ) : !isStopping && session.running && !session.compaction && !lastAlreadyShowsGeneration ? (
         <div data-timeline-kind="assistant"><MessageBubble
           responseActive
           message={{ id: "active-generation", role: "assistant", status: "streaming", content: "" }}

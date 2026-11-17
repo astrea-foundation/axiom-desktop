@@ -59,13 +59,7 @@ impl Default for ImageRuntimePolicy {
                     0.0,
                 ],
                 uncensored_models: vec![],
-                lora: Some(RuntimeLora {
-                    name: "uncensored.safetensors".into(),
-                    sha256: "83aba822ad8ee10a1e836828f5088259d93bce7b5f3419b46dbc0258c2be46a9"
-                        .into(),
-                    strength: 0.9,
-                    patches: 192,
-                }),
+                lora: None,
             },
         }
     }

@@ -230,6 +230,8 @@ fn erase_matching_credentials(
         auth::KEYRING_SERVICE,
         desktop_mcp::KEYRING_SERVICE,
         local_storage::KEYRING_SERVICE,
+        #[cfg(target_os = "macos")]
+        crate::native_secrets::KEYRING_SERVICE,
     ] {
         let spec = credential_search(service);
         let spec = spec
@@ -270,6 +272,10 @@ fn erase_system_credentials(plan: &ResetPlan) -> anyhow::Result<()> {
                 anyhow::anyhow!("System credential store is unavailable. Unlock it and retry.")
             })?;
             erase_matching_credentials(keyring_core::Entry::search, |service, entry| {
+                #[cfg(target_os = "macos")]
+                if service == crate::native_secrets::KEYRING_SERVICE {
+                    return storage_credential_matches(entry, &storage_scope);
+                }
                 if service == local_storage::KEYRING_SERVICE {
                     return storage_credential_matches(entry, &storage_scope);
                 }

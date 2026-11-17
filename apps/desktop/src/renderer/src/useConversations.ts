@@ -213,7 +213,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     },
   };
 
-  const isStreaming = !!activeSession?.running || !!pendingUserMessage;
+  const isStreaming = !!activeSession?.running || !!pendingUserMessage || (!!activeThreadId && messageQueue.current.isStopping(activeThreadId));
 
   useEffect(() => {
     threadLoads.current.reset();
@@ -477,10 +477,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   };
 
   const stopStream = useCallback(() => {
-    if (activeThreadId) {
-      messageQueue.current?.pause(activeThreadId);
-      void window.axiomDesktop?.agent.cancel(activeThreadId);
-    }
+    if (activeThreadId) messageQueue.current?.stop(activeThreadId);
   }, [activeThreadId]);
 
   const deleteThread = async (id: string) => {

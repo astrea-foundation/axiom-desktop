@@ -64,6 +64,8 @@ export class MessageQueue {
   }
   isPaused(threadId: string): boolean { return this.paused.has(threadId); }
   isStopping(threadId: string): boolean { return this.interruptions.has(threadId); }
+  /** Stop with no queued replacement, including a withdrawn Send now. */
+  isStopRequested(threadId: string): boolean { return this.interruptions.get(threadId)?.id === null; }
   dispose(): void {
     this.generation++; this.account = null; this.runtime = null; this.api = null; this.state = null;
     this.operations.clear(); this.interruptions.clear();
@@ -301,6 +303,18 @@ export class MessageQueue {
     }
     this.paused.add(threadId); this.changed();
   }
+  stop(threadId: string): void {
+    this.pause(threadId);
+    const api = this.api;
+    if (!api || !this.account || !this.state?.connected || this.interruptions.has(threadId)) return;
+    if (!this.state.sessions[threadId]?.running && !this.hasOperation(threadId)) return;
+    const interruption = { id: null, ready: false };
+    // Publish the user's intent before cancellation reaches the runtime. Keep
+    // the state until both the run and its outstanding prompt have settled.
+    this.interruptions.set(threadId, interruption);
+    this.changed();
+    void this.interrupt(threadId, interruption, api);
+  }
   sendNow(id: string): void {
     const item = this.items.find((item) => item.id === id);
     if (!item || item.preparing || item.status !== "queued") return;
@@ -333,6 +347,7 @@ export class MessageQueue {
       if (!current()) return;
       const item = this.items.find((item) => item.id === interruption.id);
       if (item) { item.status = "queued"; item.error = "Couldn’t stop the reply. Try again."; }
+      else this.reportError("Couldn’t stop the reply. Try again. Sending stays paused.");
       this.interruptions.delete(threadId);
       this.paused.add(threadId); this.save(); this.changed();
     }

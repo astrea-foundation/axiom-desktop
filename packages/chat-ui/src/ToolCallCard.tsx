@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ToolActivity } from "@axiom/chat-core/viewTypes";
 import { imageRequestSummary, isFetchTool, isImageGenerationTool, redactToolText, toolFailed, toolImageProgress, toolLabel, toolName, toolSearchSources, viewedImageId } from "./toolPresentation";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
+import { LoadProgressBar } from "./LoadProgressBar";
 import { ImageRequestDetails, ViewedImageDetails } from "./ImageToolDetails";
 import { decodeGeneratedPng } from "./generatedImage";
 import { McpSourceLabel, mcpHost } from "./McpPrivacy";
@@ -188,7 +189,8 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
       >
         {row}
       </button> : <div className={rowClass} title={label}>{row}</div>}
-      {progress && tool.status !== "completed" ? <div role="progressbar" aria-label="Image generation progress" aria-valuemin={0} aria-valuemax={100}
+      {progress?.stage === "finishing" ? <LoadProgressBar label="Image generation progress" valueText="Receiving image"
+        className="mx-1.5 mt-1 max-w-[32rem]" /> : progress ? <div role="progressbar" aria-label="Image generation progress" aria-valuemin={0} aria-valuemax={100}
         aria-valuenow={progress.percent} className="mx-1.5 mt-1 h-1 max-w-[32rem] overflow-hidden rounded-full bg-[var(--color-border)]">
         <div className="h-full rounded-full bg-[var(--color-text-secondary)] transition-[width] motion-reduce:transition-none" style={{width: `${progress.percent}%`}} />
       </div> : null}
