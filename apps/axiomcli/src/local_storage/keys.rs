@@ -76,7 +76,7 @@ impl KeyStore for SystemKeyStore {
             let entry = keyring::Entry::new(KEYRING_SERVICE, name).map_err(|_| {
                 failure("System credential store is unavailable; unlock it and try again")
             })?;
-            let bytes = match entry.get_secret() {
+            match entry.get_secret() {
                 Ok(value) => Zeroizing::new(value),
                 Err(keyring::Error::NoEntry) => return Ok(None),
                 Err(_) => {
@@ -84,8 +84,7 @@ impl KeyStore for SystemKeyStore {
                         "Local storage key is locked or unavailable; existing data was preserved",
                     ));
                 }
-            };
-            bytes
+            }
         };
         if bytes.len() != 32 {
             return Err(failure(
