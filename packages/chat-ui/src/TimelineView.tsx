@@ -34,7 +34,7 @@ function ActivityRow({ item, onRetry }: { item: ClientTimelineItem; onRetry?: ()
   );
   if (error) return <DismissibleNotice data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--color-danger-soft)] px-3 py-2 text-[12.5px] text-[var(--color-danger-strong)]">
     <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
-    <span className="min-w-0 break-words">{item.text}{onRetry ? <button type="button" className="ml-3 rounded px-2 py-1 text-[var(--color-cherry)]" onClick={() => void onRetry().catch(() => {})}>Retry</button> : null}</span>
+    <span className="min-w-0 break-words"><span>{item.text}</span>{onRetry ? <button type="button" className="ml-3 rounded px-2 py-1 text-[var(--color-cherry)]" onClick={() => void onRetry().catch(() => {})}>Retry</button> : null}</span>
   </DismissibleNotice>;
   return (
     <div role="status" data-timeline-kind="activity" className="flex items-start gap-2 rounded-lg bg-[var(--wash-row)] px-3 py-2 text-[12.5px] text-[var(--color-text-tertiary)]">

@@ -243,6 +243,11 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
         state.sessions[id]!.timeline.push({ id: `native-${clientItemId}`, clientItemId, kind: "user", text, status: "completed", raw: { metadata: { attachments: attachments.map((file) => ({ name: file.name, kind: file.kind })) } } });
         emit(); return { stopReason: "end_turn" };
       },
+      continueSession: async (id: string, webEnabled: boolean) => {
+        calls.push({ method: "continue", id, webEnabled });
+        await waitForSetup("continue");
+        return { stopReason: "end_turn" };
+      },
       revisePrompt: async (id: string, text: string, userItemId: string, expectedRevision: number, webEnabled: boolean) => {
         calls.push({ method: "revise", id, text, userItemId, expectedRevision, webEnabled });
         return { stopReason: "end_turn" };
@@ -4033,6 +4038,32 @@ test("dismissing reply errors preserves failed output and allows new notices", a
       return state.sessions["old-thread"].timeline;
     });
     assert.deepEqual(stored, [reply, { ...firstError, id: "failure-2" }]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Retry continues the latest failed turn without submitting a visible prompt or changing the draft", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    const timeline = [
+      { id: "original", turnId: "failed-turn", kind: "user", text: "Generate the original image", status: "completed" },
+      { id: "partial", turnId: "failed-turn", kind: "assistant", text: "Partial reply", status: "failed", terminalVerified: false },
+      { id: "failure", turnId: "failed-turn", kind: "error", text: "stream response identity changed" },
+    ];
+    await page.evaluate((timeline) => (window as any).__deletionTest.setTimeline(timeline), timeline);
+    const draft = page.locator("textarea[data-chat-input]");
+    await draft.fill("Keep my next question");
+    const transcript = page.getByRole("region", { name: "Chat messages" });
+    const alert = transcript.getByRole("alert");
+    await alert.getByText("stream response identity changed", { exact: true }).waitFor();
+    await alert.getByRole("button", { name: "Retry", exact: true }).click();
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "continue"));
+    assert.equal((await calls(page)).filter(call => call.method === "continue").length, 1);
+    assert.equal((await calls(page)).some(call => ["prompt", "attachments"].includes(call.method)), false);
+    assert.equal(await draft.inputValue(), "Keep my next question");
+    const stored = await page.evaluate(async () => (await (window as any).axiomDesktop.agent.getState()).sessions["old-thread"].timeline);
+    assert.deepEqual(stored, timeline);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
