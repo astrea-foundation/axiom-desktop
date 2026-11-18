@@ -89,8 +89,10 @@ Factory reset is below the identity card. Settings tabs keep keyboard focus
 inside their selected shape so the scrolling navigation does not clip it.
 
 Conversations and folders are account-local. Folder names are labels, not file
-paths. Rename and Delete use in-app dialogs; batch deletion is confirmed against
-the exact native selection. Deleting a conversation does not remove workspace files.
+paths. The three-dot button beside each thread opens **Rename** and **Delete**.
+Right-clicking a thread or folder also opens its menu. Rename and Delete use
+in-app dialogs. Batch deletion is confirmed against the exact native selection.
+Deleting a conversation does not remove workspace files.
 Sidebar recency follows the latest **user submission** (`lastUserMessageAt`), so
 concurrent assistant streams do not continually reorder the list. `lastMessageAt`
 remains message activity metadata. Folder ordering derives from its member threads.
@@ -424,7 +426,9 @@ readable in saved history but cannot be submitted as new uploads.
 
 ## Edit, regenerate and compaction
 
-Each user message has a **Regenerate** action next to **Edit**. Regenerate resends
+Sent user messages show **Edit**, **Regenerate** and **Copy** beneath the bubble.
+Copy puts the original message text on the clipboard, including Markdown and line
+breaks. It is disabled for attachment-only messages. Regenerate resends
 that message with its original text and attachments, including attachment-only
 messages, through the same replacement confirmation as editing and sending.
 
