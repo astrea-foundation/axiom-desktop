@@ -537,24 +537,19 @@ the gateway route, the attested NEAR gateway's key, TLS key and workload.
 Reports renew automatically for the selected model while the window is active,
 visible and online. Renewal starts up to thirty seconds before expiry, capped
 at half the report lifetime for short leases, with a minimum one-second margin.
-Missing or expired reports refresh on opening an active thread or returning
-from idle. One refresh
-runs at a time; failures retry with backoff from thirty seconds to five minutes.
-Verification waits for an active reply to finish and for a disconnected thread
-to synchronize. An outdated TEE still requires explicit user consent; automatic
+The selected model warms when the composer opens or the selection changes,
+including on the welcome screen before a thread exists. The native cache
+shares checks for the same model and renews NEAR and Tinfoil early. Failures
+retry with backoff from thirty seconds to five minutes. An outdated TEE still
+requires explicit user consent. Automatic
 refresh never accepts that warning. Manual **Refresh** remains available.
-Automatic renewal reuses the native provider's still-fresh, model-bound proof
-and pinned connection. It does not force a new hardware appraisal or discard
-the image service's prepared session. A valid badge remains visible while that
-renewal is pending; actual hard expiry still changes its status. Explicit
-**Refresh** requests new attestation. Cached warmup reports can populate newly
-loaded idle threads, while account, runtime and model changes fence late results.
-
-Editing a nonempty message while signed in also starts verification for the
-selected model, including on the welcome screen before a thread exists. Only the
-model ID crosses the verification IPC boundary; draft text is never sent as part
-of this check. Valid reports and in-flight checks are reused. Enter waits for
-that work, and native inference checks freshness before sending model messages.
+Only the model ID crosses the verification IPC boundary. Send proceeds through
+native inference using still-valid evidence or shares an in-progress check on a
+cold path. A valid badge remains visible during renewal until its hard expiry.
+Explicit **Refresh** requests new attestation. Cached warmup reports can populate
+newly loaded idle threads, with account, runtime and model fences on late results.
+The installed AstreaAI image service warms independently. Native image dispatch
+requires fresh evidence and authorization for the actual worker.
 
 After thirty minutes without user interaction or a running reply, the badge
 shows neutral **Idle** and automatic renewal pauses. Activity or returning to the

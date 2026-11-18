@@ -128,10 +128,12 @@ failed Intel `OutOfDate` posture check; other checks must still pass.
 
 `security/prewarm` accepts only `modelId` and returns the same public report as
 `security/verify`, without creating a thread or invalidating valid native keys.
-It never grants outdated-TEE consent. Composition calls are coalesced by account
+It never grants outdated-TEE consent. Active composer calls are coalesced by account
 and model, with expiry-aware reuse and bounded failure cooldowns. Native provider
 caches additionally enforce model identity, trust policy and expiry and share
-work with inference. Account transitions cancel native warmups; stale reports
+work with inference. ACP prompt dispatch can proceed while model-only warmup
+runs. Native inference requires accepted evidence before encryption. Account
+transitions cancel native warmups; stale reports
 cannot replace evidence after account, runtime or model changes. Manual
 `security/verify` still requests fresh attestation.
 

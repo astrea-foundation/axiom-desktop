@@ -3,14 +3,14 @@ use std::{
     io::Write as _,
     path::Path,
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axiom_inference::ModelInfo;
 use fs2::FileExt as _;
 use rand_core::{OsRng, RngCore as _};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -24,6 +24,7 @@ pub struct SecureClient {
     credential: Arc<ApiCredential>,
     providers: ProviderRegistry,
     catalog_cache: RwLock<Option<CachedCatalog>>,
+    catalog_refresh: Mutex<()>,
     trust_policy: RwLock<CachedTrustPolicy>,
 }
 
@@ -66,6 +67,14 @@ impl SecureClient {
         let policy = self.trust_policy(cancellation.clone()).await?;
         provider.image_capabilities(&policy, cancellation).await
     }
+
+    /// Installed limits for turn planning. The image exchange separately
+    /// requires fresh attestation, authorization and a matching signed release.
+    pub fn image_planning_policy(&self) -> Result<axiom_inference::ImageRuntimePolicy> {
+        let runtime = crate::providers::direct::installed_image_policy(&self.config)?;
+        self.image_provider()?.prewarm_image();
+        Ok(runtime)
+    }
     pub fn new(config: SecureClientConfig, credential: ApiCredential) -> Result<Self> {
         if credential.is_empty() {
             return Err(crate::SecureClientError::configuration(
@@ -81,6 +90,7 @@ impl SecureClient {
             credential,
             providers,
             catalog_cache: RwLock::new(None),
+            catalog_refresh: Mutex::new(()),
             trust_policy: RwLock::new(CachedTrustPolicy {
                 policy: trust_policy,
                 refreshed_at: None,
@@ -194,6 +204,36 @@ impl SecureClient {
     }
 
     pub async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
+        self.load_models(false, cancellation).await
+    }
+
+    /// Reuse recent discovery within this account's client. Backend admission
+    /// still validates the offering, account and per-request evidence.
+    pub async fn models_for_inference(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<ModelInfo>> {
+        self.load_models(true, cancellation).await
+    }
+
+    async fn load_models(
+        &self,
+        allow_recent: bool,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<ModelInfo>> {
+        if cancellation.is_cancelled() {
+            return Err(crate::SecureClientError::cancelled());
+        }
+        if allow_recent && let Some(models) = self.recent_models().await {
+            return Ok(models);
+        }
+        let _refresh = tokio::select! {
+            () = cancellation.cancelled() => return Err(crate::SecureClientError::cancelled()),
+            guard = self.catalog_refresh.lock() => guard,
+        };
+        if allow_recent && let Some(models) = self.recent_models().await {
+            return Ok(models);
+        }
         // Installed AstreaAI pins add an offering to the shared catalog; they
         // must not suppress discovery of the other registered providers.
         let result = catalog::fetch_models(
@@ -234,6 +274,18 @@ impl SecureClient {
             Err(error) => Err(error),
         };
         self.accept_catalog(result).await
+    }
+
+    async fn recent_models(&self) -> Option<Vec<ModelInfo>> {
+        self.catalog_cache
+            .read()
+            .await
+            .as_ref()
+            .filter(|cached| {
+                cached.fetched_at.elapsed()
+                    < Duration::from_secs(60).min(self.config.catalog_max_stale)
+            })
+            .map(|cached| cached.models.clone())
     }
 
     /// Offerings the last accepted catalog reported as temporarily unavailable
@@ -289,6 +341,15 @@ impl SecureClient {
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>> {
         self.providers.establish(model, policy, cancellation).await
+    }
+
+    pub async fn prewarm(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VerifiedSession>> {
+        self.providers.prewarm(model, policy, cancellation).await
     }
 
     /// Resolve the newest valid signed trust policy without making policy
@@ -857,6 +918,49 @@ mod tests {
             assert!(client.catalog_cache.read().await.is_none());
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn recent_catalog_is_reused_and_an_expired_snapshot_cannot_hide_revoked_access() {
+        let (relay, server) = catalog_server(
+            "401 Unauthorized",
+            serde_json::json!({"detail": "invalid session"}),
+        )
+        .await;
+        let client =
+            SecureClient::new(installed_direct_config(&relay), ApiCredential::new("test")).unwrap();
+        let cached = ModelInfo {
+            id: "cached-model".into(),
+            ..ModelInfo::default()
+        };
+        client
+            .accept_catalog(Ok((vec![cached.clone()], Vec::new())))
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .models_for_inference(CancellationToken::new())
+                .await
+                .unwrap(),
+            [cached]
+        );
+        client
+            .catalog_cache
+            .write()
+            .await
+            .as_mut()
+            .unwrap()
+            .fetched_at = Instant::now() - Duration::from_secs(61);
+        let error = client
+            .models_for_inference(CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            axiom_inference::ProviderFailureKind::Authentication
+        );
+        assert!(client.catalog_cache.read().await.is_none());
+        server.await.unwrap();
     }
 
     #[tokio::test]

@@ -37,11 +37,16 @@ all other rejected statuses and authentication failures still fail closed. The
 backend records `outdated_tcb_accepted` on that account-bound worker session and
 keeps its original expiry and TLS pin. Consent never extends a lease or changes
 the signed trust-policy document.
-The server's `verified` flag and supplied collateral are not trust roots.
+Native verification processes the signed Intel collateral included in each
+report with the pinned Intel trust root. It checks validity and revocation at
+the current time, then checks the quote's nonce, key and workload bindings.
+Reports without a collateral bundle or a required external PCK chain use the
+direct Intel lookup. A supplied bundle that fails verification rejects the report.
 
-NVIDIA verdict verification independently downloads the vendor's rotating JWKS,
-bounded to 1 MiB. The verdict's key ID selects a certificate chain from that set;
-the signed-policy anchor, certificate validity, ES384 signature, passing verdict
+The client obtains a fresh NVIDIA verdict from the vendor for the challenged GPU
+evidence. The bounded public signing key set can be reused for up to five minutes
+and refreshes when the verdict names a new key. The key ID selects a certificate
+chain. The signed-policy anchor, certificate validity, ES384 signature, passing verdict
 and challenge nonce must all verify. A larger set of published rotation keys does
 not change those checks. Documents above the bound are rejected before parsing.
 

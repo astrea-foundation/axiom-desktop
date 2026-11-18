@@ -278,7 +278,10 @@ proof remains bounded to at most 240 seconds, and a new 180-second request still
 requires coverage through its deadline. Near-expiry material therefore cannot
 authorize a new full-length image request, even when its report is still valid.
 
-The account-owned provider checks every 20 seconds and prepares 210 seconds of
+The native composer starts image preparation in the background. Text turn
+planning uses the installed image limits. Image dispatch checks the actual
+worker's fresh signed capabilities and account admission. The account-owned
+provider checks every 20 seconds and prepares 210 seconds of
 proof and admission coverage, providing 30 seconds of headroom above a normal
 request deadline. Valid foreground cache hits do not wait for background
 renewal network calls. Dropping the provider cancels renewal. Initial proof and

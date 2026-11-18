@@ -126,11 +126,12 @@ pub(crate) async fn fetch_models(
     // Backends that predate the parameter ignore it and list available models only.
     let mut endpoint = relay_endpoint(&config.relay_base_url, "/api/v1/relay/models")?;
     endpoint.set_query(Some("include_unavailable=true"));
-    let client = relay_client(config, &endpoint, config.request_timeout).await?;
+    let client = relay_client(config, &endpoint).await?;
     let response = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
         response = client
             .get(endpoint)
+            .timeout(config.request_timeout)
             .header("accept", "application/json")
             .bearer_auth(credential.expose())
             .send() => response.map_err(|_| SecureClientError::new(

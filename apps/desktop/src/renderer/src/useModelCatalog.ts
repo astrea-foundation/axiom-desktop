@@ -195,8 +195,8 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
 
   useEffect(() => {
     if (!agentState.connected || agentState.account?.state !== "valid") return;
-    const refresh = () => setModelCatalogRefresh((value) => value + 1);
-    const timer = window.setInterval(refresh, 5 * 60 * 1000);
+    const refresh = () => { if (!document.hidden) setModelCatalogRefresh((value) => value + 1); };
+    const timer = window.setInterval(refresh, 45_000);
     window.addEventListener("focus", refresh);
     return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
   }, [agentState.connected, agentState.account?.state]);

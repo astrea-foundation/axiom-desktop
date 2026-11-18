@@ -919,15 +919,15 @@ export class AxiomAcpClient extends EventEmitter {
     return result;
   }
 
-  /** Called only by composition. Native code still enforces freshness at send. */
+  /** Prepare the selected model while its composer is active. */
   prewarmSecurity(modelId: string): Promise<VerifySecurityResponse> {
     const accountContext = this.state.accountContextToken();
     const cached = this.securityWarmups.get(modelId);
     const previous = cached?.context === accountContext ? cached : undefined;
     const now = Date.now();
-    // Keystrokes with reusable work need no RPC or full conversation snapshot.
+    // A usable report avoids RPC until its early refresh window.
     // Account/runtime transitions invalidate the context; disconnect clears the map.
-    if (previous && (previous.pending || now < previous.validUntil || now < previous.retryAt)) return previous.promise;
+    if (previous && (previous.pending || now + 30_000 < previous.validUntil || now < previous.retryAt)) return previous.promise;
     const snapshot = this.state.snapshot();
     if (!snapshot.connected || !modelId || modelId.length > 512 || snapshot.account?.state !== "valid") {
       return Promise.reject(new ProtocolError("Sign in and select a model before verifying"));
@@ -978,13 +978,6 @@ export class AxiomAcpClient extends EventEmitter {
     if (!context || !modelId) throw new ProtocolError("Load this thread before verifying its model");
     const existing = this.securityVerifications.get(threadId);
     if (existing?.context === context) return existing.promise;
-    const cached = this.securityWarmups.get(modelId);
-    if (cached?.context === accountContext && !cached.pending && cached.validUntil > 0
-      && cached.validUntil <= Date.now() + 30_000) {
-      // Re-read native cached material near expiry. This drops only the JS
-      // report, never the provider proof, pinned transport or retry backoff.
-      this.securityWarmups.delete(modelId);
-    }
     const warmup = this.prewarmSecurity(modelId);
     const result = await warmup;
     const current = this.state.snapshot().sessions[threadId];
@@ -1288,8 +1281,8 @@ export class AxiomAcpClient extends EventEmitter {
   }
 
   private async waitForSecurityPreflight(threadId: string): Promise<void> {
-    const model = this.state.snapshot().sessions[threadId]?.settings?.model;
-    if (model) await this.securityWarmups.get(model)?.promise.catch(() => undefined);
+    // Explicit verification reserves the native thread. Model-only warmup
+    // shares the native cache with Send and never reserves the thread.
     await this.securityVerifications.get(threadId)?.promise.catch(() => undefined);
   }
 

@@ -71,6 +71,17 @@ pub trait SecureProvider: sealed::Provider + Send + Sync {
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>>;
 
+    async fn prewarm(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VerifiedSession>> {
+        self.establish(model, policy, cancellation).await
+    }
+
+    fn prewarm_image(&self) {}
+
     /// Drop public verified material after a typed rotation/protocol failure.
     /// Request private keys and nonces are never cached by provider engines.
     async fn invalidate(&self, _model_id: &str) {}
@@ -228,6 +239,20 @@ impl ProviderRegistry {
         let provider = self.resolve(model)?;
         provider.invalidate(&model.id).await;
         Ok(())
+    }
+
+    pub(crate) async fn prewarm(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VerifiedSession>> {
+        if cancellation.is_cancelled() {
+            return Err(SecureClientError::cancelled());
+        }
+        self.resolve(model)?
+            .prewarm(model, policy, cancellation)
+            .await
     }
 }
 

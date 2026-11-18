@@ -202,18 +202,46 @@ impl SecureProvider for TinfoilProvider {
         policy: &TrustPolicy,
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>> {
+        self.establish_with_headroom(model, policy, cancellation, 0)
+            .await
+    }
+
+    async fn prewarm(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VerifiedSession>> {
+        let headroom = 30.min(self.config.verified_session_ttl.as_secs() / 2);
+        self.establish_with_headroom(model, policy, cancellation, headroom)
+            .await
+    }
+
+    async fn invalidate(&self, model_id: &str) {
+        self.cache.invalidate(model_id).await;
+    }
+}
+
+impl TinfoilProvider {
+    async fn establish_with_headroom(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+        headroom: u64,
+    ) -> Result<Box<dyn VerifiedSession>> {
         self.supports(model)?;
         if !policy.is_valid_at(now()) {
             return Err(SecureClientError::attestation("trust policy expired"));
         }
-        if let Some(material) = self.cache.get(model, policy).await {
+        if let Some(material) = self.cache.get(model, policy, headroom).await {
             return Ok(self.session(model, material));
         }
         let _lock = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             lock = self.cache.model_lock(&model.id) => lock,
         };
-        if let Some(material) = self.cache.get(model, policy).await {
+        if let Some(material) = self.cache.get(model, policy, headroom).await {
             return Ok(self.session(model, material));
         }
         // Only this locally verified result can populate a production session.
@@ -302,10 +330,6 @@ impl SecureProvider for TinfoilProvider {
             )
             .await;
         Ok(self.session(model, material))
-    }
-
-    async fn invalidate(&self, model_id: &str) {
-        self.cache.invalidate(model_id).await;
     }
 }
 
@@ -402,7 +426,7 @@ impl Session {
             &self.config.relay_base_url,
             "/api/v1/relay/tinfoil/chat/completions",
         )?;
-        let http = relay_client(&self.config, &endpoint, None).await?;
+        let http = relay_client(&self.config, &endpoint).await?;
         let wire = http
             .post(endpoint)
             .bearer_auth(self.credential.expose())

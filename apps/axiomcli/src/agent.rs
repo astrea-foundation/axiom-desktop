@@ -1397,7 +1397,7 @@ impl AgentEngine {
         settings: &SessionSettings,
         cancellation: CancellationToken,
     ) -> Result<axiom_inference::ModelInfo> {
-        match self.provider.models(cancellation).await {
+        match self.provider.models_for_inference(cancellation).await {
             Ok(mut models) => {
                 models.sort_by(compare_model_preference);
                 models
@@ -1718,6 +1718,7 @@ impl AgentEngine {
             }
             let next = match self
                 .provider_turn_for_compaction(
+                    model,
                     request,
                     events,
                     cancellation.child_token(),
@@ -1860,6 +1861,7 @@ impl AgentEngine {
     /// remain outside this loop; unverified fragments never become model input.
     async fn recovering_provider_turn(
         &self,
+        model: &axiom_inference::ModelInfo,
         mut request: InferenceRequest,
         context: &TurnContext,
         output: &mpsc::Sender<AppEvent>,
@@ -1872,7 +1874,13 @@ impl AgentEngine {
                 return Err(AxiomError::Cancelled);
             }
             match self
-                .provider_turn(request.clone(), context, output, cancellation.child_token())
+                .provider_turn(
+                    model,
+                    request.clone(),
+                    context,
+                    output,
+                    cancellation.child_token(),
+                )
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -1943,15 +1951,16 @@ impl AgentEngine {
 
     async fn provider_turn(
         &self,
+        model: &axiom_inference::ModelInfo,
         request: InferenceRequest,
         context: &TurnContext,
         output: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
     ) -> Result<ProviderTurnResult> {
         let (provider_tx, mut provider_rx) = mpsc::channel(64);
-        let future = self
-            .provider
-            .stream(request, provider_tx, cancellation.clone());
+        let future =
+            self.provider
+                .stream_for_model(model, request, provider_tx, cancellation.clone());
         tokio::pin!(future);
         let mut response_verified = false;
         let mut usage = None;
@@ -1990,15 +1999,16 @@ impl AgentEngine {
 
     async fn provider_turn_for_compaction(
         &self,
+        model: &axiom_inference::ModelInfo,
         request: InferenceRequest,
         output: &mpsc::Sender<AppEvent>,
         cancellation: CancellationToken,
         work: &mut CompactionWork,
     ) -> Result<AssistantTurn> {
         let (provider_tx, mut provider_rx) = mpsc::channel(64);
-        let future = self
-            .provider
-            .stream(request, provider_tx, cancellation.clone());
+        let future =
+            self.provider
+                .stream_for_model(model, request, provider_tx, cancellation.clone());
         tokio::pin!(future);
         let mut incomplete = false;
         let mut generation_started = false;
@@ -2246,14 +2256,16 @@ impl TurnRunner for AgentEngine {
         let _cancel_on_drop = cancellation.clone().drop_guard();
         let model = self
             .provider
-            .models(cancellation.child_token())
+            .models_for_inference(cancellation.child_token())
             .await?
             .into_iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| AxiomError::Provider("title model is no longer available".into()))?;
         let request = title_request(&model, first_prompt);
         let (tx, mut rx) = mpsc::channel(64);
-        let response = self.provider.stream(request, tx, cancellation.clone());
+        let response = self
+            .provider
+            .stream_for_model(&model, request, tx, cancellation.clone());
         tokio::pin!(response);
         let mut open = true;
         let result = loop {
@@ -3271,6 +3283,7 @@ impl TurnRunner for AgentEngine {
             let provider_result = before_optional_deadline(
                 deadline,
                 self.recovering_provider_turn(
+                    &model,
                     request,
                     &context,
                     &events,

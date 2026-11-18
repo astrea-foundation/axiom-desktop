@@ -158,6 +158,16 @@ pub trait InferenceProvider: Send + Sync {
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn>;
 
+    async fn stream_for_model(
+        &self,
+        _model: &ModelInfo,
+        request: InferenceRequest,
+        events: mpsc::Sender<ProviderEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<AssistantTurn> {
+        self.stream(request, events, cancellation).await
+    }
+
     /// The server must confirm failure, reconcile its charge and reserve a
     /// bounded successor before a possibly dispatched generation is restarted.
     async fn authorize_recovery(
@@ -183,6 +193,13 @@ pub trait InferenceProvider: Send + Sync {
         ))
     }
 
+    async fn models_for_inference(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<ModelInfo>> {
+        self.models(cancellation).await
+    }
+
     /// Offerings the latest [`Self::models`] discovery reported as temporarily
     /// unavailable. Display only; never selectable.
     async fn unavailable_models(&self) -> Vec<ModelInfo> {
@@ -201,6 +218,13 @@ pub struct SecureAxiomProvider {
 struct CachedSecureClient {
     credential_fingerprint: [u8; 32],
     client: Arc<SecureClient>,
+}
+
+#[derive(Clone, Copy)]
+enum VerificationPurpose {
+    Send,
+    Prewarm,
+    Refresh,
 }
 
 enum ProviderCredential {
@@ -292,8 +316,9 @@ impl SecureAxiomProvider {
     async fn establish_verified(
         &self,
         model_id: &str,
+        resolved_model: Option<&ModelInfo>,
         cancellation: CancellationToken,
-        refresh_attestation: bool,
+        purpose: VerificationPurpose,
     ) -> Result<(
         Arc<SecureClient>,
         ModelInfo,
@@ -304,16 +329,26 @@ impl SecureAxiomProvider {
         // generation successor requires separate backend failure/charge
         // reconciliation and a fresh request identity; it is not an auth retry.
         let client = self.client(&cancellation).await?;
-        let models = client
-            .models(cancellation.clone())
-            .await
-            .map_err(map_secure_error)?;
-        let model = models
-            .iter()
-            .find(|model| model.id == model_id)
-            .ok_or_else(|| {
-                AxiomError::Provider("selected secure model is unavailable".to_owned())
-            })?;
+        if matches!(purpose, VerificationPurpose::Prewarm) {
+            let _ = client.image_planning_policy();
+        }
+        let refresh_attestation = matches!(purpose, VerificationPurpose::Refresh);
+        let model = if let Some(model) = resolved_model.filter(|model| model.id == model_id) {
+            model.clone()
+        } else {
+            let models = if refresh_attestation {
+                client.models(cancellation.clone()).await
+            } else {
+                client.models_for_inference(cancellation.clone()).await
+            };
+            models
+                .map_err(map_secure_error)?
+                .into_iter()
+                .find(|model| model.id == model_id)
+                .ok_or_else(|| {
+                    AxiomError::Provider("selected secure model is unavailable".to_owned())
+                })?
+        };
         let trust_policy = client
             .trust_policy(cancellation.clone())
             .await
@@ -321,13 +356,15 @@ impl SecureAxiomProvider {
         if refresh_attestation {
             // An explicit verification must obtain a new local attestation,
             // not merely return the reusable lease used by ordinary inference.
-            client.invalidate(model).await.map_err(map_secure_error)?;
+            client.invalidate(&model).await.map_err(map_secure_error)?;
         }
-        let session = client
-            .establish(model, &trust_policy, cancellation)
-            .await
-            .map_err(map_secure_error)?;
-        Ok((client, model.clone(), session))
+        let session = if matches!(purpose, VerificationPurpose::Prewarm) {
+            client.prewarm(&model, &trust_policy, cancellation).await
+        } else {
+            client.establish(&model, &trust_policy, cancellation).await
+        }
+        .map_err(map_secure_error)?;
+        Ok((client, model, session))
     }
 }
 
@@ -369,8 +406,7 @@ impl InferenceProvider for SecureAxiomProvider {
     ) -> Result<axiom_inference::ImageRuntimePolicy> {
         self.client(&cancellation)
             .await?
-            .image_capabilities(cancellation)
-            .await
+            .image_planning_policy()
             .map_err(map_secure_error)
     }
     fn clear_account_sessions(&self) {
@@ -461,7 +497,9 @@ impl InferenceProvider for SecureAxiomProvider {
         model: &str,
         cancellation: CancellationToken,
     ) -> Result<ProviderSecurityVerification> {
-        let (_, _, session) = self.establish_verified(model, cancellation, true).await?;
+        let (_, _, session) = self
+            .establish_verified(model, None, cancellation, VerificationPurpose::Refresh)
+            .await?;
         Ok(ProviderSecurityVerification {
             state: if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
                 ProviderSecurityState::Degraded
@@ -477,7 +515,9 @@ impl InferenceProvider for SecureAxiomProvider {
         model: &str,
         cancellation: CancellationToken,
     ) -> Result<ProviderSecurityVerification> {
-        let (_, _, session) = self.establish_verified(model, cancellation, false).await?;
+        let (_, _, session) = self
+            .establish_verified(model, None, cancellation, VerificationPurpose::Prewarm)
+            .await?;
         Ok(ProviderSecurityVerification {
             state: if session.evidence().state == axiom_secure_client::SecurityState::Degraded {
                 ProviderSecurityState::Degraded
@@ -490,6 +530,81 @@ impl InferenceProvider for SecureAxiomProvider {
 
     async fn stream(
         &self,
+        request: InferenceRequest,
+        events: mpsc::Sender<ProviderEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<AssistantTurn> {
+        self.stream_established(None, request, events, cancellation)
+            .await
+    }
+
+    async fn stream_for_model(
+        &self,
+        model: &ModelInfo,
+        request: InferenceRequest,
+        events: mpsc::Sender<ProviderEvent>,
+        cancellation: CancellationToken,
+    ) -> Result<AssistantTurn> {
+        self.stream_established(Some(model), request, events, cancellation)
+            .await
+    }
+
+    async fn authorize_recovery(
+        &self,
+        previous: &str,
+        successor: &str,
+        cancellation: CancellationToken,
+    ) -> Result<bool> {
+        self.client(&cancellation)
+            .await?
+            .authorize_recovery(previous, successor, cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+
+    async fn request_accounting(
+        &self,
+        ids: &[String],
+        cancellation: CancellationToken,
+    ) -> Result<Vec<axiom_inference::RequestUsage>> {
+        self.client(&cancellation)
+            .await?
+            .request_accounting(ids, cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+
+    async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
+        self.client(&cancellation)
+            .await?
+            .models(cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+
+    async fn models_for_inference(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<ModelInfo>> {
+        self.client(&cancellation)
+            .await?
+            .models_for_inference(cancellation)
+            .await
+            .map_err(map_secure_error)
+    }
+
+    async fn unavailable_models(&self) -> Vec<ModelInfo> {
+        match self.client(&CancellationToken::new()).await {
+            Ok(client) => client.unavailable_models().await,
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+impl SecureAxiomProvider {
+    async fn stream_established(
+        &self,
+        model: Option<&ModelInfo>,
         request: InferenceRequest,
         events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
@@ -530,7 +645,12 @@ impl InferenceProvider for SecureAxiomProvider {
             )
             .await?;
             let (client, model, mut session) = match self
-                .establish_verified(&request.model, cancellation.clone(), false)
+                .establish_verified(
+                    &request.model,
+                    model,
+                    cancellation.clone(),
+                    VerificationPurpose::Send,
+                )
                 .await
             {
                 Ok(session) => session,
@@ -589,7 +709,12 @@ impl InferenceProvider for SecureAxiomProvider {
                         )
                         .await?;
                         let (_, _, mut refreshed) = self
-                            .establish_verified(&retry_request.model, cancellation.clone(), false)
+                            .establish_verified(
+                                &retry_request.model,
+                                None,
+                                cancellation.clone(),
+                                VerificationPurpose::Refresh,
+                            )
                             .await?;
                         send_provider_event(
                             &retry_events,
@@ -688,46 +813,6 @@ impl InferenceProvider for SecureAxiomProvider {
             .await
             .map_err(|_| AxiomError::Cancelled)?;
         result
-    }
-
-    async fn authorize_recovery(
-        &self,
-        previous: &str,
-        successor: &str,
-        cancellation: CancellationToken,
-    ) -> Result<bool> {
-        self.client(&cancellation)
-            .await?
-            .authorize_recovery(previous, successor, cancellation)
-            .await
-            .map_err(map_secure_error)
-    }
-
-    async fn request_accounting(
-        &self,
-        ids: &[String],
-        cancellation: CancellationToken,
-    ) -> Result<Vec<axiom_inference::RequestUsage>> {
-        self.client(&cancellation)
-            .await?
-            .request_accounting(ids, cancellation)
-            .await
-            .map_err(map_secure_error)
-    }
-
-    async fn models(&self, cancellation: CancellationToken) -> Result<Vec<ModelInfo>> {
-        self.client(&cancellation)
-            .await?
-            .models(cancellation)
-            .await
-            .map_err(map_secure_error)
-    }
-
-    async fn unavailable_models(&self) -> Vec<ModelInfo> {
-        match self.client(&CancellationToken::new()).await {
-            Ok(client) => client.unavailable_models().await,
-            Err(_) => Vec::new(),
-        }
     }
 }
 

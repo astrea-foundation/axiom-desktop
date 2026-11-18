@@ -312,7 +312,7 @@ test("workload manifests accept up to 1 MiB of UTF-8 including the truncation ma
   assert.throws(() => publicSecurityEvidence(valid, "test-model"), /incomplete or mismatched/);
 });
 
-test("composition warms once while pending and reuses the result until expiry", async (t) => {
+test("composition warms once and starts renewal before expiry", async (t) => {
   const client = fixture(t);
   const pending = hold(t, client);
   let now = Date.now();
@@ -325,8 +325,8 @@ test("composition warms once while pending and reuses the result until expiry", 
   const report = result();
   pending.resolve(report);
   await first;
-  now = report.evidence!.hardExpiresAtUnixSeconds * 1000 - 1;
-  assert.equal(client.prewarmSecurity("test-model"), first, "even the final valid second is reusable");
+  now = report.evidence!.hardExpiresAtUnixSeconds * 1000 - 30_001;
+  assert.equal(client.prewarmSecurity("test-model"), first, "a report outside the renewal window is reused");
   now++;
   const next = result();
   t.mock.method(client.process, "request", async () => next);
@@ -353,7 +353,7 @@ test("automatic renewal applies an already cached warmup to a newly loaded threa
   assert.equal(current.securityEvidence?.hardExpiresAtUnixSeconds, report.evidence!.hardExpiresAtUnixSeconds);
 });
 
-test("automatic renewal rereads near-expiry native material without forcing a hardware appraisal", async (t) => {
+test("automatic renewal asks native for fresh material during the expiry window", async (t) => {
   const client = fixture(t);
   let now = Date.now(); t.mock.method(Date, "now", () => now);
   const first = result();
@@ -587,25 +587,22 @@ test("composing during explicit verification joins it without starting a warmup"
   await manual;
 });
 
-for (const cancelled of [false, true]) {
-  test(`Enter during warmup ${cancelled ? "can be cancelled without sending" : "waits and sends exactly once"}`, async (t) => {
-    const client = fixture(t);
-    let resolve!: (value: VerifySecurityResponse) => void;
-    const gate = new Promise<VerifySecurityResponse>((yes) => { resolve = yes; });
-    let sent = 0;
-    t.mock.method(client.process, "request", async (method: string) => {
-      if (method === "_axiom/security/prewarm") return gate;
-      if (method === "session/prompt") { sent++; return { stopReason: "end_turn" }; }
-      throw new Error("No durable fixture timeline");
-    });
-    const warmup = client.prewarmSecurity("test-model");
-    const prompt = client.prompt("thread", "local draft", "client-message");
-    await Promise.resolve();
-    assert.equal(sent, 0);
-    if (cancelled) await client.cancel("thread");
+test("Enter leaves model-only warmup in progress while native admits the prompt", async (t) => {
+  const client = fixture(t);
+  let resolve!: (value: VerifySecurityResponse) => void;
+  const gate = new Promise<VerifySecurityResponse>((yes) => { resolve = yes; });
+  let sent = 0;
+  t.mock.method(client.process, "request", async (method: string) => {
+    if (method === "_axiom/security/prewarm") return gate;
+    if (method === "session/prompt") { sent++; return { stopReason: "end_turn" }; }
+    throw new Error("No durable fixture timeline");
+  });
+  const warmup = client.prewarmSecurity("test-model");
+  try {
+    assert.equal((await client.prompt("thread", "local draft", "client-message")).stopReason, "end_turn");
+    assert.equal(sent, 1);
+  } finally {
     resolve(result());
     await warmup;
-    assert.equal((await prompt).stopReason, cancelled ? "cancelled" : "end_turn");
-    assert.equal(sent, cancelled ? 0 : 1);
-  });
-}
+  }
+});

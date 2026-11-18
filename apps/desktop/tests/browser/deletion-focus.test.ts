@@ -5117,19 +5117,15 @@ for (const platform of ["darwin", "win32"]) {
   });
 }
 
-test("only editing the signed-in composer starts model-only verification, including before thread creation", async () => {
+test("the signed-in composer prewarms its selected model before typing or opening a thread", async () => {
   const { page, errors } = await openApp("darwin");
   try {
     const warmups = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prewarm"));
-    assert.deepEqual(await warmups(), []);
-    await page.locator("textarea").fill("This draft must stay on this device");
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prewarm"));
     assert.deepEqual(await warmups(), [{ method: "prewarm", id: "test-model" }]);
+    await page.locator("textarea").fill("This draft must stay on this device");
+    assert.equal((await warmups()).length, 1);
     assert.equal((await calls(page)).filter((call) => call.method === "new" || call.method === "prompt").length, 0);
-    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    assert.equal((await warmups()).length, 1, "loading a thread does not verify");
-    await page.locator("textarea").fill("Follow-up draft");
-    assert.equal((await warmups()).length, 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

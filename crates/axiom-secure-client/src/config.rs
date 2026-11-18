@@ -16,6 +16,7 @@ use crate::{Result, SecureClientError};
 pub struct SecureClientConfig {
     // Shared by this runtime's client clones, never serialized or written to disk.
     accept_outdated_near_tcb: Arc<AtomicBool>,
+    pub(crate) relay_transport: Arc<tokio::sync::Mutex<Option<crate::http::RelayTransport>>>,
     pub relay_base_url: Url,
     pub request_timeout: Duration,
     pub attestation_timeout: Duration,
@@ -48,6 +49,7 @@ impl SecureClientConfig {
         let direct = crate::providers::direct::installed_config(&relay_base_url)?;
         Ok(Self {
             accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
+            relay_transport: Arc::default(),
             relay_base_url,
             request_timeout: Duration::from_secs(120),
             attestation_timeout: Duration::from_secs(60),
@@ -80,6 +82,7 @@ impl SecureClientConfig {
         }
         Ok(Self {
             accept_outdated_near_tcb: Arc::new(AtomicBool::new(false)),
+            relay_transport: Arc::default(),
             relay_base_url,
             request_timeout: Duration::from_secs(15),
             attestation_timeout: Duration::from_secs(10),
@@ -167,7 +170,7 @@ impl Default for SecureClientLimits {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndpointPolicy {
     pub require_https: bool,
     pub reject_local_addresses: bool,

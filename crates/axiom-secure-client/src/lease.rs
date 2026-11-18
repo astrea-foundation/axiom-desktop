@@ -40,11 +40,16 @@ impl<T> Default for VerifiedMaterialCache<T> {
 }
 
 impl<T: Clone> VerifiedMaterialCache<T> {
-    pub(crate) async fn get(&self, model: &ModelInfo, policy: &TrustPolicy) -> Option<T> {
-        let now = now_unix();
+    pub(crate) async fn get(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        minimum_lifetime: u64,
+    ) -> Option<T> {
+        let deadline = now_unix().saturating_add(minimum_lifetime);
         let entries = self.entries.read().await;
         entries.get(&model.id).and_then(|cached| {
-            (cached.expires_at_unix_seconds > now
+            (cached.expires_at_unix_seconds > deadline
                 && cached.model == *model
                 && cached.policy == *policy)
                 .then(|| cached.material.clone())
@@ -224,7 +229,7 @@ mod tests {
                 Duration::from_secs(60),
             )
             .await;
-        assert_eq!(cache.get(&model, &policy).await, None);
+        assert_eq!(cache.get(&model, &policy, 0).await, None);
 
         cache
             .insert(
@@ -235,13 +240,14 @@ mod tests {
                 Duration::from_secs(60),
             )
             .await;
-        assert_eq!(cache.get(&model, &policy).await, Some("current"));
+        assert_eq!(cache.get(&model, &policy, 0).await, Some("current"));
+        assert_eq!(cache.get(&model, &policy, 60).await, None);
 
         let mut changed_policy = policy.clone();
         changed_policy.sequence += 1;
-        assert_eq!(cache.get(&model, &changed_policy).await, None);
+        assert_eq!(cache.get(&model, &changed_policy, 0).await, None);
 
         cache.invalidate(&model.id).await;
-        assert_eq!(cache.get(&model, &policy).await, None);
+        assert_eq!(cache.get(&model, &policy, 0).await, None);
     }
 }
