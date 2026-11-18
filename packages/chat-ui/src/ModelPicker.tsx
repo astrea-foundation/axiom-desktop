@@ -185,7 +185,6 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
 export function ModelPicker({ models, unavailableModels, selectedModelId, onSelect }: ModelPickerProps) {
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const placementRef = useRef<Placement>(UNPLACED);
   const [placement, setPlacement] = useState<Placement>(UNPLACED);
   const [search, setSearch] = useState("");
   const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(() => new Set());
@@ -238,11 +237,10 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
     let frame = 0;
     const measure = () => {
       const bounds = visibleBounds(picker);
-      const current = placementRef.current;
       const parent = picker.offsetParent?.getBoundingClientRect();
-      // Offsets, not the bounding box: the pop-in animation scales the box.
-      const naturalTop = (parent?.top ?? 0) + picker.offsetTop - current.down;
-      const naturalLeft = (parent?.left ?? 0) + picker.offsetLeft - current.right;
+      // Layout offsets exclude both the placement translation and the pop-in animation.
+      const naturalTop = (parent?.top ?? 0) + picker.offsetTop;
+      const naturalLeft = (parent?.left ?? 0) + picker.offsetLeft;
       const maxHeight = Math.max(0, Math.floor(Math.min(MAX_HEIGHT, bounds.bottom - bounds.top)));
       const maxWidth = Math.max(0, Math.floor(Math.min(MAX_WIDTH, bounds.right - bounds.left)));
       // Keep the anchored position when it fits, otherwise slide to the nearest spot that does.
@@ -254,9 +252,8 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
         maxHeight,
         maxWidth,
       };
-      if (next.down === current.down && next.right === current.right && next.maxHeight === current.maxHeight && next.maxWidth === current.maxWidth) return;
-      placementRef.current = next;
-      setPlacement(next);
+      setPlacement(current => next.down === current.down && next.right === current.right &&
+        next.maxHeight === current.maxHeight && next.maxWidth === current.maxWidth ? current : next);
     };
     const queueMeasurement = () => {
       window.cancelAnimationFrame(frame);
@@ -267,6 +264,7 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
     for (let node = picker.parentElement; node; node = node.parentElement) observer.observe(node);
     window.addEventListener("resize", queueMeasurement);
     window.addEventListener("scroll", queueMeasurement, true);
+    searchRef.current?.focus({ preventScroll: true });
     measure();
     return () => {
       window.cancelAnimationFrame(frame);
@@ -285,19 +283,17 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
       role="dialog"
       aria-label="Choose a model"
       style={{
-        bottom: `calc(2.5rem - ${placement.down}px)`,
-        left: placement.right,
+        translate: `${placement.right}px ${placement.down}px`,
         ...(placement.maxHeight === null ? {} : { maxHeight: placement.maxHeight }),
         ...(placement.maxWidth === null ? {} : { maxWidth: placement.maxWidth }),
       }}
-      className={`glass-panel-solid shadow-glass-pop animate-pop-in absolute z-40 flex max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col rounded-[10px] ${cramped ? "overflow-y-auto" : "overflow-hidden"}`}
+      className={`glass-panel-solid shadow-glass-pop animate-pop-in absolute bottom-10 left-0 z-40 flex max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col rounded-[10px] ${cramped ? "overflow-y-auto" : "overflow-hidden"}`}
     >
       <div className="shrink-0 border-b border-[var(--color-border)] px-3 pb-1 pt-3">
         <label className="flex h-8 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)]">
           <Search size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
           <input
             ref={searchRef}
-            autoFocus
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={tagOptions.length ? "Search models, tags or hosts" : "Search models"}

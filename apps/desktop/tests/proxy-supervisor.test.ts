@@ -53,7 +53,8 @@ test("proxy starts a real owned listener, reports metadata, rotates tokens and s
     await proxy.start(port, "account-a", "runtime");
     assert.equal(proxy.snapshot().baseUrl, `http://127.0.0.1:${port}/v1`);
     await new Promise<void>((resolve, reject) => { const socket = connect(port, "127.0.0.1", () => { socket.destroy(); resolve(); }); socket.once("error", reject); });
-    await waitFor(() => proxy.snapshot().completedRequests === 1);
+    await waitFor(() => proxy.snapshot().errors.length > 0);
+    assert.equal(proxy.snapshot().completedRequests, 1);
     assert.equal(proxy.snapshot().totalTokens, 7);
     assert.equal(proxy.snapshot().evidence?.responseVerified, true);
     assert.equal(proxy.snapshot().errors[0]?.kind, "Transient");

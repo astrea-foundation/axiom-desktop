@@ -3950,8 +3950,7 @@ test("model picker is never clipped by the window or a clipping container", asyn
     }
     const outside = limits.filter(limit => rect.top < limit.top - 0.5 || rect.left < limit.left - 0.5 || rect.right > limit.right + 0.5 || rect.bottom > limit.bottom + 0.5);
     const scrollable = picker.scrollHeight <= picker.clientHeight + 1 || getComputedStyle(picker).overflowY === "auto";
-      // Focusing the search field can scroll a clipping ancestor. Allow the
-      // scroll/resize observers to finish placing the picker before asserting.
+      // Allow the scroll and resize observers to place the picker after the viewport changes.
       if (outside.length || !scrollable || rect.height <= 60 || rect.width <= 200) return false;
       return { outside, scrollable, height: rect.height, width: rect.width };
     }, undefined, { polling: "raf" });
@@ -3971,6 +3970,7 @@ test("model picker is never clipped by the window or a clipping container", asyn
       const picker = page.getByRole("dialog", { name: "Choose a model" });
       await picker.waitFor();
       const result = await overflow();
+      assert.equal(await picker.getByRole("textbox", { name: "Search models" }).evaluate(input => document.activeElement === input), true);
       assert.deepEqual(result.outside, [], `picker clipped at ${width}x${height} with host top ${hostTop}`);
       assert.equal(result.scrollable, true, `picker content unreachable at ${width}x${height}`);
       assert.ok(result.height > 60 && result.width > 200, `picker collapsed at ${width}x${height}`);
