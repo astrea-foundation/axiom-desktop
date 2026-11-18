@@ -99,9 +99,11 @@ concurrent assistant streams do not continually reorder the list. `lastMessageAt
 remains message activity metadata. Folder ordering derives from its member threads.
 
 New threads immediately show a short label from the first prompt. One background
-request to the selected model replaces that label with a generated title. This
-uses the same attested provider-E2EE path as chat and records its normal model
-charge as title usage, separately from conversation context usage. Reasoning is
+request to the selected model replaces that label with a generated title.
+AstreaAI’s Qwen3.8 Uncensored starts this request after the first reply finishes
+to give the conversation priority on the worker. Title generation uses the same
+attested provider-E2EE path as chat and records its normal model charge as
+title usage, separately from conversation context usage. Reasoning is
 disabled when supported; otherwise the request uses the lowest supported effort
 and allows room for reasoning. Title requests use only bounded first-prompt text,
 without tools or attachments, and time out after 60 seconds. Failed or empty

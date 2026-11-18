@@ -135,8 +135,9 @@ unavailable.
 The legacy operator connection uses free operator grants. The production account
 connection uses its immutable published prices and account-owned reservations;
 customer charges come only from authenticated worker usage.
-Conversation titles use the local first-message label, keeping cosmetic
-background inference off this worker.
+New conversations show an immediate first-message label. After the first
+successful reply, Qwen generates a title from the opening text through a
+separate attested request. A manual rename takes precedence.
 
 ## Billing readiness
 

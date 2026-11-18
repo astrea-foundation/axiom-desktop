@@ -2064,6 +2064,7 @@ pub async fn run(
                                     let token = CancellationToken::new();
                                     let should_generate_title = !state.has_prompt
                                         && store.as_ref().is_some_and(SessionStore::is_active);
+                                    let mut reply_finished = None;
                                     let submitted = runtime.dispatch(AppCommand::SubmitPrompt {attachments: Vec::new(),
                                         session_id: session_id.clone(),
                                         turn_id: turn_id.clone(),
@@ -2075,7 +2076,8 @@ pub async fn run(
                                         store.set_last_used_thinking(state.thinking)?;
                                         if should_generate_title {
                                             match crate::session_title::TitleGeneration::prepare(store, &session_id, &prompt, &state.model) {
-                                                Ok(Some(job)) => {
+                                                Ok(Some(mut job)) => {
+                                                    reply_finished = job.defer_until_first_reply();
                                                     let title_runner = runner.clone();
                                                     let title_token = token.child_token();
                                                     let lifetime = title_lifetime.clone();
@@ -2138,6 +2140,9 @@ pub async fn run(
                                         });
                                         let result = task_runner.run(context, prompt, event_tx, token).await;
                                         let _ = forward.await;
+                                        if result.is_ok() && let Some(finished) = reply_finished {
+                                            let _ = finished.send(());
+                                        }
                                         let _ = task_tx.send(UiMessage::Done(turn_id, result)).await;
                                     });
                                 }

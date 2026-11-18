@@ -2251,11 +2251,6 @@ impl TurnRunner for AgentEngine {
             .into_iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| AxiomError::Provider("title model is no longer available".into()))?;
-        if model.provider_id == "axiom-direct" {
-            // Keep cosmetic background work off the single operator worker.
-            // Its measured revision quarantines interrupted engine work.
-            return Ok(crate::session_title::session_title(first_prompt));
-        }
         let request = title_request(&model, first_prompt);
         let (tx, mut rx) = mpsc::channel(64);
         let response = self.provider.stream(request, tx, cancellation.clone());
@@ -4689,6 +4684,18 @@ fn title_request(model: &axiom_inference::ModelInfo, first_prompt: &str) -> Infe
         effort.map_or(ThinkingLevel::ProviderDefault, thinking_level)
     };
     let (prompt, _) = truncate_utf8(first_prompt, 4_000);
+    let prompt = if model.id == axiom_secure_client::ASTREAAI_QWEN_MODEL {
+        // Qwen can answer an unframed user message even with a title-only system instruction.
+        format!(
+            "Name the topic of the quoted opening message for a chat sidebar.\n\
+             Example: \"Why is my sourdough flat?\" → Troubleshooting Flat Sourdough\n\
+             Opening message (JSON string): {}\n\
+             Return only a 3-8 word topic label.",
+            serde_json::json!(prompt)
+        )
+    } else {
+        prompt
+    };
     let mut request = inference_request_for_model(
         model,
         model.id.clone(),
