@@ -97,7 +97,7 @@ export function toolFailureReason(tool: ToolActivity): string | null {
   if (tool.status === "interrupted") return "Interrupted";
   const fetch = isFetchTool(tool);
   const search = toolName(tool) === "web_search";
-  const image = ["generate", "generate_image", "edit_image"].includes(toolName(tool));
+  const image = isImageGenerationTool(tool);
   // Read only bounded output text, never inputs or the whole raw object.
   const error = tool.content.slice(-8).map((entry) => {
     const block = object(entry);
@@ -108,6 +108,8 @@ export function toolFailureReason(tool: ToolActivity): string | null {
   if (/sign in to Axiom again/i.test(error)) return "Sign in to Axiom again";
   if (/search limit reached/i.test(error)) return "Search limit reached";
   if (image && /AstreaAI is (?:temporarily busy|busy(?: preparing a secure connection)?|overloaded)/i.test(error)) return "Image service busy";
+  if (image && /Gateway completion failed|The gateway could not complete the image request/i.test(error)) return "Gateway did not confirm completion";
+  if (image && /Axiom could not verify the final gateway response for this image/i.test(error)) return "Response verification failed";
   if (/local network destinations|non-public|private.*address|credential-bearing URLs/i.test(error)) return "Blocked for safety";
   const status = Number(error.match(/\b(?:HTTP(?: status)?|status(?: code)?)\s*[:=]?\s*(\d{3})\b/i)?.[1]);
   if (status === 403) return fetch ? "Blocked by website" : "Access denied";
@@ -127,7 +129,7 @@ export function toolFailureReason(tool: ToolActivity): string | null {
   if (/DNS lookup failed|DNS returned no addresses/i.test(error)) return "Website not found";
   if (/certificate|TLS handshake|SSL/i.test(error)) return "Secure connection failed";
   if (/permission denied/i.test(error)) return "Not permitted";
-  return fetch ? "Couldn’t fetch page" : search ? "Search failed" : "Action failed";
+  return fetch ? "Couldn’t fetch page" : search ? "Search failed" : image ? null : "Action failed";
 }
 
 /** Match the TUI's phase-aware action + target labels, including older records. */

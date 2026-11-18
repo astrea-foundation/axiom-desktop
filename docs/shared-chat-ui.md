@@ -5,6 +5,8 @@ sidebar and context/account menus, transcript/reasoning/tool cards, queue,
 attachment cards, privacy proof, Web consent, rename/delete dialogs, usage and
 settings presentation. Desktop consumes these components through preserved
 renderer re-exports. Hosted applications consume the same committed artifact.
+Image tool cards show a reason when the host identifies a gateway or verification
+failure. Older generic gateway failures retain a neutral completion message.
 
 `packages/chat-core` owns structural runtime views, host capabilities/ports,
 attachment validation and original-file reading, the existing durable message

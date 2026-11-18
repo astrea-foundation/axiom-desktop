@@ -53,6 +53,18 @@ test("image capacity failures identify a busy service, including saved connectio
   }
 });
 
+test("image failures distinguish gateway rejection, verification failure and unknown causes", () => {
+  const tool: ToolActivity = { callId: "image", name: "generate", title: "generate", kind: "other", status: "failed", content: [], locations: [] };
+  for (const [error, label] of [
+    ["Gateway completion failed", "Image generation failed: Gateway did not confirm completion"],
+    ["The gateway could not complete the image request (REQUEST_FAILED).", "Image generation failed: Gateway did not confirm completion"],
+    ["Axiom could not verify the final gateway response for this image.", "Image generation failed: Response verification failed"],
+    ["Unknown failure with private details", "Image generation failed"],
+  ]) {
+    assert.equal(toolLabel({ ...tool, content: [{ type: "text", text: JSON.stringify({ error }) }] }), label);
+  }
+});
+
 test("generate renders ordered references and preserves percentage progress", () => {
   const image: ToolActivity = {callId: "new-image", name: "generate", title: "generate", kind: "other", status: "in_progress",
     input: {prompt: "Use <image1>", reference_image_ids: ["img_" + "a".repeat(32)]}, content: [], locations: [],
