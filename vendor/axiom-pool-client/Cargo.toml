@@ -25,6 +25,9 @@ tokio = { version = "1", features = ["process", "io-util", "time", "sync", "fs",
 tokio-util = "0.7"
 zeroize = "1"
 
+[target.'cfg(windows)'.dependencies]
+known-folders = "1.4.2"
+
 [[example]]
 name = "smoke"
 required-features = ["test-fixture"]
