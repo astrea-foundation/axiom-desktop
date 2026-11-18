@@ -89,7 +89,8 @@ Factory reset is below the identity card. Settings tabs keep keyboard focus
 inside their selected shape so the scrolling navigation does not clip it.
 
 Conversations and folders are account-local. Folder names are labels, not file
-paths. The three-dot button beside each thread opens **Rename** and **Delete**.
+paths. Hover over a thread or tab to it to reveal the three-dot button for
+**Rename** and **Delete**. On touch-only devices the button is always visible.
 Right-clicking a thread or folder also opens its menu. Rename and Delete use
 in-app dialogs. Batch deletion is confirmed against the exact native selection.
 Deleting a conversation does not remove workspace files.

@@ -83,7 +83,7 @@ function ThreadRow({
     <div
       ref={setNodeRef}
       className={[
-        "group relative flex h-8 w-full items-center rounded-[9px] text-[13px] transition-colors",
+        "thread-row relative flex h-8 w-full items-center rounded-[9px] text-[13px] transition-colors",
         nested ? "pl-2" : "",
         active
           ? "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile"
@@ -112,7 +112,7 @@ function ThreadRow({
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         title="Thread actions"
-        className="mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)] aria-expanded:bg-[var(--wash-hover)]"
+        className="thread-menu-trigger mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)] aria-expanded:bg-[var(--wash-hover)]"
         onClick={(event) => {
           const trigger = event.currentTarget;
           const { right, bottom } = trigger.getBoundingClientRect();

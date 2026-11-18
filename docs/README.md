@@ -17,6 +17,7 @@ must be recorded against the actual source revision and signed installers.
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Encrypted local storage](local-storage.md) | Binary assets, forward migration, OS-protected keys and recovery |
 | [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
+| [0.1.26 release notes](releases/0.1.26.md) | Sidebar thread menus on hover and keyboard focus |
 | [0.1.25 release notes](releases/0.1.25.md) | Windows Qwen verification, chat controls and image error details |
 | [0.1.24 release notes](releases/0.1.24.md) | Internal Retry/Continue, repeated tool calls and image capacity handling |
 | [0.1.15 release notes](releases/0.1.15.md) | First-message recovery, resilient balances and rate-limit guidance |

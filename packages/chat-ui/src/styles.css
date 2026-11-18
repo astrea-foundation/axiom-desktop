@@ -699,6 +699,13 @@ input {
   animation: dot-working 1.8s ease-in-out infinite;
 }
 
+@media (hover: hover) {
+  .thread-row:not(:hover, :has(:focus-visible)) > .thread-menu-trigger[aria-expanded="false"] {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
 .overflow-title {
   display: block;
   min-width: 0;
