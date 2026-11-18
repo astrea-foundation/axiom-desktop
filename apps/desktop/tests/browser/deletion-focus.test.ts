@@ -2146,21 +2146,41 @@ test("right-click menus dismiss outside, on Escape/Tab, scroll, and replacement 
   } finally { await page.close(); }
 });
 
-test("a thread's visible actions button opens the menu without loading the thread", async () => {
+test("thread actions appear on row hover or keyboard focus and stay visible in the open menu", async () => {
   const { page, errors } = await openApp("win32");
   try {
+    await page.evaluate(() => (window as any).__deletionTest.setOrdering([
+      { id: "Existing thread", lastMessageAt: null, folder: "Newer" },
+      { id: "Another thread", lastMessageAt: null, folder: null },
+    ]));
+    const thread = page.locator('[data-thread-id="Existing thread"]');
     const actions = page.getByRole("button", { name: "Actions for Existing thread", exact: true });
+    const otherActions = page.getByRole("button", { name: "Actions for Another thread", exact: true });
     const menu = page.getByRole("menu", { name: "Thread actions" });
-    await actions.waitFor();
-    assert.ok(await actions.evaluate(button => button.checkVisibility({ opacityProperty: true })));
+    const showsActions = () => actions.evaluate(button => button.checkVisibility({ opacityProperty: true }));
+    const outside = page.getByRole("textbox", { name: "Search threads" });
+    await outside.hover();
+    assert.equal(await showsActions(), false);
+    await thread.hover();
+    assert.equal(await showsActions(), true);
+    assert.equal(await otherActions.evaluate(button => button.checkVisibility({ opacityProperty: true })), false);
+    await outside.hover();
+    assert.equal(await showsActions(), false);
+    await thread.hover();
     await actions.click();
     await menu.waitFor();
+    await menu.getByRole("menuitem", { name: "Rename" }).hover();
+    assert.equal(await showsActions(), true);
     assert.equal(await actions.getAttribute("aria-expanded"), "true");
     assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Rename", "Delete"]);
     await actions.click();
     await menu.waitFor({ state: "detached" });
     assert.equal(await actions.getAttribute("aria-expanded"), "false");
-    await actions.focus();
+    await outside.hover();
+    await thread.focus();
+    await page.keyboard.press("Tab");
+    assert.ok(await actions.evaluate(button => button === document.activeElement));
+    assert.equal(await showsActions(), true);
     await page.keyboard.press("Enter");
     await menu.waitFor();
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Rename");
@@ -2172,6 +2192,22 @@ test("a thread's visible actions button opens the menu without loading the threa
     assert.equal(await dialog.getByRole("textbox", { name: "Name" }).inputValue(), "Existing thread");
     assert.deepEqual(await calls(page), []);
     assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("thread actions can be tapped on a device without hover", async () => {
+  const { page } = await openApp();
+  try {
+    const session = await page.context().newCDPSession(page);
+    await session.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await page.waitForFunction(() => matchMedia("(hover: none)").matches);
+    const actions = page.getByRole("button", { name: "Actions for Existing thread" });
+    assert.ok(await actions.evaluate(button => button.checkVisibility({ opacityProperty: true })));
+    const box = (await actions.boundingBox())!;
+    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.getByRole("menu", { name: "Thread actions" }).waitFor();
+    assert.deepEqual(await calls(page), []);
   } finally { await page.close(); }
 });
 
