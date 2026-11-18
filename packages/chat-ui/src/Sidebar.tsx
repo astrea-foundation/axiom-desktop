@@ -13,6 +13,7 @@ import {
 } from "@dnd-kit/core";
 import {
   ChevronDown,
+  EllipsisVertical,
   Folder,
   FolderPlus,
   PanelLeftClose,
@@ -62,14 +63,16 @@ function ThreadRow({
   thread,
   active,
   nested,
+  menuOpen,
   onSelect,
   onOpenMenu,
 }: {
   thread: Thread;
   active: boolean;
   nested?: boolean;
+  menuOpen: boolean;
   onSelect: () => void;
-  onOpenMenu: (target: SidebarMenuTarget) => void;
+  onOpenMenu: (target: SidebarMenuTarget | null) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `thread:${thread.id}`,
@@ -103,6 +106,21 @@ function ThreadRow({
           {thread.status !== "idle" ? <i className={`thread-dot${thread.status === "working" ? " thread-dot-working" : ""}`} /> : null}
         </span>
       </button>
+      <button
+        type="button"
+        aria-label={`Actions for ${thread.title}`}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        title="Thread actions"
+        className="mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)] aria-expanded:bg-[var(--wash-hover)]"
+        onClick={(event) => {
+          const trigger = event.currentTarget;
+          const { right, bottom } = trigger.getBoundingClientRect();
+          onOpenMenu(menuOpen ? null : { kind: "thread", id: thread.id, trigger, x: right, y: bottom, fromMenuButton: true });
+        }}
+      >
+        <EllipsisVertical size={16} aria-hidden="true" />
+      </button>
     </div>
   );
 }
@@ -111,6 +129,7 @@ function FolderBlock({
   folder,
   threads,
   activeThreadId,
+  menuThreadId,
   onToggle,
   onSelectThread,
   onOpenMenu,
@@ -118,9 +137,10 @@ function FolderBlock({
   folder: FolderType;
   threads: Thread[];
   activeThreadId: string | null;
+  menuThreadId?: string;
   onToggle: () => void;
   onSelectThread: (id: string) => void;
-  onOpenMenu: (target: SidebarMenuTarget) => void;
+  onOpenMenu: (target: SidebarMenuTarget | null) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `folder:${folder.id}`,
@@ -164,6 +184,7 @@ function FolderBlock({
                 thread={thread}
                 nested
                 active={thread.id === activeThreadId}
+                menuOpen={thread.id === menuThreadId}
                 onSelect={() => onSelectThread(thread.id)}
                 onOpenMenu={onOpenMenu}
               />
@@ -354,6 +375,7 @@ function SidebarFrame({
   const { isMac = false, fullScreen = false, trafficLightInsetClass: MAC_TRAFFIC_LIGHT_INSET_CLASS = "" } = useChatHost().chrome ?? {};
   const trafficLightInset = isMac && !fullScreen;
   const [menu, setMenu] = useState<SidebarMenuTarget | null>(null);
+  const menuThreadId = menu?.fromMenuButton ? menu.id : undefined;
   const closeMenu = useCallback(() => setMenu(null), []);
   // A menu must never outlive its row (search, deletion, collapse, or account switch).
   useEffect(() => {
@@ -456,6 +478,7 @@ function SidebarFrame({
               folder={folder}
               threads={filtered.filter((thread) => thread.folderId === folder.id)}
               activeThreadId={activeThreadId}
+              menuThreadId={menuThreadId}
               onToggle={() => onToggleFolder(folder.id)}
               onSelectThread={onSelectThread}
               onOpenMenu={setMenu}
@@ -474,6 +497,7 @@ function SidebarFrame({
                 key={thread.id}
                 thread={thread}
                 active={thread.id === activeThreadId && !proxyActive}
+                menuOpen={thread.id === menuThreadId}
                 onSelect={() => onSelectThread(thread.id)}
                 onOpenMenu={setMenu}
               />

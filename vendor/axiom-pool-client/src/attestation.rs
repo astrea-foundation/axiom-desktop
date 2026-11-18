@@ -6,8 +6,12 @@ use axiom_pool_protocol::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -22,9 +26,47 @@ pub struct VerifierConfig {
     fixture_key: Option<ed25519_dalek::VerifyingKey>,
 }
 
+fn verifier_command(binary: &Path) -> Result<Command> {
+    let mut command = Command::new(binary);
+    command.env_clear();
+    #[cfg(windows)]
+    {
+        // Winsock expands %SystemRoot% to load its DNS providers. Ask Windows
+        // for the installation directory instead of inheriting the parent env.
+        let root = known_folders::get_known_folder_path(known_folders::KnownFolder::Windows)
+            .context("Windows installation directory unavailable for verifier")?;
+        command.env("SystemRoot", root);
+    }
+    Ok(command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn isolated_windows_verifier_can_resolve_localhost() {
+        let root =
+            known_folders::get_known_folder_path(known_folders::KnownFolder::Windows).unwrap();
+        let powershell = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let probe = r#"
+            $ErrorActionPreference = 'Stop'
+            if (!$env:SystemRoot -or $env:USERPROFILE) { exit 1 }
+            if (![Net.Dns]::GetHostAddresses('localhost').Length) { exit 2 }
+        "#;
+        let output = verifier_command(&powershell)
+            .unwrap()
+            .args(["-NoProfile", "-NonInteractive", "-Command", probe])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[tokio::test]
     async fn unqualified_evidence_profiles_cannot_become_verified_pool_workers() {
@@ -304,8 +346,7 @@ impl VerifierConfig {
         let input = json!({"evidence":evidence,"context":{"challenge":challenge,"origin":expected.logical_origin,"publisher_key":self.publisher_key,"model_manifest":expected.model_manifest,"now":current,"minimum_policy_sequence":minimum_sequence.max(self.minimum_policy_sequence)},"nvidia":nvidia});
         let raw = serde_json::to_vec(&input)?;
         ensure!(raw.len() <= 8 * 1024 * 1024, "verifier input limit");
-        let mut child = tokio::process::Command::new(&self.binary)
-            .env_clear()
+        let mut child = verifier_command(&self.binary)?
             .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

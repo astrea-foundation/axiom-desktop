@@ -99,7 +99,8 @@ to three tags; the upstream model name moves to the row tooltip. The picker
 measures the window and every ancestor that clips or scrolls, then limits its size
 and slides from its anchor above the model control so it is never cut off in
 Desktop or a browser host; when very little height is left, the whole picker
-scrolls. The browser chat
+scrolls. Opening the picker focuses its search field while preserving the host's
+scroll position. The browser chat
 consumes a vendored `@axiom/chat-ui` package and shows tags only after it is
 re-vendored with this picker.
 

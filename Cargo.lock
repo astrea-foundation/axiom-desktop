@@ -551,6 +551,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures-util",
  "hex",
+ "known-folders",
  "p256 0.14.0",
  "rand 0.9.5",
  "reqwest 0.12.28",
@@ -684,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "axiomcli"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -3393,6 +3394,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb1e621458ca9c51aa110bd0339d4751a056b9576bf1253aee1aa560dda0fc9d"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "known-folders"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

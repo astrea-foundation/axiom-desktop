@@ -6,6 +6,8 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { CopyButton } from "./CopyButton";
 import { DismissibleNotice } from "./DismissibleNotice";
 
+const actionClass = "rounded-md p-1.5 text-[var(--color-text-secondary)] transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-35";
+
 function thoughtLabel(durationMs?: number): string {
   if (durationMs === undefined) return "Thought";
   const seconds = Math.max(1, Math.round(durationMs / 1000));
@@ -56,10 +58,10 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
               <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
               Sending…
             </div>
-          ) : <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          ) : <div className="flex items-center gap-0.5">
             <button
               type="button"
-              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+              className={actionClass}
               aria-label="Edit message"
               disabled={!onRevise || revising}
               onClick={() => { setRevisionDraft(message.content); setRevisionMode("edit"); }}
@@ -69,7 +71,7 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
             </button>
             <button
               type="button"
-              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+              className={actionClass}
               aria-label="Regenerate message"
               disabled={!onRevise || revising}
               onClick={() => setRevisionMode("regenerate")}
@@ -77,6 +79,7 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
             >
               <RotateCcw size={13} />
             </button>
+            <CopyButton text={message.content} label="Copy message" disabled={!message.content} className={actionClass} />
           </div>}
           {revisionControls}
         </div>
@@ -153,14 +156,14 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
               text={replyBody}
               label="Copy"
               disabled={!replyBody || Boolean(terminalFailure)}
-              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)] disabled:cursor-not-allowed disabled:opacity-35"
+              className={actionClass}
             />
             <button
               type="button"
               disabled={!onRevise || isStreaming || revising}
               onClick={() => setRevisionMode("regenerate")}
               title="Regenerate from this message"
-              className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)] disabled:opacity-45"
+              className={actionClass}
               aria-label="Regenerate"
             >
               <RotateCcw size={13} />

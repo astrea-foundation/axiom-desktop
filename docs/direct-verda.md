@@ -8,6 +8,8 @@ ships separate signed ARM64 and x64 runtimes; Windows ARM64 uses the signed x64
 verifier. Packaging validates the complete runtime inventory, executable digest
 and platform signatures before including it. The native client still verifies
 fresh CPU, GPU, workload, key and response evidence before accepting inference.
+On Windows, AxiomCLI supplies the Windows installation directory as `SystemRoot`
+so the isolated verifier can resolve NVIDIA’s attestation service.
 
 The 0.1.21 installer configuration pins policy sequence 22 as its minimum.
 Fresh production qualification verifies generation 15 with that policy, including

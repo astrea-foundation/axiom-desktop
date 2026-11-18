@@ -9,6 +9,7 @@ export interface SidebarMenuTarget {
   x: number;
   y: number;
   trigger: HTMLElement;
+  fromMenuButton?: boolean;
 }
 
 export function contextMenuTrigger(
@@ -49,10 +50,13 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
   useLayoutEffect(() => {
     const menu = ref.current!;
     const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(8, Math.min(target.x, window.innerWidth - rect.width - 8))}px`;
+    const left = target.fromMenuButton ? target.x - rect.width : target.x;
+    menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - rect.width - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(target.y, window.innerHeight - rect.height - 8))}px`;
     menu.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
     const outside = (event: Event) => {
+      // Let the invoking button handle its own toggle on click.
+      if (event.type === "pointerdown" && target.fromMenuButton && target.trigger.contains(event.target as Node)) return;
       if (!menu.contains(event.target as Node)) onClose();
     };
     document.addEventListener("pointerdown", outside, true);

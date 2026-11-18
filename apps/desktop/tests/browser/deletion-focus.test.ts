@@ -2140,9 +2140,38 @@ test("right-click menus dismiss outside, on Escape/Tab, scroll, and replacement 
     await folder.dblclick();
     assert.equal(await page.locator("aside input").count(), 1, "no double-click rename input (only search)");
     assert.equal(await page.getByRole("dialog").count(), 0);
-    assert.equal(await page.getByRole("button", { name: /Open actions for|Delete folder/ }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Delete folder", exact: true }).count(), 0);
     assert.deepEqual(errors, []);
     assert.deepEqual(nativeDialogs, []);
+  } finally { await page.close(); }
+});
+
+test("a thread's visible actions button opens the menu without loading the thread", async () => {
+  const { page, errors } = await openApp("win32");
+  try {
+    const actions = page.getByRole("button", { name: "Actions for Existing thread", exact: true });
+    const menu = page.getByRole("menu", { name: "Thread actions" });
+    await actions.waitFor();
+    assert.ok(await actions.evaluate(button => button.checkVisibility({ opacityProperty: true })));
+    await actions.click();
+    await menu.waitFor();
+    assert.equal(await actions.getAttribute("aria-expanded"), "true");
+    assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Rename", "Delete"]);
+    await actions.click();
+    await menu.waitFor({ state: "detached" });
+    assert.equal(await actions.getAttribute("aria-expanded"), "false");
+    await actions.focus();
+    await page.keyboard.press("Enter");
+    await menu.waitFor();
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Rename");
+    await page.keyboard.press("Escape");
+    assert.ok(await actions.evaluate(button => button === document.activeElement));
+    await actions.click();
+    await menu.getByRole("menuitem", { name: "Rename" }).click();
+    const dialog = page.getByRole("dialog", { name: "Rename thread" });
+    assert.equal(await dialog.getByRole("textbox", { name: "Name" }).inputValue(), "Existing thread");
+    assert.deepEqual(await calls(page), []);
+    assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
 
@@ -3192,6 +3221,7 @@ test("Edit and Regenerate confirm native revisions and disable while a reply is 
     await page.waitForFunction(() => (document.querySelector('button[aria-label="Edit message"]') as HTMLButtonElement)?.disabled);
     assert.equal(await page.getByRole("button", { name: "Edit message", exact: true }).isDisabled(), true);
     assert.equal(await regenerateMessage.isDisabled(), true);
+    assert.ok(await page.getByRole("button", { name: "Copy message", exact: true }).isEnabled());
     assert.equal(await page.getByRole("button", { name: "Regenerate", exact: true }).evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled)), true);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
@@ -3201,6 +3231,7 @@ test("user-message regeneration resends the selected original text or attachment
   const { page, errors } = await openApp("linux", false, [], "medium", true);
   try {
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
     for (const text of ["  Original **request**\n日本語 and trailing spaces  ", ""]) {
       await page.evaluate(({ text, image }) => {
         const attachment = { id: "reference", name: "reference.png", kind: "image", mimeType: "image/png", size: 69,
@@ -3215,6 +3246,19 @@ test("user-message regeneration resends the selected original text or attachment
         ]);
       }, { text, image: tinyPng.toString("base64") });
       const row = page.locator('[data-timeline-kind="user"]').first();
+      const copy = row.getByRole("button", { name: "Copy message", exact: true });
+      await copy.waitFor();
+      await page.mouse.move(1, 1);
+      assert.equal(await copy.isEnabled(), Boolean(text));
+      if (text) {
+        await row.evaluate(element => element.getAnimations({ subtree: true }).forEach(animation => animation.finish()));
+        for (const action of ["Edit message", "Regenerate message", "Copy message"]) {
+          assert.ok(await row.getByRole("button", { name: action }).evaluate(button => button.checkVisibility({ opacityProperty: true })), action);
+        }
+        await copy.click();
+        await row.getByRole("button", { name: "Copied", exact: true }).waitFor();
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+      }
       await row.getByRole("button", { name: "Regenerate message", exact: true }).click();
       assert.equal(await page.getByRole("textbox", { name: "Edited message" }).count(), 0);
       const confirm = row.getByRole("button", { name: "Regenerate from here", exact: true });
@@ -3906,8 +3950,7 @@ test("model picker is never clipped by the window or a clipping container", asyn
     }
     const outside = limits.filter(limit => rect.top < limit.top - 0.5 || rect.left < limit.left - 0.5 || rect.right > limit.right + 0.5 || rect.bottom > limit.bottom + 0.5);
     const scrollable = picker.scrollHeight <= picker.clientHeight + 1 || getComputedStyle(picker).overflowY === "auto";
-      // Focusing the search field can scroll a clipping ancestor. Allow the
-      // scroll/resize observers to finish placing the picker before asserting.
+      // Allow the scroll and resize observers to place the picker after the viewport changes.
       if (outside.length || !scrollable || rect.height <= 60 || rect.width <= 200) return false;
       return { outside, scrollable, height: rect.height, width: rect.width };
     }, undefined, { polling: "raf" });
@@ -3927,6 +3970,7 @@ test("model picker is never clipped by the window or a clipping container", asyn
       const picker = page.getByRole("dialog", { name: "Choose a model" });
       await picker.waitFor();
       const result = await overflow();
+      assert.equal(await picker.getByRole("textbox", { name: "Search models" }).evaluate(input => document.activeElement === input), true);
       assert.deepEqual(result.outside, [], `picker clipped at ${width}x${height} with host top ${hostTop}`);
       assert.equal(result.scrollable, true, `picker content unreachable at ${width}x${height}`);
       assert.ok(result.height > 60 && result.width > 200, `picker collapsed at ${width}x${height}`);
