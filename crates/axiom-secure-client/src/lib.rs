@@ -23,6 +23,7 @@ pub use error::{INSUFFICIENT_CREDIT_MESSAGE, Result, SecureClientError, SecureEr
 pub use http::local_relay_ca_pem;
 pub use near_budget::{NEAR_REQUEST_BUDGET_BYTES, near_request_bytes};
 pub use provider::{ProviderRegistry, SecureProvider, VerifiedSession};
+pub use providers::direct::MODEL as ASTREAAI_QWEN_MODEL;
 pub use providers::images::GeneratedImage;
 pub use providers::pool::{PoolClientConfig, PoolOffering};
 pub use security::{EvidenceCheck, EvidenceClaim, SecurityEvidence, SecurityState, TrustPolicy};

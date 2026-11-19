@@ -23,7 +23,8 @@ export function AccountScreen({ title, onClose, wide = false, children }: {
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }
-      if (event.key === "Escape") { event.preventDefault(); close(); }
+      // An open dialog owns Escape, even after its focused control is disabled.
+      if (event.key === "Escape" && !document.querySelector("dialog[open]")) { event.preventDefault(); close(); }
     };
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("keydown", onKey); if (previous?.isConnected) previous.focus({ preventScroll: true }); };

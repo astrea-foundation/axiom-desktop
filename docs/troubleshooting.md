@@ -90,7 +90,7 @@ be saved. Repeating the same oversized request does not resolve the limit.
 
 ## Completely reset local data
 
-Reinstalling keeps Axiom's account data. To erase it, open **Settings → Account →
+Reinstalling keeps Axiom's account data. To erase it, open **Settings → Chats →
 Factory reset Axiom…**, type `RESET`, and choose **Delete everything and restart**.
 The control works while signed out or disconnected. Close other AxiomCLI windows
 first. See [configuration](configuration.md#paths-and-local-state) for the full

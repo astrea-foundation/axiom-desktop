@@ -17,8 +17,11 @@ API chat catalog and fixed attested router. Prices, limits, reasoning controls a
 capabilities refresh together. The [native catalog parser](../crates/axiom-secure-client/src/catalog.rs)
 validates the offered contract before use.
 
-Desktop refreshes on startup, every five minutes and on window focus. TUI refreshes
-when opening its model picker, and native inference obtains the current catalog.
+Desktop refreshes on startup, every 45 seconds while visible and on window
+focus. TUI refreshes when opening its model picker. Native turn planning reuses
+a catalog fetched within the last minute for the current client. Dispatch uses
+the model resolved for that turn and the backend validates current admission.
+A typed worker change refreshes discovery and attestation before retrying.
 The native cache allows up to 30 minutes after transient transport errors; auth,
 invalid metadata and withdrawals do not authorize fallback. A loaded conversation whose selection
 is withdrawn stays unavailable until the user chooses another model. New-session

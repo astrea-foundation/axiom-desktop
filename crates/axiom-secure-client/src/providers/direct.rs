@@ -42,6 +42,9 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
             false,
         );
     }
+    if let Some(capacity) = error.downcast_ref::<axiom_pool_client::TrialCapacity>() {
+        return SecureClientError::trial_capacity(capacity.retry_at);
+    }
     if let Some(capacity) = error.downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>() {
         let detail = match capacity {
             axiom_pool_client::direct::CapacityUnavailable::Preparation => {
@@ -442,6 +445,9 @@ impl Drop for DirectProvider {
 }
 impl DirectProvider {
     fn keep_warm(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         if !self.config.direct.as_ref().is_some_and(|cfg| cfg.tools)
             || self
                 .warm_started
@@ -451,9 +457,8 @@ impl DirectProvider {
         }
         let weak = Arc::downgrade(&self.client);
         let cancel = self.warm_cancel.clone();
-        tokio::spawn(async move {
+        runtime.spawn(async move {
             loop {
-                tokio::select! {()=cancel.cancelled()=>break,()=tokio::time::sleep(std::time::Duration::from_secs(20))=>{}}
                 let Some(client) = weak.upgrade() else {
                     break;
                 };
@@ -462,6 +467,11 @@ impl DirectProvider {
                         break;
                     }
                     tracing::warn!(detail=%error,"direct background verification renewal failed");
+                }
+                drop(client);
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    () = tokio::time::sleep(std::time::Duration::from_secs(20)) => {}
                 }
             }
         });
@@ -472,16 +482,7 @@ impl DirectProvider {
         policy: &TrustPolicy,
         cancel: &CancellationToken,
     ) -> Result<axiom_inference::ImageRuntimePolicy> {
-        let cfg = self
-            .config
-            .direct
-            .as_ref()
-            .ok_or_else(|| SecureClientError::configuration("direct installation missing"))?;
-        if !cfg.image_generation || !cfg.tools || !cfg.vision {
-            return Err(SecureClientError::capability(
-                "Image generation is not enabled by this installed Direct configuration",
-            ));
-        }
+        let runtime = installed_image_policy(&self.config)?;
         if !policy.is_valid_at(now())
             || !policy.require_nvidia_verified
             || !policy.require_model_binding
@@ -510,8 +511,6 @@ impl DirectProvider {
                 "signed release does not support image generation tools",
             ));
         }
-        let runtime = direct_image_runtime();
-        runtime.validate().map_err(SecureClientError::capability)?;
         Ok(runtime)
     }
     async fn generate(
@@ -737,6 +736,23 @@ fn image_progress(
     Ok(Some(update))
 }
 
+pub(crate) fn installed_image_policy(
+    config: &SecureClientConfig,
+) -> Result<axiom_inference::ImageRuntimePolicy> {
+    let cfg = config
+        .direct
+        .as_ref()
+        .ok_or_else(|| SecureClientError::configuration("direct installation missing"))?;
+    if !cfg.image_generation || !cfg.tools || !cfg.vision {
+        return Err(SecureClientError::capability(
+            "Image generation is not enabled by this installed Direct configuration",
+        ));
+    }
+    let runtime = direct_image_runtime();
+    runtime.validate().map_err(SecureClientError::capability)?;
+    Ok(runtime)
+}
+
 fn direct_image_runtime() -> axiom_inference::ImageRuntimePolicy {
     let mut runtime = axiom_inference::ImageRuntimePolicy::default();
     runtime.image.default_aspect_ratio = "1:1".into();
@@ -749,6 +765,10 @@ fn direct_image_runtime() -> axiom_inference::ImageRuntimePolicy {
 impl sealed::Provider for DirectProvider {}
 #[async_trait]
 impl SecureProvider for DirectProvider {
+    fn prewarm_image(&self) {
+        self.keep_warm();
+    }
+
     async fn invalidate(&self, _model: &str) {
         self.client.invalidate().await;
     }

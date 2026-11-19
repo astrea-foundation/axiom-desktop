@@ -67,7 +67,7 @@ configuration, identity, vault credentials, trust policy and workspace files are
 separate. Reset is destructive for the selected local history; it does not
 reset a hosted account or payment ledger.
 
-For a complete clean install, use **Settings → Account → Factory reset Axiom…**
+For a complete clean install, use **Settings → Chats → Factory reset Axiom…**
 and type `RESET`. The equivalent offline recovery command, after quitting Desktop,
 CLI and proxy processes, is:
 

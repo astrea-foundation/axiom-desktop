@@ -74,7 +74,7 @@ after the account is ready. Dismissing it, reloading a window, changing accounts
 updating Axiom or relaunching cannot show it again. Leaving it open also limits
 it to its first session. A fresh profile or factory reset resets this preference.
 
-Open **Settings → Account → Factory reset Axiom…** to start fresh on this
+Open **Settings → Chats → Factory reset Axiom…** to start fresh on this
 computer. The control is also available while signed out or disconnected. Type
 `RESET` and confirm to stop active work, delete local chats and managed files,
 settings, cached app data, and saved Axiom/MCP credentials, then restart for a
@@ -85,8 +85,15 @@ windows first. See [recovery and deletion scope](troubleshooting.md#completely-r
 The Account pane keeps the avatar, name, email and current status together in a
 compact column. Linked sign-in methods have their own row. **Manage account**
 opens the hosted account app; **Sign out** stays available as a separate action.
-Factory reset is below the identity card. Settings tabs keep keyboard focus
-inside their selected shape so the scrolling navigation does not clip it.
+Settings tabs keep keyboard focus inside their selected shape so the scrolling
+navigation does not clip it.
+
+**Settings → Chats → Clear all chats…** permanently deletes every chat listed
+for the signed-in account on this computer after an in-app confirmation that
+shows the count. Active responses stop first. Folders, settings, sign-ins and
+workspace files are kept. It requires a connected, signed-in account; deletion
+runs in native-limited batches, and a failure reports how many chats were
+deleted. Factory reset sits below it on the same page.
 
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Hover over a thread or tab to it to reveal the three-dot button for
@@ -99,9 +106,11 @@ concurrent assistant streams do not continually reorder the list. `lastMessageAt
 remains message activity metadata. Folder ordering derives from its member threads.
 
 New threads immediately show a short label from the first prompt. One background
-request to the selected model replaces that label with a generated title. This
-uses the same attested provider-E2EE path as chat and records its normal model
-charge as title usage, separately from conversation context usage. Reasoning is
+request to the selected model replaces that label with a generated title.
+AstreaAI’s Qwen3.8 Uncensored starts this request after the first reply finishes
+to give the conversation priority on the worker. Title generation uses the same
+attested provider-E2EE path as chat and records its normal model charge as
+title usage, separately from conversation context usage. Reasoning is
 disabled when supported; otherwise the request uses the lowest supported effort
 and allows room for reasoning. Title requests use only bounded first-prompt text,
 without tools or attachments, and time out after 60 seconds. Failed or empty
@@ -535,24 +544,19 @@ the gateway route, the attested NEAR gateway's key, TLS key and workload.
 Reports renew automatically for the selected model while the window is active,
 visible and online. Renewal starts up to thirty seconds before expiry, capped
 at half the report lifetime for short leases, with a minimum one-second margin.
-Missing or expired reports refresh on opening an active thread or returning
-from idle. One refresh
-runs at a time; failures retry with backoff from thirty seconds to five minutes.
-Verification waits for an active reply to finish and for a disconnected thread
-to synchronize. An outdated TEE still requires explicit user consent; automatic
+The selected model warms when the composer opens or the selection changes,
+including on the welcome screen before a thread exists. The native cache
+shares checks for the same model and renews NEAR and Tinfoil early. Failures
+retry with backoff from thirty seconds to five minutes. An outdated TEE still
+requires explicit user consent. Automatic
 refresh never accepts that warning. Manual **Refresh** remains available.
-Automatic renewal reuses the native provider's still-fresh, model-bound proof
-and pinned connection. It does not force a new hardware appraisal or discard
-the image service's prepared session. A valid badge remains visible while that
-renewal is pending; actual hard expiry still changes its status. Explicit
-**Refresh** requests new attestation. Cached warmup reports can populate newly
-loaded idle threads, while account, runtime and model changes fence late results.
-
-Editing a nonempty message while signed in also starts verification for the
-selected model, including on the welcome screen before a thread exists. Only the
-model ID crosses the verification IPC boundary; draft text is never sent as part
-of this check. Valid reports and in-flight checks are reused. Enter waits for
-that work, and native inference checks freshness before sending model messages.
+Only the model ID crosses the verification IPC boundary. Send proceeds through
+native inference using still-valid evidence or shares an in-progress check on a
+cold path. A valid badge remains visible during renewal until its hard expiry.
+Explicit **Refresh** requests new attestation. Cached warmup reports can populate
+newly loaded idle threads, with account, runtime and model fences on late results.
+The installed AstreaAI image service warms independently. Native image dispatch
+requires fresh evidence and authorization for the actual worker.
 
 After thirty minutes without user interaction or a running reply, the badge
 shows neutral **Idle** and automatic renewal pauses. Activity or returning to the

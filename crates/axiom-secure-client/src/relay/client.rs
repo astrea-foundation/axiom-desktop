@@ -42,11 +42,10 @@ impl<'a> RelayClient<'a> {
             }
         }
         let endpoint = relay_endpoint(&self.config.relay_base_url, "/api/v1/relay/recovery")?;
-        let client =
-            relay_client(self.config, &endpoint, std::time::Duration::from_secs(10)).await?;
+        let client = relay_client(self.config, &endpoint).await?;
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
-            result = client.post(endpoint).bearer_auth(self.credential.expose())
+            result = client.post(endpoint).timeout(std::time::Duration::from_secs(10)).bearer_auth(self.credential.expose())
                 .json(&serde_json::json!({"previous_request_id":previous,"request_id":successor})).send() =>
                 result.map_err(|_| SecureClientError::new(axiom_inference::ProviderFailureKind::Transient, "Response recovery is unavailable."))?,
         };
@@ -85,11 +84,10 @@ impl<'a> RelayClient<'a> {
             ));
         }
         let endpoint = relay_endpoint(&self.config.relay_base_url, "/api/v1/usage/requests")?;
-        let client =
-            relay_client(self.config, &endpoint, std::time::Duration::from_secs(10)).await?;
+        let client = relay_client(self.config, &endpoint).await?;
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
-            response = client.post(endpoint).bearer_auth(self.credential.expose()).json(&serde_json::json!({"request_ids":request_ids})).send() =>
+            response = client.post(endpoint).timeout(std::time::Duration::from_secs(10)).bearer_auth(self.credential.expose()).json(&serde_json::json!({"request_ids":request_ids})).send() =>
                 response.map_err(|_| SecureClientError::new(axiom_inference::ProviderFailureKind::Transient, "Accounting recovery is unavailable."))?,
         };
         if response.status() != StatusCode::OK {
@@ -225,11 +223,12 @@ impl<'a> RelayClient<'a> {
         endpoint
             .query_pairs_mut()
             .extend_pairs(query.iter().copied());
-        let client = relay_client(self.config, &endpoint, self.config.attestation_timeout).await?;
+        let client = relay_client(self.config, &endpoint).await?;
         let response = tokio::select! {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             response = client
                 .get(endpoint)
+                .timeout(self.config.attestation_timeout)
                 .header(header::ACCEPT, "application/json")
                 .bearer_auth(self.credential.expose())
                 .send() => response.map_err(|_| SecureClientError::new(
@@ -267,21 +266,17 @@ impl<'a> RelayClient<'a> {
                 "/api/v1/relay/chat/completions"
             },
         )?;
-        let client = relay_client(
-            self.config,
-            &endpoint,
-            if request.stream {
-                None
-            } else {
-                Some(std::time::Duration::from_secs(360))
-            },
-        )
-        .await?;
+        let client = relay_client(self.config, &endpoint).await?;
+        let http_request = client.post(endpoint);
+        let http_request = if request.stream {
+            http_request
+        } else {
+            http_request.timeout(std::time::Duration::from_secs(360))
+        };
         let response = tokio::select! {
             () = tokio::time::sleep(std::time::Duration::from_secs(300)) => return Err(SecureClientError::with_code(axiom_inference::ProviderFailureKind::Transient, crate::SecureErrorCode::StreamTimeout, "Timed out starting the encrypted request.", true)),
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
-            response = client
-                .post(endpoint)
+            response = http_request
                 .header(header::ACCEPT, if request.stream {
                     "text/event-stream"
                 } else {

@@ -1188,6 +1188,7 @@ async fn prompt_with_invocation(
     };
 
     let title_cancellation = CancellationToken::new();
+    let mut reply_finished = None;
     if should_generate_title
         && let Some(title_store) = ctx_store.as_ref()
     {
@@ -1201,7 +1202,8 @@ async fn prompt_with_invocation(
                 if let Err(error) = account_store.publish(|| publish_title(&connection, &session_id, &account_store.store, &internal_id)) {
                     tracing::debug!(%error, "could not publish initial title");
                 }
-                if let Some(job) = job {
+                if let Some(mut job) = job {
+                    reply_finished = job.defer_until_first_reply();
                     let title_runner = ctx_runner.clone();
                     let title_connection = connection.clone();
                     let title_session = session_id.clone();
@@ -1433,6 +1435,9 @@ async fn prompt_with_invocation(
             .await;
         } else {
             release_session_work(&task_sessions, &internal_id, &work).await;
+        }
+        if matches!(task_result, Ok(protocol::StopReason::EndTurn)) && let Some(finished) = reply_finished {
+            let _ = finished.send(());
         }
         responder.respond_with_result(
             task_result.map(protocol::PromptResponse::new),

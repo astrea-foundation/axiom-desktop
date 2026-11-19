@@ -4,12 +4,13 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, anyhow, bail};
 use base64::{Engine, engine::general_purpose};
 use dcap_qvl::{
+    QuoteCollateralV3,
     collateral::CollateralClient,
     http::{HttpClient, HttpResponse},
 };
@@ -22,6 +23,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use x509_parser::prelude::*;
@@ -58,6 +60,8 @@ struct AttestationReport {
     model_name: Option<String>,
     #[serde(default)]
     intel_quote: Option<String>,
+    #[serde(default)]
+    intel_collateral: Option<BundledIntelCollateral>,
     #[serde(default, deserialize_with = "deserialize_json_object")]
     nvidia_payload: Option<Value>,
     #[serde(default)]
@@ -137,6 +141,63 @@ struct IntelEvidence {
     advisory_ids: Vec<String>,
     mr_td: String,
     compose_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct BundledIntelCollateral {
+    pck_crl_issuer_chain: String,
+    root_ca_crl: String,
+    pck_crl: String,
+    tcb_info_issuer_chain: String,
+    tcb_info: String,
+    tcb_info_signature: String,
+    qe_identity_issuer_chain: String,
+    qe_identity: String,
+    qe_identity_signature: String,
+    pck_certificate_chain: Option<String>,
+}
+
+impl BundledIntelCollateral {
+    fn decode(&self, limit: usize) -> Result<QuoteCollateralV3> {
+        let fields = [
+            self.pck_crl_issuer_chain.as_str(),
+            &self.root_ca_crl,
+            &self.pck_crl,
+            &self.tcb_info_issuer_chain,
+            &self.tcb_info,
+            &self.tcb_info_signature,
+            &self.qe_identity_issuer_chain,
+            &self.qe_identity,
+            &self.qe_identity_signature,
+            self.pck_certificate_chain.as_deref().unwrap_or_default(),
+        ];
+        if fields
+            .iter()
+            .fold(0_usize, |sum, value| sum.saturating_add(value.len()))
+            > limit
+        {
+            return Err(SecureClientError::attestation(
+                "Intel collateral exceeds its configured bound",
+            ));
+        }
+        let bytes = |value: &str| {
+            hex::decode(value).map_err(|_| {
+                SecureClientError::attestation("Intel collateral contains invalid hex")
+            })
+        };
+        Ok(QuoteCollateralV3 {
+            pck_crl_issuer_chain: self.pck_crl_issuer_chain.clone(),
+            root_ca_crl: bytes(&self.root_ca_crl)?,
+            pck_crl: bytes(&self.pck_crl)?,
+            tcb_info_issuer_chain: self.tcb_info_issuer_chain.clone(),
+            tcb_info: self.tcb_info.clone(),
+            tcb_info_signature: bytes(&self.tcb_info_signature)?,
+            qe_identity_issuer_chain: self.qe_identity_issuer_chain.clone(),
+            qe_identity: self.qe_identity.clone(),
+            qe_identity_signature: bytes(&self.qe_identity_signature)?,
+            pck_certificate_chain: self.pck_certificate_chain.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -224,6 +285,7 @@ async fn verify_worker(
     nonce: &[u8; 32],
     policy: &TrustPolicy,
     config: &SecureClientConfig,
+    signing_keys: &NvidiaSigningKeys,
     cancellation: &CancellationToken,
 ) -> Result<VerifiedWorker> {
     let key = report.model_key()?;
@@ -248,8 +310,8 @@ async fn verify_worker(
     let (intel, ()) = tokio::select! {
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
         result = async { tokio::try_join!(
-            verify_intel(&quote, key.as_bytes(), &tls_fingerprint, nonce, &manifest, config),
-            verify_nvidia(payload, nonce, config, &policy.nvidia_anchor_sha256),
+            verify_intel(&quote, key.as_bytes(), &tls_fingerprint, nonce, &manifest, report.intel_collateral.as_ref(), config),
+            verify_nvidia(payload, nonce, config, &policy.nvidia_anchor_sha256, signing_keys),
         ) } => result?,
     };
     let outdated_accepted = accept_intel_status(&intel.status, policy, config).inspect_err(|_| {
@@ -313,6 +375,7 @@ pub(crate) async fn verify_model(
     credential: &crate::ApiCredential,
     model: &axiom_inference::ModelInfo,
     policy: &TrustPolicy,
+    signing_keys: &NvidiaSigningKeys,
     cancellation: &CancellationToken,
 ) -> Result<(
     VerifiedNearAttestation,
@@ -388,6 +451,7 @@ pub(crate) async fn verify_model(
                 &gateway.tls_fingerprint,
                 &nonce,
                 &gateway.manifest,
+                gateway.intel_collateral.as_ref(),
                 config,
             )
             .await
@@ -399,7 +463,7 @@ pub(crate) async fn verify_model(
         () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
         result = async {
             tokio::try_join!(
-                verify_worker(&reports[0], &nonce, policy, config, cancellation),
+                verify_worker(&reports[0], &nonce, policy, config, signing_keys, cancellation),
                 gateway_intel,
             )
         } => result?,
@@ -457,7 +521,8 @@ pub(crate) async fn verify_model(
         for (index, report) in reports.iter().enumerate().skip(1) {
             // Every supplied same-key environment must pass the complete native
             // verifier before any accepted material enters the session cache.
-            let peer = verify_worker(report, &nonce, policy, config, cancellation).await?;
+            let peer =
+                verify_worker(report, &nonce, policy, config, signing_keys, cancellation).await?;
             add_replica_evidence(&mut evidence, index + 1, &peer);
             manifests.push(serde_json::json!({
                 "tls_spki_sha256": hex::encode(peer.tls_fingerprint),
@@ -592,16 +657,45 @@ async fn verify_intel(
     tls_fingerprint: &[u8; 32],
     nonce: &[u8; 32],
     workload_manifest: &str,
+    bundled: Option<&BundledIntelCollateral>,
     config: &SecureClientConfig,
 ) -> Result<IntelEvidence> {
-    let http = BoundedCollateralHttp::new(
-        config.attestation_timeout,
-        config.limits.intel_collateral_bytes,
-    );
-    let client = CollateralClient::<dcap_qvl::configs::DefaultConfig, _>::new(http, INTEL_PCCS);
-    let verified = client.fetch_and_verify(quote).await.map_err(|_| {
-        SecureClientError::attestation("Intel TDX quote or collateral verification failed")
-    })?;
+    let error =
+        |_| SecureClientError::attestation("Intel TDX quote or collateral verification failed");
+    let collateral = if let Some(bundled) = bundled {
+        let mut collateral = bundled.decode(config.limits.intel_collateral_bytes)?;
+        let certification_type = dcap_qvl::quote::Quote::parse(quote)
+            .map_err(error)?
+            .inner_cert_type();
+        match certification_type {
+            // Select the embedded PCK chain for the same identity as the
+            // online verifier. Older relays omit external PCK chains.
+            5 => {
+                collateral.pck_certificate_chain = None;
+                Some(collateral)
+            }
+            2 | 3 if collateral.pck_certificate_chain.is_none() => None,
+            _ => Some(collateral),
+        }
+    } else {
+        None
+    };
+    let verified = if let Some(collateral) = collateral {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| SecureClientError::attestation("system time is invalid"))?
+            .as_secs();
+        dcap_qvl::verify::verify_with::<dcap_qvl::configs::DefaultConfig>(quote, &collateral, now)
+            .map_err(error)?
+    } else {
+        // Older reports can omit collateral or a required external PCK chain.
+        let http = BoundedCollateralHttp::new(
+            config.attestation_timeout,
+            config.limits.intel_collateral_bytes,
+        );
+        let client = CollateralClient::<dcap_qvl::configs::DefaultConfig, _>::new(http, INTEL_PCCS);
+        client.fetch_and_verify(quote).await.map_err(error)?
+    };
     let td = verified.report.as_td10().ok_or_else(|| {
         SecureClientError::attestation("Intel quote does not contain a supported TDX report")
     })?;
@@ -658,6 +752,7 @@ async fn verify_nvidia(
     expected_nonce: &[u8; 32],
     config: &SecureClientConfig,
     approved_anchor_sha256: &[String],
+    signing_keys: &NvidiaSigningKeys,
 ) -> Result<()> {
     let payload_bytes = serde_json::to_vec(payload)
         .map_err(|_| SecureClientError::attestation("NVIDIA evidence is invalid"))?;
@@ -714,20 +809,15 @@ async fn verify_nvidia(
         ));
     }
 
-    let jwks_url = Url::parse(NVIDIA_JWKS).expect("static NVIDIA JWKS URL is valid");
-    let jwks_response = http
-        .get(jwks_url)
-        .header("accept", "application/json")
-        .send()
-        .await
-        .map_err(|_| SecureClientError::attestation("NVIDIA JWKS request failed"))?;
-    if jwks_response.status() != StatusCode::OK {
-        return Err(SecureClientError::attestation(
-            "NVIDIA JWKS request was rejected",
-        ));
-    }
-    let jwks = bounded_body(jwks_response, config.limits.nvidia_jwks_bytes).await?;
-    verify_nvidia_jwt(jwt, &jwks, &expected_nonce_hex, approved_anchor_sha256)
+    let encoded_header = jwt
+        .split_once('.')
+        .map(|(header, _)| header)
+        .ok_or_else(|| SecureClientError::attestation("NVIDIA verdict JWT is malformed"))?;
+    let header: JwsHeader = decode_jws_json(encoded_header, "NVIDIA JWT header is invalid")?;
+    let jwks = signing_keys
+        .get(&http, &header.kid, config.limits.nvidia_jwks_bytes)
+        .await?;
+    verify_nvidia_jwt_with_keys(jwt, &jwks, &expected_nonce_hex, approved_anchor_sha256)
 }
 
 #[derive(Deserialize)]
@@ -747,10 +837,61 @@ struct Jwk {
     x5c: Option<Vec<String>>,
 }
 
+#[derive(Default)]
+pub(crate) struct NvidiaSigningKeys {
+    cache: Mutex<Option<(Instant, Arc<Jwks>)>>,
+}
+
+impl NvidiaSigningKeys {
+    async fn get(&self, http: &reqwest::Client, kid: &str, limit: usize) -> Result<Arc<Jwks>> {
+        let mut cache = self.cache.lock().await;
+        if let Some((fetched_at, keys)) = cache.as_ref()
+            && fetched_at.elapsed() < Duration::from_secs(300)
+            && keys.keys.iter().any(|key| key.kid.as_deref() == Some(kid))
+        {
+            return Ok(Arc::clone(keys));
+        }
+        let response = http
+            .get(NVIDIA_JWKS)
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(|_| SecureClientError::attestation("NVIDIA JWKS request failed"))?;
+        if response.status() != StatusCode::OK {
+            return Err(SecureClientError::attestation(
+                "NVIDIA JWKS request was rejected",
+            ));
+        }
+        let keys = Arc::new(parse_nvidia_jwks(&bounded_body(response, limit).await?)?);
+        *cache = Some((Instant::now(), Arc::clone(&keys)));
+        Ok(keys)
+    }
+}
+
+fn parse_nvidia_jwks(bytes: &[u8]) -> Result<Jwks> {
+    serde_json::from_slice(bytes)
+        .map_err(|_| SecureClientError::attestation("NVIDIA JWKS is invalid"))
+}
+
+#[cfg(test)]
 fn verify_nvidia_jwt(
     jwt: &str,
     jwks_json: &[u8],
-    expected_nonce: &str,
+    expected_nonce_hex: &str,
+    approved_anchor_sha256: &[String],
+) -> Result<()> {
+    verify_nvidia_jwt_with_keys(
+        jwt,
+        &parse_nvidia_jwks(jwks_json)?,
+        expected_nonce_hex,
+        approved_anchor_sha256,
+    )
+}
+
+fn verify_nvidia_jwt_with_keys(
+    jwt: &str,
+    jwks: &Jwks,
+    expected_nonce_hex: &str,
     approved_anchor_sha256: &[String],
 ) -> Result<()> {
     let parts: Vec<_> = jwt.split('.').collect();
@@ -765,8 +906,6 @@ fn verify_nvidia_jwt(
             "NVIDIA verdict uses an unsupported signing algorithm",
         ));
     }
-    let jwks: Jwks = serde_json::from_slice(jwks_json)
-        .map_err(|_| SecureClientError::attestation("NVIDIA JWKS is invalid"))?;
     let chain = jwks
         .keys
         .iter()
@@ -830,7 +969,7 @@ fn verify_nvidia_jwt(
     if payload
         .get("eat_nonce")
         .and_then(Value::as_str)
-        .is_none_or(|nonce| !nonce.eq_ignore_ascii_case(expected_nonce))
+        .is_none_or(|nonce| !nonce.eq_ignore_ascii_case(expected_nonce_hex))
     {
         return Err(SecureClientError::attestation(
             "NVIDIA verdict nonce does not match the challenge",
@@ -914,6 +1053,7 @@ struct GatewayEvidence {
     key: Ed25519PublicKey,
     tls_fingerprint: [u8; 32],
     quote: Vec<u8>,
+    intel_collateral: Option<BundledIntelCollateral>,
     manifest: String,
 }
 
@@ -924,6 +1064,7 @@ struct GatewayWire {
     nonce: String,
     tls_fingerprint: String,
     intel_quote: String,
+    intel_collateral: Option<BundledIntelCollateral>,
     app_compose: String,
 }
 
@@ -977,6 +1118,7 @@ fn parse_gateway_evidence(
         key,
         tls_fingerprint,
         quote,
+        intel_collateral: wire.intel_collateral,
         manifest: wire.app_compose,
     }))
 }
@@ -1250,6 +1392,53 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn a_malformed_bundled_intel_input_is_rejected_locally() {
+        let bundle: BundledIntelCollateral = serde_json::from_value(serde_json::json!({
+            "pck_crl_issuer_chain": "", "root_ca_crl": "invalid", "pck_crl": "00",
+            "tcb_info_issuer_chain": "", "tcb_info": "{}", "tcb_info_signature": "00",
+            "qe_identity_issuer_chain": "", "qe_identity": "{}", "qe_identity_signature": "00"
+        }))
+        .unwrap();
+        let config = SecureClientConfig::new("https://relay.example").unwrap();
+        let check = |bundle| {
+            verify_intel(
+                &[0],
+                &[1],
+                &[2; 32],
+                &[3; 32],
+                "manifest",
+                Some(bundle),
+                &config,
+            )
+        };
+        assert!(
+            check(&bundle)
+                .await
+                .unwrap_err()
+                .safe_detail()
+                .contains("invalid hex")
+        );
+        let malformed_der = BundledIntelCollateral {
+            root_ca_crl: "00".into(),
+            ..bundle.clone()
+        };
+        assert_eq!(
+            check(&malformed_der).await.unwrap_err().safe_detail(),
+            "Intel TDX quote or collateral verification failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn nvidia_signing_key_cache_reuses_the_recent_key_set() {
+        let keys = Arc::new(parse_nvidia_jwks(br#"{"keys":[{"kid":"current"}]}"#).unwrap());
+        let cache = NvidiaSigningKeys::default();
+        *cache.cache.lock().await = Some((Instant::now(), Arc::clone(&keys)));
+        let http = reqwest::Client::new();
+        let selected = cache.get(&http, "current", 1024).await.unwrap();
+        assert!(Arc::ptr_eq(&selected, &keys));
+    }
+
     fn report() -> AttestationReport {
         AttestationReport {
             signing_algo: Some("ed25519".into()),
@@ -1265,6 +1454,7 @@ mod tests {
             tls_cert_fingerprint: None,
             model_name: Some("model/a".into()),
             intel_quote: Some("00".into()),
+            intel_collateral: None,
             nvidia_payload: Some(serde_json::json!({"nonce": "11".repeat(32)})),
             app_compose: Some("services: {}".into()),
             info: None,
@@ -1396,6 +1586,7 @@ mod tests {
             &[0x11; 32],
             &policy,
             &config,
+            &NvidiaSigningKeys::default(),
             &CancellationToken::new(),
         )
         .await
@@ -1453,10 +1644,16 @@ mod tests {
                 continue;
             }
             validate_report_identity(&report, &nonce, model, "ed25519").unwrap();
-            let worker =
-                verify_worker(&report, &nonce, &policy, &config, &CancellationToken::new())
-                    .await
-                    .unwrap();
+            let worker = verify_worker(
+                &report,
+                &nonce,
+                &policy,
+                &config,
+                &NvidiaSigningKeys::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
             assert!(!worker.outdated_accepted);
             println!(
                 "worker {}: Intel {}, NVIDIA verified, manifest {}",
@@ -1472,6 +1669,7 @@ mod tests {
                     &nonce,
                     &policy,
                     &config,
+                    &NvidiaSigningKeys::default(),
                     &CancellationToken::new(),
                 )
                 .await
@@ -1494,6 +1692,7 @@ mod tests {
             &decode_hex_32(gateway.tls_fingerprint().unwrap(), "gateway TLS").unwrap(),
             &nonce,
             &gateway.workload_manifest().unwrap(),
+            gateway.intel_collateral.as_ref(),
             &config,
         )
         .await
@@ -1902,6 +2101,7 @@ mod tests {
             &credential,
             &model,
             &TrustPolicy::default(),
+            &NvidiaSigningKeys::default(),
             &CancellationToken::new(),
         ))
         .await

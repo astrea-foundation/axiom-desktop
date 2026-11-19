@@ -101,9 +101,11 @@ Submitting an ordinary prompt remembers its model and thinking level as defaults
 for future chats. Resume restores the selected transcript's durable settings;
 a model selection that never ran does not become the resumed prompt's model.
 In the TUI, a short local label appears immediately, followed by one background
-title request to the selected model through attested provider E2EE. Its normal
-model charge is recorded as title usage. Failures retain the local label; manual
-renames and existing named threads are preserved. Title requests omit tools and
+title request to the selected model through attested provider E2EE. AstreaAI’s
+Qwen3.8 Uncensored starts that request after its first successful reply. The
+model charge is recorded as title usage. A failed request leaves the local
+label in place. Manual renames take precedence. Title generation only runs on
+new threads. Title requests omit tools and
 attachments, use bounded first-prompt text and stop after 60 seconds. Headless
 commands retain local labels. A model's reasoning choices and
 context capacity come from validated catalog metadata, not its name.

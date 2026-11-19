@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, io::Read as _, net::SocketAddr, time::Duration};
+use std::{
+    collections::BTreeSet,
+    io::Read as _,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use futures_util::StreamExt;
 use reqwest::{Client, Response, redirect::Policy};
@@ -46,11 +51,16 @@ fn read_local_ca(origin: &Url, path: Option<&std::path::Path>) -> Result<Option<
     Ok(Some(pem))
 }
 
-pub(crate) async fn relay_client(
-    config: &SecureClientConfig,
-    url: &Url,
-    timeout: impl Into<Option<Duration>>,
-) -> Result<Client> {
+#[derive(Debug)]
+pub(crate) struct RelayTransport {
+    origin: url::Origin,
+    policy: EndpointPolicy,
+    ca: Option<Vec<u8>>,
+    resolved_at: Instant,
+    http: Client,
+}
+
+pub(crate) async fn relay_client(config: &SecureClientConfig, url: &Url) -> Result<Client> {
     if url.origin() != config.relay_base_url.origin() {
         return Err(SecureClientError::configuration("relay origin changed"));
     }
@@ -59,7 +69,25 @@ pub(crate) async fn relay_client(
         policy.reject_local_addresses = false;
     }
     let ca = local_relay_ca_pem(&config.relay_base_url)?;
-    pinned_client_inner(url, &policy, timeout, false, ca.as_deref()).await
+    let origin = url.origin();
+    let mut transport = config.relay_transport.lock().await;
+    if let Some(cached) = transport.as_ref()
+        && cached.origin == origin
+        && cached.policy == policy
+        && cached.ca == ca
+        && cached.resolved_at.elapsed() < Duration::from_secs(300)
+    {
+        return Ok(cached.http.clone());
+    }
+    let http = pinned_client_inner(url, &policy, None, false, ca.as_deref()).await?;
+    *transport = Some(RelayTransport {
+        origin,
+        policy,
+        ca,
+        resolved_at: Instant::now(),
+        http: http.clone(),
+    });
+    Ok(http)
 }
 
 pub(crate) async fn pinned_client(
@@ -215,7 +243,6 @@ mod tests {
             relay_client(
                 &config,
                 &url::Url::parse("https://localhost:9444/anything").unwrap(),
-                None
             )
             .await
             .is_err()
@@ -224,7 +251,6 @@ mod tests {
             relay_client(
                 &config,
                 &url::Url::parse("https://api.example/anything").unwrap(),
-                None
             )
             .await
             .is_err()
@@ -235,5 +261,50 @@ mod tests {
                 .validate_provider_url("https://localhost:9443")
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn relay_requests_reuse_the_same_connection_across_paths() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let mut config = crate::SecureClientConfig::new("https://relay.example").unwrap();
+        config.relay_base_url = url::Url::parse(&origin).unwrap();
+        config.endpoint_policy.reject_local_addresses = false;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(&mut socket);
+            for path in ["/catalog", "/chat"] {
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                assert_eq!(line, format!("GET {path} HTTP/1.1\r\n"));
+                loop {
+                    line.clear();
+                    assert!(socket.read_line(&mut line).await.unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                socket
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .await
+                    .unwrap();
+            }
+        });
+        for path in ["/catalog", "/chat"] {
+            let url = config.relay_base_url.join(path).unwrap();
+            let response = relay_client(&config, &url)
+                .await
+                .unwrap()
+                .get(url)
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.text().await.unwrap(), "ok");
+        }
+        server.await.unwrap();
     }
 }

@@ -1162,8 +1162,11 @@ async function openDeleteDialog(page: Page) {
   await page.getByRole("alertdialog").waitFor();
 }
 
+// Model prewarming runs on its own timer once the composer is ready, so thread
+// and menu assertions ignore it; the prewarm test reads the raw call log.
 async function calls(page: Page) {
-  return page.evaluate(() => (window as unknown as { __deletionTest: { calls: { method: string; id?: string; text?: string }[] } }).__deletionTest.calls);
+  return page.evaluate(() => (window as unknown as { __deletionTest: { calls: { method: string; id?: string; text?: string }[] } }).__deletionTest.calls
+    .filter((call) => call.method !== "prewarm"));
 }
 
 async function assertComposerFocused(page: Page) {
@@ -2373,7 +2376,7 @@ test("folder deletion uses the same modal without deleting its threads or blocki
     assert.equal(await page.locator("textarea").inputValue(), "Folder draft remains editable");
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).waitFor();
     // Editing the preserved draft may prewarm verification without touching threads.
-    assert.deepEqual((await calls(page)).filter((call) => call.method !== "prewarm"), [
+    assert.deepEqual(await calls(page), [
       { method: "deleteFolder", id: "folder" },
     ]);
     assert.deepEqual(errors, []);
@@ -2463,7 +2466,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const usage = settings.getByRole("tab", { name: "Usage", exact: true });
       const updates = settings.getByRole("tab", { name: "Updates", exact: true });
       assert.equal(await settings.evaluate((element) => getComputedStyle(element).animationName), "account-screen-enter");
-      assert.equal(await settings.getByRole("tab").count(), 6);
+      assert.equal(await settings.getByRole("tab").count(), 7);
       assert.equal(await settings.getByRole("tabpanel").count(), 1);
       assert.equal(await appearance.getAttribute("aria-selected"), "true");
       assert.equal(await settings.getByText("Inference balance").count(), 0);
@@ -2480,6 +2483,10 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await settings.getByText("TU", {exact: true}).count(), 1);
       await account.focus();
       await account.press("ArrowDown");
+      const chats = settings.getByRole("tab", { name: "Chats", exact: true });
+      assert.equal(await chats.getAttribute("aria-selected"), "true");
+      await settings.getByRole("tabpanel", { name: "Chats", exact: true }).getByRole("button", { name: "Factory reset Axiom…", exact: true }).waitFor();
+      await chats.press("ArrowDown");
       assert.equal(await usage.getAttribute("aria-selected"), "true");
       await usage.press("ArrowDown");
       const mcp = settings.getByRole("tab", {name: "MCP connections", exact: true});
@@ -5117,19 +5124,15 @@ for (const platform of ["darwin", "win32"]) {
   });
 }
 
-test("only editing the signed-in composer starts model-only verification, including before thread creation", async () => {
+test("the signed-in composer prewarms its selected model before typing or opening a thread", async () => {
   const { page, errors } = await openApp("darwin");
   try {
     const warmups = () => page.evaluate(() => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prewarm"));
-    assert.deepEqual(await warmups(), []);
-    await page.locator("textarea").fill("This draft must stay on this device");
     await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prewarm"));
     assert.deepEqual(await warmups(), [{ method: "prewarm", id: "test-model" }]);
+    await page.locator("textarea").fill("This draft must stay on this device");
+    assert.equal((await warmups()).length, 1);
     assert.equal((await calls(page)).filter((call) => call.method === "new" || call.method === "prompt").length, 0);
-    await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
-    assert.equal((await warmups()).length, 1, "loading a thread does not verify");
-    await page.locator("textarea").fill("Follow-up draft");
-    assert.equal((await warmups()).length, 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

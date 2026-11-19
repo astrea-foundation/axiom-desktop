@@ -5,6 +5,7 @@ use crate::{
     session_title::TitleGeneration,
 };
 use axiom_inference::{InvocationPurpose, InvocationState, ModelInfo, RequestUsage, ThinkingMode};
+use axiom_secure_client::ASTREAAI_QWEN_MODEL;
 use tokio::sync::Notify;
 
 struct TitleProvider {
@@ -33,7 +34,12 @@ impl TitleProvider {
 impl InferenceProvider for TitleProvider {
     async fn models(&self, _: CancellationToken) -> Result<Vec<ModelInfo>> {
         Ok(vec![ModelInfo {
-            id: "test".into(),
+            id: if self.direct {
+                ASTREAAI_QWEN_MODEL
+            } else {
+                "test"
+            }
+            .into(),
             provider_id: if self.direct {
                 "axiom-direct".into()
             } else {
@@ -49,6 +55,7 @@ impl InferenceProvider for TitleProvider {
         events: mpsc::Sender<ProviderEvent>,
         cancellation: CancellationToken,
     ) -> Result<AssistantTurn> {
+        let model_id = request.model.clone();
         self.requests.lock().await.push(request);
         for event in [
             ProviderEvent::TextDelta("provisional title".into()),
@@ -67,8 +74,13 @@ impl InferenceProvider for TitleProvider {
         events
             .send(ProviderEvent::Accounting(Box::new(RequestUsage {
                 request_id: "a".repeat(32),
-                model_id: "test".into(),
-                provider_id: "fixture".into(),
+                model_id,
+                provider_id: if self.direct {
+                    "axiom-direct"
+                } else {
+                    "fixture"
+                }
+                .into(),
                 state: if self.fail || self.block {
                     InvocationState::Failed
                 } else {
@@ -102,19 +114,81 @@ fn engine(provider: Arc<TitleProvider>) -> AgentEngine {
 }
 
 #[tokio::test]
-async fn direct_titles_stay_local_and_do_not_dispatch_background_inference() {
-    let mut provider = TitleProvider::new("should not be sent", false, false);
+async fn qwen_generates_a_title_after_its_first_reply() {
+    let mut provider = TitleProvider::new("Coastal hiking routes", false, false);
     provider.direct = true;
     let provider = Arc::new(provider);
     let engine = engine(provider.clone());
-    let (tx, mut rx) = mpsc::channel(16);
-    let title = engine
-        .generate_title("test", "Hello from Verda", tx, CancellationToken::new())
-        .await
+    let (store, id) = thread().await;
+    let prompt = "Where should I hike on the coast?";
+    let mut job = TitleGeneration::prepare(&store, &id, prompt, ASTREAAI_QWEN_MODEL)
+        .unwrap()
         .unwrap();
-    assert_eq!(title, "Hello from Verda");
+    let reply_finished = job.defer_until_first_reply().unwrap();
+    let title = job.run(&engine, CancellationToken::new());
+    tokio::pin!(title);
+    assert!(futures::poll!(&mut title).is_pending());
     assert!(provider.requests.lock().await.is_empty());
-    assert!(rx.recv().await.is_none());
+    assert_eq!(
+        store.thread_summary(&id).unwrap().title.as_deref(),
+        Some("Where should I hike on the coast")
+    );
+    reply_finished.send(()).unwrap();
+    assert_eq!(
+        title.await.unwrap().as_deref(),
+        Some("Coastal hiking routes")
+    );
+    let snapshot = store.thread_snapshot(&id, None, 10).unwrap();
+    assert_eq!(
+        snapshot.thread.title.as_deref(),
+        Some("Coastal hiking routes")
+    );
+    assert_eq!(snapshot.request_usage.len(), 1);
+    assert_eq!(snapshot.request_usage[0].purpose, InvocationPurpose::Title);
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model, ASTREAAI_QWEN_MODEL);
+    assert!(
+        requests[0].messages[1]
+            .content
+            .contains(&serde_json::json!(prompt).to_string())
+    );
+    assert!(
+        requests[0].messages[1]
+            .content
+            .ends_with("Return only a 3-8 word topic label.")
+    );
+    assert!(requests[0].tools.is_empty());
+}
+
+#[tokio::test]
+async fn qwen_skips_title_inference_after_a_stopped_turn_or_manual_rename() {
+    let mut provider = TitleProvider::new("Unused", false, false);
+    provider.direct = true;
+    let provider = Arc::new(provider);
+    let engine = engine(provider.clone());
+    for renamed in [false, true] {
+        let (store, id) = thread().await;
+        let mut job = TitleGeneration::prepare(&store, &id, "First message", ASTREAAI_QWEN_MODEL)
+            .unwrap()
+            .unwrap();
+        let reply_finished = job.defer_until_first_reply().unwrap();
+        if renamed {
+            store.rename(&id, "My title").unwrap();
+            reply_finished.send(()).unwrap();
+        } else {
+            drop(reply_finished);
+        }
+        assert_eq!(
+            job.run(&engine, CancellationToken::new()).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            store.thread_summary(&id).unwrap().title.as_deref(),
+            Some(if renamed { "My title" } else { "First message" })
+        );
+    }
+    assert!(provider.requests.lock().await.is_empty());
 }
 
 #[test]
@@ -246,7 +320,7 @@ async fn background_title_keeps_an_immediate_fallback_and_records_success_or_fai
     for fail in [false, true] {
         let (store, id) = thread().await;
         let original_items = store.thread_snapshot(&id, None, 10).unwrap().items;
-        let job = TitleGeneration::prepare(
+        let mut job = TitleGeneration::prepare(
             &store,
             &id,
             "Please help me repair the login redirect",
@@ -261,6 +335,7 @@ async fn background_title_keeps_an_immediate_fallback_and_records_success_or_fai
             fail,
             false,
         )));
+        assert!(job.defer_until_first_reply().is_none());
         let result = job.run(&engine, CancellationToken::new()).await;
         assert_eq!(result.is_err(), fail);
         let snapshot = store.thread_snapshot(&id, None, 10).unwrap();

@@ -7,7 +7,7 @@ use crate::{
     session::SessionStore,
 };
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// An account-bound, single-use reservation for a new thread's automatic title.
@@ -17,6 +17,7 @@ pub struct TitleGeneration {
     generation: String,
     prompt: String,
     model: String,
+    first_reply: Option<oneshot::Receiver<()>>,
 }
 
 impl TitleGeneration {
@@ -41,16 +42,34 @@ impl TitleGeneration {
             generation,
             prompt: prompt.into(),
             model: model.into(),
+            first_reply: None,
         }))
     }
 
+    /// Let Qwen finish the first reply before requesting its title.
+    /// Signal success to start the request, or drop the sender to keep the opening label.
+    pub fn defer_until_first_reply(&mut self) -> Option<oneshot::Sender<()>> {
+        if self.model != axiom_secure_client::ASTREAAI_QWEN_MODEL {
+            return None;
+        }
+        let (finished, first_reply) = oneshot::channel();
+        self.first_reply = Some(first_reply);
+        Some(finished)
+    }
+
     pub async fn run(
-        self,
+        mut self,
         runner: &dyn TurnRunner,
         cancellation: CancellationToken,
     ) -> Result<Option<String>> {
         let cancellation = cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
+        if let Some(first_reply) = self.first_reply.take() {
+            tokio::select! {
+                result = first_reply => if result.is_err() { cancellation.cancel(); },
+                () = cancellation.cancelled() => {}
+            }
+        }
         if cancellation.is_cancelled()
             || !self
                 .store

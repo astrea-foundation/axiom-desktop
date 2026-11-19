@@ -45,6 +45,7 @@ pub(crate) struct NearProvider {
     config: SecureClientConfig,
     credential: Arc<ApiCredential>,
     cache: VerifiedMaterialCache<NearVerifiedMaterial>,
+    nvidia_signing_keys: attestation::NvidiaSigningKeys,
 }
 
 impl NearProvider {
@@ -54,6 +55,7 @@ impl NearProvider {
             config,
             credential,
             cache: VerifiedMaterialCache::default(),
+            nvidia_signing_keys: attestation::NvidiaSigningKeys::default(),
         }
     }
 }
@@ -121,8 +123,36 @@ impl SecureProvider for NearProvider {
         policy: &TrustPolicy,
         cancellation: CancellationToken,
     ) -> Result<Box<dyn VerifiedSession>> {
+        self.establish_with_headroom(model, policy, cancellation, 0)
+            .await
+    }
+
+    async fn prewarm(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VerifiedSession>> {
+        let headroom = 30.min(self.config.verified_session_ttl.as_secs() / 2);
+        self.establish_with_headroom(model, policy, cancellation, headroom)
+            .await
+    }
+
+    async fn invalidate(&self, model_id: &str) {
+        self.cache.invalidate(model_id).await;
+    }
+}
+
+impl NearProvider {
+    async fn establish_with_headroom(
+        &self,
+        model: &ModelInfo,
+        policy: &TrustPolicy,
+        cancellation: CancellationToken,
+        headroom: u64,
+    ) -> Result<Box<dyn VerifiedSession>> {
         self.supports(model)?;
-        if let Some(material) = self.cache.get(model, policy).await {
+        if let Some(material) = self.cache.get(model, policy, headroom).await {
             return Ok(session_from_material(
                 material,
                 &self.config,
@@ -135,7 +165,7 @@ impl SecureProvider for NearProvider {
             () = cancellation.cancelled() => return Err(SecureClientError::cancelled()),
             lock = self.cache.model_lock(&model.id) => lock,
         };
-        if let Some(material) = self.cache.get(model, policy).await {
+        if let Some(material) = self.cache.get(model, policy, headroom).await {
             return Ok(session_from_material(
                 material,
                 &self.config,
@@ -144,14 +174,21 @@ impl SecureProvider for NearProvider {
                 &self.vision_cache,
             ));
         }
-        let (mut verified, wire, worker_session_id) = Box::pin(attestation::verify_model(
+        let attestation = Box::pin(attestation::verify_model(
             &self.config,
             &self.credential,
             model,
             policy,
+            &self.nvidia_signing_keys,
             &cancellation,
         ))
-        .await?;
+        .await;
+        if let Err(error) = &attestation
+            && error.kind() == axiom_inference::ProviderFailureKind::AttestationRejected
+        {
+            self.cache.invalidate(&model.id).await;
+        }
+        let (mut verified, wire, worker_session_id) = attestation?;
         verify_response_signing_binding(&wire, &verified.response_signing_address)?;
         let single_copy = wire.relay_request_wire_versions.contains(&2);
         let binding = AttestationBinding::verify(wire, model, &verified.model_key.to_hex())?;
@@ -190,10 +227,6 @@ impl SecureProvider for NearProvider {
             model,
             &self.vision_cache,
         ))
-    }
-
-    async fn invalidate(&self, model_id: &str) {
-        self.cache.invalidate(model_id).await;
     }
 }
 

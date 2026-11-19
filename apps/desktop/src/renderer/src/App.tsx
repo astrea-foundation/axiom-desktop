@@ -32,6 +32,7 @@ import { useConversations } from "./useConversations";
 import { useDesktopState } from "./useDesktopState";
 import { useModelCatalog } from "./useModelCatalog";
 import { useNativeAccount } from "./useNativeAccount";
+import { PROOF_IDLE_AFTER_MS } from "./privacyProof";
 
 const SIDEBAR_WIDTH = 260;
 
@@ -69,16 +70,45 @@ export function App() {
   const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
-    ensureThreadLoaded, loadThread, showWelcome, reviseMessage, continueReply, submitDraft, stopStream, deleteThread,
+    ensureThreadLoaded, loadThread, showWelcome, reviseMessage, continueReply, submitDraft, stopStream, deleteThread, deleteAllThreads,
     messageQueue, threadLoads } = conversations;
-  const composeDraft = (text: string) => {
-    setDraft(text);
-    const selectedModel = modelId || models[0]?.id;
-    if (text.trim() && selectedModel && agentState.connected && !requiresSignIn && !isStreaming) {
-      // Sends only the model ID; draft text stays on this device.
-      void window.axiomDesktop?.agent.prewarmSecurity(selectedModel).catch(() => undefined);
-    }
-  };
+  const selectedModel = modelId || models[0]?.id;
+  const canPrewarm = !updates.state?.firstLaunch && !accountScreenOpen && !accountPreparing && (surface === "welcome" || surface === "thread")
+    && agentState.connected && agentState.account?.state === "valid" && !requiresSignIn;
+  useEffect(() => {
+    if (!canPrewarm || !selectedModel) return;
+    let lastActivity = Date.now();
+    const prewarm = () => {
+      if (document.hidden || !navigator.onLine || Date.now() - lastActivity >= PROOF_IDLE_AFTER_MS) return;
+      void window.axiomDesktop?.agent.prewarmSecurity?.(selectedModel).catch(() => undefined);
+    };
+    const activity = () => {
+      const wasIdle = Date.now() - lastActivity >= PROOF_IDLE_AFTER_MS;
+      lastActivity = Date.now();
+      if (wasIdle) prewarm();
+    };
+    const wake = () => {
+      if (document.hidden) return;
+      lastActivity = Date.now();
+      prewarm();
+    };
+    const initial = window.setTimeout(prewarm, 150);
+    const renewal = window.setInterval(prewarm, 10_000);
+    document.addEventListener("visibilitychange", wake);
+    document.addEventListener("keydown", activity, true);
+    document.addEventListener("pointerdown", activity, true);
+    window.addEventListener("focus", wake);
+    window.addEventListener("online", wake);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(renewal);
+      document.removeEventListener("visibilitychange", wake);
+      document.removeEventListener("keydown", activity, true);
+      document.removeEventListener("pointerdown", activity, true);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("online", wake);
+    };
+  }, [canPrewarm, selectedModel, billingAccountId, agentState.runtimeInstanceId, connectionContext.revision]);
   const preparation = threadPreparation?.accountId === billingAccountId
     && threadPreparation?.runtimeId === agentState.runtimeInstanceId
     && threadPreparation?.connectionRevision === connectionContext.revision ? threadPreparation : null;
@@ -325,7 +355,7 @@ export function App() {
                 session={activeSession}
                 attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
                 draft={draft}
-                onDraftChange={composeDraft}
+                onDraftChange={setDraft}
                 onSubmit={() => void submitDraft()}
                 onStop={stopStream}
                 isStreaming={isStreaming}
@@ -382,7 +412,7 @@ export function App() {
                 onWebToggle={webAccess.toggle}
                 attachments={{ items: attachmentDraft.attachments, busy: attachmentDraft.attachmentsBusy, onAddFiles: (files) => void attachmentDraft.addFiles(files), onRemove: (index) => attachmentDraft.setAttachments(attachmentDraft.attachments.filter((_, current) => current !== index)) }}
                 draft={draft}
-                onDraftChange={composeDraft}
+                onDraftChange={setDraft}
                 onSubmit={() => void submitDraft()}
                 models={models}
                 unavailableModels={unavailableModels}
@@ -437,6 +467,11 @@ export function App() {
         <SettingsSheet
           initialCategory={settingsCategory}
           updates={updates}
+          chats={{
+            count: threads.length,
+            unavailableReason: !agentState.connected || !billingAccountId ? "Sign in and connect to clear your chats." : undefined,
+            onClear: deleteAllThreads,
+          }}
           runtimeInstanceId={agentState.runtimeInstanceId}
           onClose={closeAccountScreen}
           connected={agentState.connected}
