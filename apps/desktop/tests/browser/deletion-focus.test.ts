@@ -2466,7 +2466,7 @@ for (const platform of ["linux", "win32", "darwin"]) {
       const usage = settings.getByRole("tab", { name: "Usage", exact: true });
       const updates = settings.getByRole("tab", { name: "Updates", exact: true });
       assert.equal(await settings.evaluate((element) => getComputedStyle(element).animationName), "account-screen-enter");
-      assert.equal(await settings.getByRole("tab").count(), 6);
+      assert.equal(await settings.getByRole("tab").count(), 7);
       assert.equal(await settings.getByRole("tabpanel").count(), 1);
       assert.equal(await appearance.getAttribute("aria-selected"), "true");
       assert.equal(await settings.getByText("Inference balance").count(), 0);
@@ -2483,6 +2483,10 @@ for (const platform of ["linux", "win32", "darwin"]) {
       assert.equal(await settings.getByText("TU", {exact: true}).count(), 1);
       await account.focus();
       await account.press("ArrowDown");
+      const chats = settings.getByRole("tab", { name: "Chats", exact: true });
+      assert.equal(await chats.getAttribute("aria-selected"), "true");
+      await settings.getByRole("tabpanel", { name: "Chats", exact: true }).getByRole("button", { name: "Factory reset Axiom…", exact: true }).waitFor();
+      await chats.press("ArrowDown");
       assert.equal(await usage.getAttribute("aria-selected"), "true");
       await usage.press("ArrowDown");
       const mcp = settings.getByRole("tab", {name: "MCP connections", exact: true});

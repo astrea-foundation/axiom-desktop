@@ -70,7 +70,7 @@ export function App() {
   const { reviewPreparation, attachmentDraft, draft, setDraft, threadPreparation, pendingUserMessage, threadLoadError,
     deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess,
     threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming,
-    ensureThreadLoaded, loadThread, showWelcome, reviseMessage, continueReply, submitDraft, stopStream, deleteThread,
+    ensureThreadLoaded, loadThread, showWelcome, reviseMessage, continueReply, submitDraft, stopStream, deleteThread, deleteAllThreads,
     messageQueue, threadLoads } = conversations;
   const selectedModel = modelId || models[0]?.id;
   const canPrewarm = !updates.state?.firstLaunch && !accountScreenOpen && !accountPreparing && (surface === "welcome" || surface === "thread")
@@ -467,6 +467,11 @@ export function App() {
         <SettingsSheet
           initialCategory={settingsCategory}
           updates={updates}
+          chats={{
+            count: threads.length,
+            unavailableReason: !agentState.connected || !billingAccountId ? "Sign in and connect to clear your chats." : undefined,
+            onClear: deleteAllThreads,
+          }}
           runtimeInstanceId={agentState.runtimeInstanceId}
           onClose={closeAccountScreen}
           connected={agentState.connected}

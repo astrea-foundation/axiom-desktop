@@ -11,6 +11,7 @@ import { UpdatesPanel } from "./UpdatesPanel";
 import type { DesktopUpdates } from "../useDesktopUpdates";
 import { accountAvatar } from "../lib/accountAvatar";
 import { FactoryResetPanel } from "./FactoryResetPanel";
+import { ClearChatsPanel, type ClearChatsOptions } from "./ClearChatsPanel";
 import { accountPresentation } from "../signInFlow";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
@@ -22,6 +23,7 @@ const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
 interface SettingsSheetProps {
   initialCategory?: SettingsCategory;
   updates?: DesktopUpdates;
+  chats?: ClearChatsOptions;
   onClose: () => void;
   connected: boolean;
   account: AccountStatus | null;
@@ -35,6 +37,7 @@ interface SettingsSheetProps {
 export function SettingsSheet({
   initialCategory = "appearance",
   updates,
+  chats,
   onClose,
   connected,
   account,
@@ -181,10 +184,15 @@ export function SettingsSheet({
                 </div>
               </div>
               <p className="mt-3 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Your sign-in is shared with AxiomCLI on this device.</p>
-              {category === "account" ? <FactoryResetPanel /> : null}
             </div>
           </SettingsPanel>
 
+          <SettingsPanel category="chats" active={category} idPrefix={id}>
+            {category === "chats" ? <div className="max-w-[560px]">
+              <ClearChatsPanel {...chats ?? { count: 0, onClear: async () => 0, unavailableReason: "Chats are unavailable." }} />
+              <FactoryResetPanel />
+            </div> : null}
+          </SettingsPanel>
 
           <SettingsPanel category="usage" active={category} idPrefix={id}>
             {category === "usage" ? <UsagePanel

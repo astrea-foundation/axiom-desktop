@@ -74,7 +74,7 @@ after the account is ready. Dismissing it, reloading a window, changing accounts
 updating Axiom or relaunching cannot show it again. Leaving it open also limits
 it to its first session. A fresh profile or factory reset resets this preference.
 
-Open **Settings → Account → Factory reset Axiom…** to start fresh on this
+Open **Settings → Chats → Factory reset Axiom…** to start fresh on this
 computer. The control is also available while signed out or disconnected. Type
 `RESET` and confirm to stop active work, delete local chats and managed files,
 settings, cached app data, and saved Axiom/MCP credentials, then restart for a
@@ -85,8 +85,15 @@ windows first. See [recovery and deletion scope](troubleshooting.md#completely-r
 The Account pane keeps the avatar, name, email and current status together in a
 compact column. Linked sign-in methods have their own row. **Manage account**
 opens the hosted account app; **Sign out** stays available as a separate action.
-Factory reset is below the identity card. Settings tabs keep keyboard focus
-inside their selected shape so the scrolling navigation does not clip it.
+Settings tabs keep keyboard focus inside their selected shape so the scrolling
+navigation does not clip it.
+
+**Settings → Chats → Clear all chats…** permanently deletes every chat listed
+for the signed-in account on this computer after an in-app confirmation that
+shows the count. Active responses stop first. Folders, settings, sign-ins and
+workspace files are kept. It requires a connected, signed-in account; deletion
+runs in native-limited batches, and a failure reports how many chats were
+deleted. Factory reset sits below it on the same page.
 
 Conversations and folders are account-local. Folder names are labels, not file
 paths. Hover over a thread or tab to it to reveal the three-dot button for

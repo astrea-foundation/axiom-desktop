@@ -695,7 +695,7 @@ if (primaryInstance) app.on("second-instance", () => {
 if (primaryInstance) void app.whenReady().then(async () => {
   const resetError = factoryResetError(process.argv);
   if (resetError !== null) {
-    dialog.showErrorBox("Factory reset did not finish", `${resetError}\n\nSome data or saved credentials may remain. Resolve the problem and try again from Settings → Account.`);
+    dialog.showErrorBox("Factory reset did not finish", `${resetError}\n\nSome data or saved credentials may remain. Resolve the problem and try again from Settings → Chats.`);
   }
   const metadata = app.isPackaged
     ? JSON.parse(await readFile(join(app.getAppPath(), "package.json"), "utf8")) as { axiomUpdateFormat?: unknown; axiomUpdateChannel?: string }

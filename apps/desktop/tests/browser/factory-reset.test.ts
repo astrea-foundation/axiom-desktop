@@ -18,10 +18,11 @@ before(async () => {
 });
 after(async () => { await browser?.close(); await server?.close(); });
 
-async function open(theme: string, state = "disconnected", width = 1120, long = false) {
+async function open(theme: string, state = "disconnected", width = 1120, long = false, query: Record<string, string> = {}) {
   const page = await browser.newPage({ viewport: { width, height: 840 }, bypassCSP: true });
   const start = new URL(origin); start.searchParams.set("state", state);
   if (long) start.searchParams.set("long", "1");
+  for (const [key, value] of Object.entries(query)) start.searchParams.set(key, value);
   page.setDefaultTimeout(8000);
   const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript({ content: "window.__name = (fn) => fn;" });
@@ -45,7 +46,7 @@ async function open(theme: string, state = "disconnected", width = 1120, long = 
     return url.startsWith(origin) ? route.continue() : route.abort();
   });
   await page.goto(start.href);
-  await page.getByRole("button", { name: "Factory reset Axiom…", exact: true }).waitFor();
+  await page.getByRole("tabpanel").waitFor();
   await page.evaluate(() => document.fonts.ready);
   return { page, errors };
 }
@@ -81,13 +82,14 @@ for (const theme of ["light", "dark"]) test(`${theme}: signed-out reset requires
     assert.equal(await modal.getByRole("button", { name: "Restarting…", exact: true }).isDisabled(), true);
     await page.keyboard.press("Escape");
     assert.equal(await modal.isVisible(), true);
+    assert.equal(await page.getByRole("region", { name: "Settings" }).getAttribute("inert"), null, "Escape must not close Settings behind the dialog");
     assert.equal(await page.evaluate(() => (window as any).__resetTest.calls()), 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
 
 for (const theme of ["light", "dark"]) test(`${theme}: account identity stays together and actions remain keyboard accessible`, async () => {
-  const { page, errors } = await open(theme, "valid", 1320);
+  const { page, errors } = await open(theme, "valid", 1320, false, { category: "account" });
   try {
     const panel = page.getByRole("tabpanel", {name: "Account", exact: true});
     const avatar = await panel.locator("span.rounded-full").first().boundingBox();
@@ -120,7 +122,7 @@ for (const theme of ["light", "dark"]) test(`${theme}: account identity stays to
 });
 
 for (const state of ["disconnected", "signed_out", "expired", "starting"]) test(`account ${state} retains its sign-in action and reset access`, async () => {
-  const { page, errors } = await open("dark", state, 960);
+  const { page, errors } = await open("dark", state, 960, false, { category: "account" });
   try {
     const panel = page.getByRole("tabpanel", {name: "Account", exact: true});
     const waiting = state === "disconnected" || state === "starting";
@@ -130,13 +132,18 @@ for (const state of ["disconnected", "signed_out", "expired", "starting"]) test(
       await signIn.click();
       assert.deepEqual(await page.evaluate(() => (window as any).__accountActions), ["login"]);
     }
-    assert.equal(await panel.getByRole("button", {name: "Factory reset Axiom…", exact: true}).isEnabled(), true);
+    assert.equal(await panel.getByRole("button", {name: "Factory reset Axiom…"}).count(), 0, "factory reset lives on the Chats page");
+    await page.getByRole("tab", {name: "Chats", exact: true}).click();
+    const chats = page.getByRole("tabpanel", {name: "Chats", exact: true});
+    assert.equal(await chats.getByRole("button", {name: "Factory reset Axiom…", exact: true}).isEnabled(), true);
+    assert.equal(await chats.getByRole("button", {name: "Clear all chats…", exact: true}).isDisabled(), true);
+    await chats.getByText("Sign in and connect to clear your chats.", {exact: true}).waitFor();
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
 
 test("long account identity wraps within a narrow settings panel", async () => {
-  const { page, errors } = await open("light", "valid", 960, true);
+  const { page, errors } = await open("light", "valid", 960, true, { category: "account" });
   try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     const panel = page.getByRole("tabpanel", {name: "Account", exact: true});
@@ -158,6 +165,74 @@ test("reset launch failures remain visible and allow cancellation and retry", as
     assert.equal(await modal.getByRole("button", { name: "Delete everything and restart", exact: true }).isEnabled(), true);
     await modal.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(await modal.isVisible(), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const theme of ["light", "dark"]) test(`${theme}: clear all chats confirms the count, supports cancel, and submits only once`, async () => {
+  const { page, errors } = await open(theme, "valid");
+  try {
+    const panel = page.getByRole("tabpanel", { name: "Chats", exact: true });
+    assert.equal(await page.getByRole("tab", { name: "Chats", selected: true }).count(), 1);
+    const trigger = panel.getByRole("button", { name: "Clear all chats…", exact: true });
+    assert.equal(await trigger.isEnabled(), true);
+    const order = await panel.evaluate((element) => [...element.querySelectorAll("h3")].map((heading) => heading.textContent));
+    assert.deepEqual(order, ["Clear all chats", "Factory reset Axiom"]);
+    if (captures) await page.screenshot({ path: `${captures}/${theme}-chats.png` });
+    await trigger.click();
+    const modal = page.getByRole("alertdialog", { name: "Delete all chats?", exact: true });
+    assert.match(await modal.innerText(), /All 3 chats for this account/);
+    assert.match(await modal.innerText(), /Folders are kept/);
+    await page.keyboard.press("Escape");
+    assert.equal(await modal.isVisible(), false);
+    assert.equal(await trigger.evaluate((button) => button === document.activeElement), true);
+    assert.equal(await page.evaluate(() => (window as any).__clearTest.calls()), 0);
+    await trigger.click();
+    if (captures) await page.screenshot({ path: `${captures}/${theme}-clear-confirmation.png` });
+    await modal.getByRole("button", { name: "Delete all chats", exact: true }).click();
+    await modal.getByRole("status").waitFor();
+    assert.equal(await modal.getByRole("button", { name: "Cancel", exact: true }).isDisabled(), true);
+    assert.equal(await modal.getByRole("button", { name: "Deleting…", exact: true }).isDisabled(), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await modal.isVisible(), true);
+    assert.equal(await page.getByRole("region", { name: "Settings" }).getAttribute("inert"), null, "Escape must not close Settings behind the dialog");
+    assert.equal(await page.evaluate(() => (window as any).__clearTest.calls()), 1);
+    await page.evaluate(() => (window as any).__clearTest.finish());
+    await modal.waitFor({ state: "hidden" });
+    await panel.getByText("Deleted 3 chats.", { exact: true }).waitFor();
+    assert.equal(await trigger.isDisabled(), true);
+    assert.equal(await panel.evaluate((element) => element === document.activeElement), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("clear all chats is unavailable when there are no chats", async () => {
+  const { page, errors } = await open("light", "valid", 960, false, { chats: "0" });
+  try {
+    const panel = page.getByRole("tabpanel", { name: "Chats", exact: true });
+    assert.equal(await panel.getByRole("button", { name: "Clear all chats…", exact: true }).isDisabled(), true);
+    await panel.getByText("No chats to clear.", { exact: true }).waitFor();
+    assert.equal(await panel.getByRole("button", { name: "Factory reset Axiom…", exact: true }).isEnabled(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("clear all chats failures remain visible and allow retry", async () => {
+  const { page, errors } = await open("dark", "valid");
+  try {
+    await page.evaluate(() => (window as any).__clearTest.fail());
+    await page.getByRole("button", { name: "Clear all chats…", exact: true }).click();
+    const modal = page.getByRole("alertdialog", { name: "Delete all chats?", exact: true });
+    const submit = modal.getByRole("button", { name: "Delete all chats", exact: true });
+    await submit.click();
+    await modal.getByRole("alert").waitFor();
+    assert.match(await modal.getByRole("alert").innerText(), /desktop service is unavailable/);
+    assert.equal(await submit.isEnabled(), true);
+    await submit.click();
+    await page.evaluate(() => (window as any).__clearTest.finish());
+    await modal.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => (window as any).__clearTest.calls()), 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

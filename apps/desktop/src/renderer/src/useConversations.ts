@@ -18,6 +18,9 @@ import { type useConversationNavigation } from "./useConversationNavigation";
 import { type useModelCatalog } from "./useModelCatalog";
 import { type useDesktopState } from "./useDesktopState";
 
+/** Native thread deletion accepts at most 1,000 IDs per selection. */
+const DELETE_BATCH_SIZE = 500;
+
 function relativeTime(value: string): string {
   const elapsed = Date.now() - Date.parse(value);
   if (!Number.isFinite(elapsed) || elapsed < 60_000) return "just now";
@@ -517,5 +520,33 @@ export function useConversations(agentState: ClientState, connection: ReturnType
     }
   };
 
-  return { acceptOutdatedTee, continueReply, reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
+  /** Deletes every listed thread for the current account; rejects with a user-facing error. */
+  const deleteAllThreads = async (): Promise<number> => {
+    const api = window.axiomDesktop?.agent;
+    if (!api || !billingAccountId || !agentState.connected) throw new Error("Sign in and connect to clear your chats.");
+    const ids = threads.map((thread) => thread.id).filter((id) => !threadLoads.current.isBlocked(id));
+    if (!ids.length) return 0;
+    for (const id of ids) threadLoads.current.block(id);
+    if (activeThreadIdRef.current && ids.includes(activeThreadIdRef.current)) showWelcome();
+    let deleted = 0, settled = 0;
+    try {
+      // Each preview/confirm pair covers at most the native selection limit.
+      for (; settled < ids.length; settled += DELETE_BATCH_SIZE) {
+        const batch = ids.slice(settled, settled + DELETE_BATCH_SIZE);
+        const preview = await api.deletePreview(batch);
+        deleted += (await api.deleteConfirm(preview.confirmationToken, batch)).deleted;
+        for (const id of batch) {
+          webAccess.forgetThread(id);
+          messageQueue.current?.forget(id);
+        }
+      }
+      return deleted;
+    } catch (error) {
+      for (const id of ids.slice(settled)) threadLoads.current.unblock(id);
+      const message = desktopErrorMessage(error, "Your chats could not be deleted.");
+      throw new Error(deleted ? `Deleted ${deleted} ${deleted === 1 ? "chat" : "chats"}, but the rest could not be deleted. ${message}` : message);
+    }
+  };
+
+  return { acceptOutdatedTee, continueReply, reviewPreparation, attachmentDraft, attachmentPreviews, draft, setDraft, writeDraft, threadPreparation, pendingUserMessage, threadLoadError, deleteTarget, setDeleteTarget, renameTarget, setRenameTarget, billingAccountId, webAccess, threads, folders, activeThread, activeSession, agentAccountScope, agentControl, isStreaming, ensureThreadLoaded, loadThread, showWelcome, reviseMessage, submitDraft, stopStream, deleteThread, deleteAllThreads, messageQueue: messageQueue.current, threadLoads: threadLoads.current };
 }
