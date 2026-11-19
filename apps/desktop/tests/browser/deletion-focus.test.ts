@@ -1162,8 +1162,11 @@ async function openDeleteDialog(page: Page) {
   await page.getByRole("alertdialog").waitFor();
 }
 
+// Model prewarming runs on its own timer once the composer is ready, so thread
+// and menu assertions ignore it; the prewarm test reads the raw call log.
 async function calls(page: Page) {
-  return page.evaluate(() => (window as unknown as { __deletionTest: { calls: { method: string; id?: string; text?: string }[] } }).__deletionTest.calls);
+  return page.evaluate(() => (window as unknown as { __deletionTest: { calls: { method: string; id?: string; text?: string }[] } }).__deletionTest.calls
+    .filter((call) => call.method !== "prewarm"));
 }
 
 async function assertComposerFocused(page: Page) {
@@ -2373,7 +2376,7 @@ test("folder deletion uses the same modal without deleting its threads or blocki
     assert.equal(await page.locator("textarea").inputValue(), "Folder draft remains editable");
     await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).waitFor();
     // Editing the preserved draft may prewarm verification without touching threads.
-    assert.deepEqual((await calls(page)).filter((call) => call.method !== "prewarm"), [
+    assert.deepEqual(await calls(page), [
       { method: "deleteFolder", id: "folder" },
     ]);
     assert.deepEqual(errors, []);

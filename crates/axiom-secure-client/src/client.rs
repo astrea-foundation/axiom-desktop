@@ -950,7 +950,9 @@ mod tests {
             .await
             .as_mut()
             .unwrap()
-            .fetched_at = Instant::now() - Duration::from_secs(61);
+            .fetched_at = Instant::now()
+            .checked_sub(Duration::from_secs(61))
+            .expect("test clock is past the catalog lifetime");
         let error = client
             .models_for_inference(CancellationToken::new())
             .await
