@@ -13,6 +13,7 @@ export interface Message {
   content: string;
   status: MessageStatus;
   reasoningContent?: string;
+  reasoningStreaming?: boolean;
   reasoningDurationMs?: number;
   terminalVerified?: boolean;
   finishReason?: string;

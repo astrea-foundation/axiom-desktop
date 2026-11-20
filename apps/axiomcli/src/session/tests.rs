@@ -1620,6 +1620,7 @@ fn terminal_response_verification_survives_authoritative_restart() {
     let path = directory.path().join("state.sqlite3");
     let id = SessionId::new();
     let turn = TurnId::new();
+    let last_thought_at;
     {
         let store = SessionStore::open(&path).expect("store");
         create(&store, &id);
@@ -1634,16 +1635,16 @@ fn terminal_response_verification_survives_authoritative_restart() {
                 },
             ))
             .expect("answer");
-        store
-            .append(&envelope(
-                &id,
-                5,
-                AppEvent::ReasoningDelta {
-                    turn_id: turn.clone(),
-                    text: "verified reasoning".into(),
-                },
-            ))
-            .expect("reasoning");
+        let thought = envelope(
+            &id,
+            5,
+            AppEvent::ReasoningDelta {
+                turn_id: turn.clone(),
+                text: "verified reasoning".into(),
+            },
+        );
+        last_thought_at = thought.occurred_at;
+        store.append(&thought).expect("reasoning");
         store
             .append(&envelope(
                 &id,
@@ -1677,6 +1678,14 @@ fn terminal_response_verification_survives_authoritative_restart() {
         })
         .collect::<Vec<_>>();
     assert_eq!(response_items.len(), 2);
+    let reasoning = response_items
+        .iter()
+        .find(|item| item.kind == TimelineItemKind::Reasoning)
+        .expect("stored reasoning");
+    assert_eq!(
+        reasoning.metadata["last_reasoning_delta_at"],
+        last_thought_at.to_rfc3339()
+    );
     assert!(response_items.iter().all(|item| {
         item.status == TimelineItemStatus::Completed
             && item

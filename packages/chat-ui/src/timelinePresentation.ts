@@ -6,6 +6,8 @@ export type TimelinePresentationRow =
   | { kind: "tool"; key: string; item: ClientTimelineItem }
   | { kind: "activity"; key: string; item: ClientTimelineItem };
 
+const providerStatusId = /^provider:\d+$/;
+
 /** Revisions replace whole turns; a steering message is not a turn boundary. */
 export function messageRevisionSources(items: ClientTimelineItem[]): Map<string, ClientTimelineItem> {
   const sources = new Map<string, ClientTimelineItem>();
@@ -68,6 +70,14 @@ function combinedStatus(
   );
 }
 
+function reasoningPresentation(item: ClientTimelineItem): Pick<Message, "reasoningContent" | "reasoningStreaming" | "reasoningDurationMs"> {
+  return {
+    reasoningContent: item.text,
+    reasoningStreaming: (item.status === "streaming" || item.status === "in_progress") && !providerStatusId.test(item.id),
+    reasoningDurationMs: item.reasoningDurationMs,
+  };
+}
+
 function messageFor(item: ClientTimelineItem, status = item.status): Message {
   if (item.kind === "reasoning") {
     return {
@@ -75,7 +85,7 @@ function messageFor(item: ClientTimelineItem, status = item.status): Message {
       role: "assistant",
       status: messageStatus(status),
       content: "",
-      reasoningContent: item.text,
+      ...reasoningPresentation(item),
       terminalVerified: item.terminalVerified === true,
       finishReason: item.finishReason,
     };
@@ -99,7 +109,7 @@ function combinedAssistantMessage(
     role: "assistant",
     status: combinedStatus(reasoning, assistant),
     content: assistant.text,
-    reasoningContent: reasoning.text,
+    ...reasoningPresentation(reasoning),
     terminalVerified: assistant.terminalVerified === true,
     finishReason: assistant.finishReason,
   };
@@ -118,7 +128,7 @@ function emptyTerminalAssistant(item: ClientTimelineItem): boolean {
 function routineNotice(item: ClientTimelineItem): boolean {
   // Standard ACP presents connection notices as thought chunks. They are
   // operational status, not model reasoning. Failed connections remain visible.
-  if (item.kind === "reasoning" && /^provider:\d+$/.test(item.id)) {
+  if (item.kind === "reasoning" && providerStatusId.test(item.id)) {
     if (item.text.includes("Connection interrupted. Retrying") || item.text.includes("Continuing…")) return false;
     return item.text.startsWith("[provider] ");
   }
@@ -159,6 +169,7 @@ export function presentTimeline(items: ClientTimelineItem[]): TimelinePresentati
     const item = timeline[index];
     if (!item) continue;
     const next = timeline[index + 1];
+    // Keep the disclosure mounted when an assistant message joins its reasoning.
     if (
       next
       && sameTurn(item, next)
@@ -167,7 +178,7 @@ export function presentTimeline(items: ClientTimelineItem[]): TimelinePresentati
     ) {
       rows.push({
         kind: "message",
-        key: next.id,
+        key: item.id,
         message: combinedAssistantMessage(item, next),
       });
       index += 1;
@@ -179,7 +190,7 @@ export function presentTimeline(items: ClientTimelineItem[]): TimelinePresentati
     ) {
       rows.push({
         kind: "message",
-        key: item.id,
+        key: next.id,
         message: combinedAssistantMessage(next, item),
       });
       index += 1;

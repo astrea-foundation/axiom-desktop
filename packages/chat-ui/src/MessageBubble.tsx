@@ -1,6 +1,6 @@
 /** @jsxRuntime automatic */
 import { AlertTriangle, ChevronDown, LoaderCircle, Pencil, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import type { Message } from "@axiom/chat-core/types";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { CopyButton } from "./CopyButton";
@@ -9,16 +9,17 @@ import { DismissibleNotice } from "./DismissibleNotice";
 const actionClass = "rounded-md p-1.5 text-[var(--color-text-secondary)] transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-35";
 
 function thoughtLabel(durationMs?: number): string {
-  if (durationMs === undefined) return "Thought";
+  if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return "Thought";
   const seconds = Math.max(1, Math.round(durationMs / 1000));
   return `Thought for ${seconds} ${seconds === 1 ? "second" : "seconds"}`;
 }
 
-export function MessageBubble({ message, onRevise, onContinue, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, showGenerationIndicator = true, copyContent }: {
+export function MessageBubble({ message, onRevise, onContinue, revisionText, revisionHasAttachments = false, showFailureNotice = true, responseActive = false, isThinking = false, showGenerationIndicator = true, copyContent }: {
   message: Message; onRevise?: (text: string) => Promise<void>; revisionText?: string; revisionHasAttachments?: boolean;
   onContinue?: () => Promise<void>;
   showFailureNotice?: boolean;
   responseActive?: boolean;
+  isThinking?: boolean;
   showGenerationIndicator?: boolean;
   /** Whole reply body for the turn when it was split by tool calls. */
   copyContent?: string;
@@ -37,13 +38,14 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
       className="rounded bg-[var(--color-cherry)] px-3 py-1.5 text-on-accent disabled:opacity-40">{revisionMode === "edit" ? "Save and send" : "Regenerate from here"}</button>
     <button type="button" disabled={revising} onClick={() => setRevisionMode(null)}>Cancel</button></div>
   </div> : null;
-  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const reasoning = message.reasoningContent?.trim();
+  const thinking = isThinking && Boolean(reasoning);
+  const [reasoningOpen, setReasoningOpen] = useState(thinking);
+  useLayoutEffect(() => setReasoningOpen(thinking), [thinking]);
   const isStreaming = message.status === "streaming" || message.status === "pending";
   // Stopping a reply is not a presentation error: keep its text and allow
   // copying, without changing its stored status or claiming a final receipt.
   const terminalFailure = message.status === "failed";
-  const reasoning = message.reasoningContent?.trim();
-
   const replyBody = copyContent?.trim() ? copyContent : message.content;
 
   if (message.role === "user") {
@@ -101,7 +103,7 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
               size={14}
               className={`transition-transform ${reasoningOpen ? "rotate-0" : "-rotate-90"}`}
             />
-            <span>{thoughtLabel(message.reasoningDurationMs)}</span>
+            <span>{thinking ? "Thinking" : thoughtLabel(message.reasoningDurationMs)}</span>
           </button>
           {reasoningOpen ? (
             <div className="selectable mt-1.5 rounded-[10px] bg-[var(--wash-row)] px-3.5 py-2.5 text-[var(--color-text-secondary)]">
@@ -117,7 +119,7 @@ export function MessageBubble({ message, onRevise, onContinue, revisionText, rev
             <summary className="cursor-pointer text-[12px] text-[var(--color-text-tertiary)]">Interrupted attempt · Show partial answer</summary>
             <ChatMarkdown text={message.content} />
           </details> : <ChatMarkdown text={message.content} /> : null}
-          {showGenerationIndicator && isStreaming && !message.content && !message.continues ? (
+          {showGenerationIndicator && !thinking && isStreaming && !message.content && !message.continues ? (
             <div className="flex items-center gap-2 py-1 text-[13px] text-[var(--color-text-tertiary)]">
               <span className="flex items-center gap-1">
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] dot-bounce" />

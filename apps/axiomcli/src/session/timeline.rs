@@ -190,10 +190,16 @@ pub(super) fn append_turn_content(
         )?
         .0
     };
+    // Retain the last reasoning chunk's timestamp when terminal updates later
+    // advance updated_at. It bounds the visible reasoning stream on reload.
     transaction
         .execute(
             "UPDATE timeline_items SET content=content || ?2, status='in_progress',
-               metadata=json_remove(metadata, '$.terminal_verified', '$.terminalVerified'),
+               metadata=json_remove(
+                 CASE WHEN kind='reasoning' AND ?2<>''
+                   THEN json_set(metadata, '$.last_reasoning_delta_at', ?3)
+                   ELSE metadata END,
+                 '$.terminal_verified', '$.terminalVerified'),
                updated_at=?3 WHERE id=?1",
             params![id, content, now],
         )

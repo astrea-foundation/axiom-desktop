@@ -70,6 +70,14 @@ export function TimelineView({
   }
   const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
   const responseActive = session.running || isStopping;
+  const showPendingUser = Boolean(
+    pendingUserMessage
+      && pendingUserMessage.sessionId === session.sessionId
+      && !session.timeline.some((item) => item.clientItemId === pendingUserMessage.id),
+  );
+  // The validated tool row takes over as soon as the call arrives.
+  const draftingToolCall = !showPendingUser && session.running && Boolean(session.toolCallDraftTurnId)
+    && (!session.activeTurnId || session.activeTurnId === session.toolCallDraftTurnId);
   // A turn split by tool calls renders several assistant segments; the final
   // segment's Copy action copies the reply body of the whole turn.
   const turnReplies = new Map<string, string[]>();
@@ -80,20 +88,27 @@ export function TimelineView({
     if (turnId) turnReplies.set(turnId, [...turnReplies.get(turnId) ?? [], row.message.content.trim()]);
   }
   const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
+  let hasThinking = false;
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
       if ((session.compaction || isStopping) && row.message.role === "assistant" && !row.message.content && !row.message.reasoningContent) return null;
       const source = sources.get(row.message.id);
       const turnId = turnsByItem.get(row.message.id);
       const summaries = attachmentSummaries(source?.raw);
+      const rowResponseActive = responseActive && (turnId && activeTurnId
+        ? turnId === activeTurnId : !source || source.id === latestUser?.id);
+      const showGenerationIndicator = rowResponseActive && !isStopping && !session.compaction && !draftingToolCall;
+      const isThinking = showGenerationIndicator && Boolean(row.message.reasoningStreaming && row.message.reasoningContent?.trim())
+        && !row.message.content.trim() && !row.message.continues;
+      hasThinking ||= isThinking;
       return <div key={row.key} data-timeline-kind={row.message.role}>
         {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
           initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
         <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
         onContinue={!responseActive && turnId === latestReplyTurn ? onContinue : undefined}
-        responseActive={responseActive && (turnId && activeTurnId
-          ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
-        showGenerationIndicator={!isStopping}
+        responseActive={rowResponseActive}
+        isThinking={isThinking}
+        showGenerationIndicator={showGenerationIndicator}
         showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
         copyContent={turnId && row.message.role === "assistant" && !["failed", "interrupted", "cancelled"].includes(row.message.status) ? turnReplies.get(turnId)?.join("\n\n") : undefined}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
@@ -104,11 +119,6 @@ export function TimelineView({
     return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item}
       onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestReplyTurn ? onContinue : undefined} />;
   });
-  const showPendingUser = Boolean(
-    pendingUserMessage
-      && pendingUserMessage.sessionId === session.sessionId
-      && !session.timeline.some((item) => item.clientItemId === pendingUserMessage.id),
-  );
   if (showPendingUser && pendingUserMessage) {
     rows.push(
       <div key={pendingUserMessage.id} data-timeline-kind="user"><AttachmentCards files={pendingUserMessage.attachments ?? []} /><MessageBubble
@@ -122,11 +132,7 @@ export function TimelineView({
     );
   }
   const lastAlreadyShowsGeneration = !showPendingUser
-    && hasActiveResponse(presentation);
-  // Shown only while the model streams a tool call; the validated tool row
-  // takes its place as soon as the call itself arrives.
-  const draftingToolCall = !showPendingUser && session.running && Boolean(session.toolCallDraftTurnId)
-    && (!session.activeTurnId || session.activeTurnId === session.toolCallDraftTurnId);
+    && (hasThinking || hasActiveResponse(presentation));
 
   return (
     <div className="chat-timeline">

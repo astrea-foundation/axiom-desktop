@@ -4386,6 +4386,59 @@ test("response actions stay hidden while the model prepares and runs a tool call
   } finally { await page.close(); }
 });
 
+test("thinking opens while streaming and collapses at tool and answer handoffs", async () => {
+  const { page, errors } = await openApp();
+  try {
+    await page.locator('[data-thread-id="old-thread"]').click();
+    const transcript = page.getByRole("region", { name: "Chat messages" });
+    await transcript.waitFor();
+    const turnId = "active-test-turn";
+    const question: ClientTimelineItem = { id: "prompt", turnId, kind: "user", text: "Generate an image of a whale drifting through a nebula.", status: "completed" };
+    const first: ClientTimelineItem = { id: "first-thought", turnId, kind: "reasoning", text: "Use a wide composition with a bright focal point and a dark star field.", status: "streaming", reasoningDurationMs: 4200 };
+    const next: ClientTimelineItem = { id: "next-thought", turnId, kind: "reasoning", text: "Check that the image matches the requested scene.", status: "in_progress", reasoningDurationMs: 1100 };
+    const tool: ClientTimelineItem = { id: "image", turnId, kind: "tool", text: "", status: "completed", tool: {
+      callId: "image", title: "Generate image", kind: "other", status: "completed", input: {}, content: [], locations: [],
+    } };
+    const answer: ClientTimelineItem = { id: "answer", turnId, kind: "assistant", text: "Here’s the image.", status: "streaming" };
+    const setTimeline = (items: ClientTimelineItem[], running = true) => page.evaluate(({ items, running }) => {
+      (window as any).__deletionTest.setTimeline(items, running);
+    }, { items, running });
+    const setToolDraft = (draftTurnId: string | null) => page.evaluate((draftTurnId) => {
+      (window as any).__deletionTest.setToolCallDraft(draftTurnId);
+    }, draftTurnId);
+    const thinking = transcript.getByRole("button", { name: "Thinking", exact: true, expanded: true });
+    const firstThought = transcript.getByRole("button", { name: "Thought for 4 seconds", exact: true });
+    const nextThought = transcript.getByRole("button", { name: "Thought for 1 second", exact: true });
+
+    await setTimeline([question, first]);
+    await thinking.waitFor();
+    await transcript.getByText(first.text, { exact: true }).waitFor();
+
+    await setToolDraft(turnId);
+    await transcript.getByText("Writing tool call…", { exact: true }).waitFor();
+    await firstThought.waitFor();
+    assert.equal(await firstThought.getAttribute("aria-expanded"), "false");
+    await transcript.getByText(first.text, { exact: true }).waitFor({ state: "hidden" });
+
+    await setTimeline([question, first, tool, next]);
+    await setToolDraft(null);
+    await thinking.waitFor();
+    await transcript.getByText(next.text, { exact: true }).waitFor();
+    assert.equal(await firstThought.getAttribute("aria-expanded"), "false");
+
+    await setTimeline([question, first, tool, next, answer]);
+    await transcript.getByText(answer.text, { exact: true }).waitFor();
+    assert.equal(await nextThought.getAttribute("aria-expanded"), "false");
+    await thinking.waitFor({ state: "hidden" });
+
+    await setTimeline([question, { ...first, status: "completed" }, tool, { ...next, status: "completed" }, { ...answer, status: "completed" }], false);
+    await nextThought.click();
+    await transcript.getByText(next.text, { exact: true }).waitFor();
+    assert.equal(await nextThought.getAttribute("aria-expanded"), "true");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("expanded thinking and tool details support mouse selection and keyboard copy", async () => {
   const { page, errors } = await openApp();
   try {

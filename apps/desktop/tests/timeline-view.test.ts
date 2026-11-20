@@ -123,6 +123,20 @@ test("settled replies do not show a generation indicator", () => {
   assert.doesNotMatch(html, /Generating|Verifying model attestation/);
 });
 
+test("reasoning replaces the generation indicator until the run ends", () => {
+  const thought: ClientTimelineItem = { ...pending, kind: "reasoning", text: "Reasoning text", status: "streaming", reasoningDurationMs: 2400 };
+  const current = session([user, thought, { id: "notice", kind: "activity", text: "Provider notice" }]);
+  let html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /aria-expanded="true"[^>]*>.*>Thinking</);
+  assert.match(html, /Reasoning text/);
+  assert.doesNotMatch(html, /Generating/);
+
+  current.running = false;
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /aria-expanded="false"[^>]*>.*>Thought for 2 seconds</);
+  assert.doesNotMatch(html, /Reasoning text|Generating/);
+});
+
 test("completion actions wait for the whole turn while historical replies remain copyable", () => {
   const current = session([
     { ...user, id: "older-user", turnId: "older-turn" },
