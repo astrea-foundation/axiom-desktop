@@ -397,16 +397,21 @@ Display, Save and generation references retain their detailed local assets.
 
 Copy and Regenerate appear after the full response turn finishes, including any
 tool calls; an introductory message or completed tool-call segment does not
-end the turn. Expanded tool details and thinking text support selection and
-copying with the usual keyboard shortcuts or the right-click Copy menu.
+end the turn. The **Thinking** panel opens when reasoning starts streaming and
+collapses when the model starts its answer, starts a tool call, or finishes the
+response. **Thought for N seconds** shows the recorded span of the reasoning
+stream. Older messages without timing show **Thought**. Click the label to
+reopen it. Expanded tool details and thinking text support selection and copying
+with the usual keyboard shortcuts or the right-click Copy menu.
 
 Use Attach, paste an image, or drop files anywhere in the main chat panel,
 including its empty space and transcript. A drop indicator marks the panel;
 the sidebar and Proxy view do not attach files. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
-the accessible label for their meaning. The picker can filter by catalog tag,
-host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
-for tags, refreshes and unavailable models.
+the accessible label for their meaning. The picker lists each model once and
+can filter by catalog tag and upload support. A new thread starts on the best
+provider for the chosen model; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
+for that rule, tags, refreshes and unavailable models.
 
 Image uploads accept PNG/JPEG/WebP/GIF. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files

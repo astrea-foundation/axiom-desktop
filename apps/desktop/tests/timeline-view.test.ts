@@ -123,6 +123,20 @@ test("settled replies do not show a generation indicator", () => {
   assert.doesNotMatch(html, /Generating|Verifying model attestation/);
 });
 
+test("reasoning replaces the generation indicator until the run ends", () => {
+  const thought: ClientTimelineItem = { ...pending, kind: "reasoning", text: "Reasoning text", status: "streaming", reasoningDurationMs: 2400 };
+  const current = session([user, thought, { id: "notice", kind: "activity", text: "Provider notice" }]);
+  let html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /aria-expanded="true"[^>]*>.*>Thinking</);
+  assert.match(html, /Reasoning text/);
+  assert.doesNotMatch(html, /Generating/);
+
+  current.running = false;
+  html = renderToStaticMarkup(createElement(TimelineView, { session: current }));
+  assert.match(html, /aria-expanded="false"[^>]*>.*>Thought for 2 seconds</);
+  assert.doesNotMatch(html, /Reasoning text|Generating/);
+});
+
 test("completion actions wait for the whole turn while historical replies remain copyable", () => {
   const current = session([
     { ...user, id: "older-user", turnId: "older-turn" },
@@ -303,4 +317,28 @@ test("completed reply actions stay visible instead of appearing only on hover", 
   const bar = html.match(/<div class="([^"]*)"><div class="flex items-center gap-0.5"><button[^>]*aria-label="Copy"/)?.[1];
   assert.ok(bar);
   assert.doesNotMatch(bar, /opacity-0/);
+});
+
+test("a full free-trial window offers an upgrade alongside the local retry time", () => {
+  const capacity = (text: string): ClientTimelineItem => ({ id: "capacity", turnId: "turn-1", kind: "error", text, status: "failed" });
+  const idle = { ...session([user, capacity("Free trials are currently at capacity. Check back at 2:30 PM.")]), running: false };
+  let upgrades = 0;
+  const element = createElement(TimelineView, { session: idle, onUpgrade: () => { upgrades += 1; } });
+  const html = renderToStaticMarkup(element);
+  assert.match(html, /Free trials are currently at capacity\. Check back at 2:30 PM\./);
+  assert.match(html, /Plans and paid credit aren’t affected, so you can keep chatting now\./);
+  assert.equal(html.match(/>Upgrade plan</g)?.length, 1);
+  assert.doesNotMatch(html, /Details/);
+  // Rows saved by older runtimes carried an internal error prefix.
+  const legacy = renderToStaticMarkup(createElement(TimelineView, {
+    session: { ...idle, timeline: [user, capacity("provider error: Free trials are currently at capacity. Check back at 2026-11-20 19:30:00 UTC.")] },
+    onUpgrade: () => {},
+  }));
+  assert.doesNotMatch(legacy, /provider error/);
+  assert.match(legacy, />Upgrade plan</);
+  // Without a billing screen the notice stays a plain explanation.
+  const web = render([user, capacity("Free trials are currently at capacity. Please try again later.")]);
+  assert.match(web, /Please try again later\./);
+  assert.doesNotMatch(web, /Upgrade plan/);
+  assert.equal(upgrades, 0);
 });

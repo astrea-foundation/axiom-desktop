@@ -344,6 +344,11 @@ export function App() {
                 attachmentPreviews={conversations.attachmentPreviews}
                 onRevise={!isStreaming && agentState.account?.state === "valid" ? reviseMessage : undefined}
                 onContinue={!isStreaming && activeThreadId && agentState.account?.state === "valid" ? continueReply : undefined}
+                onUpgrade={agentState.account?.state === "valid" ? () => {
+                  // Plans live on the Balance screen; return focus here when it closes.
+                  accountScreenReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                  setAccountScreen("balance");
+                } : undefined}
                 agentControl={agentControl}
                 queue={<MessageQueue messages={messageQueue.list(activeThreadId, billingAccountId).filter((message) => message.id !== pendingUserMessage?.id || message.status !== "sending")}
                   paused={!!activeThreadId && messageQueue.isPaused(activeThreadId)}

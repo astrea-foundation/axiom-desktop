@@ -20,6 +20,14 @@ selects the staging API/auth pair. `pnpm desktop:install` installs the Linux
 checkout launcher; it is a development convenience, not a release package.
 CLI alternatives are in [the CLI guide](cli.md).
 
+On macOS, `pnpm desktop` uses the AstreaAI image runtime from the signed
+`/Applications/Axiom.app` when the debug sidecar has no adjacent runtime bundle.
+Install the signed Desktop app once to supply that runtime for new checkouts.
+The debug sidecar checks the app's Astrea Labs Developer ID signature before
+loading its verifier and public configuration. Worker attestation and account
+authorization still apply to each image request. Staging and loopback profiles
+use their own configured runtimes.
+
 The development launcher records its Node executable and launch arguments for
 factory-reset recovery. After cleanup, reset starts that launcher so both Vite
 and Electron come back together. Reopening Electron by itself would retain a

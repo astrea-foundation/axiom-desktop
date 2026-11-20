@@ -7,6 +7,11 @@ settings presentation. Desktop consumes these components through preserved
 renderer re-exports. Hosted applications consume the same committed artifact.
 Image tool cards show a reason when the host identifies a gateway or verification
 failure. Older generic gateway failures retain a neutral completion message.
+The transcript opens the **Thinking** panel during live reasoning and collapses
+it when the reply moves on to text or a tool call, or the turn ends. Hosts can
+supply `ClientTimelineItem.reasoningDurationMs` for the collapsed
+**Thought for N seconds** label. Desktop measures the span of streamed reasoning
+chunks and retains it across transcript reloads.
 
 `packages/chat-core` owns structural runtime views, host capabilities/ports,
 attachment validation and original-file reading, the existing durable message
@@ -78,7 +83,7 @@ workspace-package or TypeScript imports.
 The settings screen and category navigation are shared too. Hosts supply the
 available categories and account/storage actions. Web hides Agent, MCP, Proxy,
 native updates and local API-key controls. Unsupported uploads are disabled with
-provider/model-specific hover text. Composer relocation animates on immediate
+model-specific hover text. Composer relocation animates on immediate
 thread creation and respects reduced motion.
 The composer disables model selection during preparation and streaming, dismisses
 an open model picker when either starts, and restores selection when the turn

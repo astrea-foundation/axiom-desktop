@@ -40,9 +40,10 @@ keeps listing the provider's last-known models as temporarily unavailable for up
 to a day. The native client requests them with `include_unavailable=true`, validates
 them like any other entry and keeps them apart from the selectable catalog: they
 are never a default, a saved preference or an inference target. AxiomCLI returns
-them as `unavailableModels` from `_axiom/models/list`. The Desktop picker shows
-them below the selectable models, greyed out and labelled "Temporarily
-unavailable", and greys out that provider's host filter. They return to normal on
+them as `unavailableModels` from `_axiom/models/list`. When another provider
+still serves the same model, the picker keeps offering that model through it.
+A model with no available provider is shown below the selectable models, greyed
+out and labelled "Temporarily unavailable". They return to normal on
 the first refresh after the provider recovers. A backend that restarted during
 the outage has no last-known models to list, and the TUI picker and browser chat
 still list selectable models only.
@@ -53,13 +54,12 @@ AstreaAI offerings must not hide this error by appearing as the entire catalog.
 After the user reviews and accepts the policies, returning focus to Desktop
 refreshes discovery. Catalog errors never display backend-supplied text or URLs.
 
-Image and file icons replace capability words in Desktop. Tinfoil uses its official
-provider symbol. The composer model control shows the provider symbol to the left
-of the model brand icon and name; hovering the provider symbol shows its name.
-AstreaAI uses the official blue Astrea symbol from `astrea.systems`, bundled as
-an SVG without the wordmark. The same artwork appears in the model picker and
-composer, while Qwen retains its model family icon.
-Axiom-hosted offerings use Axiom's colored provider symbol. Qwen3.8 Uncensored
+Image and file icons replace capability words in Desktop. The model picker and
+composer name the model only; they do not show who serves it. The privacy proof
+still names the provider that verified a conversation. `ProviderBrandIcon` keeps
+the provider symbols (Tinfoil's official symbol, AstreaAI's blue Astrea symbol
+from `astrea.systems` without the wordmark, Axiom's colored symbol) for hosts
+that need them; the picker and composer do not use it. Qwen3.8 Uncensored
 uses the Qwen family icon; Qwen names with an attached version number resolve
 to the same family artwork in the model picker and composer.
 The native image tools derive their adapter policy from the actual selected
@@ -68,7 +68,8 @@ example the abliterated DeepSeek V4.1 Flash or Qwen3.8 Uncensored) requests the
 bundled uncensored image LoRA at strength **0.9**, while other models use the
 base image model. The native secure client reads the tag from its accepted catalog
 (refreshing it when absent or stale); a model missing from the catalog uses the
-base model. Locally pinned AstreaAI and staging offerings carry the tag themselves.
+base model. Locally pinned AstreaAI and staging offerings carry the tag themselves;
+the pinned AstreaAI Qwen3.8 offering is tagged Fast and Uncensored.
 Both generation and editing follow this rule, including after switching models. Tool arguments
 cannot override the policy, adapter path or multiplier. The flag and adapter
 metadata are bound to the encrypted image request and authenticated response.
@@ -86,26 +87,43 @@ as Cheap, Intelligent or Uncensored, plus an automatic New tag for recently
 discovered models. Each tag has an `id`, a `label`, a `tone` from a closed color
 set and a sort `position`. The [native catalog parser](../crates/axiom-secure-client/src/catalog.rs)
 drops malformed or duplicate tags individually, keeps at most 16 sorted by
-position then ID, and never quarantines a model because of its tags. Unknown
-tones render gray. Older backends that omit the field show no tag filters.
+position then ID, and never quarantines a model because of its tags. The picker
+shows every tag in the same neutral style and ignores `tone`. Older backends
+that omit the field show no tag filters.
 The `uncensored` tag also selects the uncensored image adapter (see above), so
 the backend's tag assignments decide that content policy. Tags never affect
 routing, pricing, attestation, contract selection or availability.
 
-The Desktop picker shows one flat list in provider preference order. Uncensored
-is the first tag filter; the remaining tags follow catalog position and label.
-Tag filters combine with AND; host filters (from each entry's provider) combine with OR; the
-image and file toggles appear only when some, but not all, offerings accept that
-input. Search also matches tag labels. Filters that would leave no models are
-disabled, and filters reset each time the picker opens. Rows show the host and up
-to three tags; the upstream model name moves to the row tooltip. The picker
+The picker lists each model once, however many providers serve it. Offerings are
+the same model when their upstream names match after the platform's tag-sharing
+normalization (last path segment, lower case, other characters replaced by `-`).
+The default model comes first, then the fallback default, then models by name.
+
+A new thread chooses its provider once, when it starts. Among the available
+providers of the chosen model that accept the draft's attachments, it prefers
+the one accepting more kinds of uploads (images, files), then the lowest average
+of input and output price per million tokens, then the lowest provider ID so
+ties always resolve the same way. Unpriced offerings rank after priced ones.
+An existing thread keeps its provider when prices or capabilities change; picking
+its current model again does not move it. Choosing a different model in a thread
+switches to that model's preferred provider. Each request still names one exact
+offering and keeps that provider's attestation and E2EE checks. The rule lives in
+[`modelGroups.ts`](../packages/chat-ui/src/modelGroups.ts) and is shared with the
+browser chat.
+
+Uncensored is the first tag filter; the remaining tags follow catalog position
+and label. Tag filters combine with AND; the image and file toggles sit beside
+them and appear only when some, but not all, models accept that input. Search
+matches model names, upstream names and tag labels, never providers. Filters
+that would leave no models are disabled, and filters reset each time the picker
+opens. Rows show up to three tags and the price of the provider the row would
+use; the upstream model name moves to the row tooltip. The picker
 measures the window and every ancestor that clips or scrolls, then limits its size
 and slides from its anchor above the model control so it is never cut off in
 Desktop or a browser host; when very little height is left, the whole picker
 scrolls. Opening the picker focuses its search field while preserving the host's
-scroll position. The browser chat
-consumes a vendored `@axiom/chat-ui` package and shows tags only after it is
-re-vendored with this picker.
+scroll position. The browser chat consumes a vendored `@axiom/chat-ui` package
+and shows these changes once it is re-vendored.
 
 ## Direct uploads and compatibility
 

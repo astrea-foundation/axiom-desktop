@@ -311,6 +311,32 @@ test("live assistant and reasoning deltas reuse their durable row identity", () 
   }
 });
 
+test("reasoning duration uses the same chunk timestamps live and after a reload", () => {
+  const store = new AxiomStateStore();
+  const firstAt = "2026-09-07T00:00:00.100Z";
+  const lastAt = "2026-09-07T00:00:04.600Z";
+  for (const [revision, text, lastMessageAt] of [[1, "First ", firstAt], [2, "thought", lastAt]] as const) {
+    const update = delta(revision, text, "reasoning");
+    Object.assign(update._meta.axiom, { timelineItemId: "durable-id", lastMessageAt });
+    store.standardUpdate(update);
+  }
+  assert.equal(store.snapshot().sessions.thread!.timeline[0]?.reasoningDurationMs, 4500);
+
+  const saved = page(3, "First thought", "reasoning");
+  saved.thread.lifecycle = "ready";
+  Object.assign(saved.items[0]!, {
+    status: "completed", createdAt: firstAt, updatedAt: "2026-09-07T00:01:00Z",
+    metadata: { last_reasoning_delta_at: lastAt },
+  });
+  const reopened = new AxiomStateStore();
+  reopened.replaceTimeline([saved]);
+  assert.equal(reopened.snapshot().sessions.thread!.timeline[0]?.reasoningDurationMs, 4500);
+
+  saved.items[0]!.metadata = {};
+  reopened.replaceTimeline([saved]);
+  assert.equal(reopened.snapshot().sessions.thread!.timeline[0]?.reasoningDurationMs, undefined);
+});
+
 test("message activity comes from native timestamps, not load or notification arrival times", () => {
   const store = new AxiomStateStore();
   const snapshot = page(1, "old answer");

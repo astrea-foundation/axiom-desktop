@@ -26,6 +26,8 @@ interface ChatViewProps {
   onStop: () => void;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
   onContinue?: () => Promise<void>;
+  /** Opens plans or billing from a free-trial capacity notice. */
+  onUpgrade?: () => void;
   isStreaming: boolean;
   isStopping?: boolean;
   models: ProviderModel[];
@@ -61,6 +63,7 @@ export function ChatView({
   onStop,
   onRevise,
   onContinue,
+  onUpgrade,
   isStreaming,
   isStopping = false,
   models,
@@ -99,7 +102,7 @@ export function ChatView({
         {...autoScroll.handlers}
       >
         <div ref={autoScroll.contentRef} className="mx-auto flex w-full max-w-[760px] flex-col pb-8 pt-[88px]">
-          <TimelineView key={securityScope} session={session} isStopping={isStopping} pendingUserMessage={pendingUserMessage} onRevise={onRevise} onContinue={onContinue} attachmentPreviews={attachmentPreviews} />
+          <TimelineView key={securityScope} session={session} isStopping={isStopping} pendingUserMessage={pendingUserMessage} onRevise={onRevise} onContinue={onContinue} onUpgrade={onUpgrade} attachmentPreviews={attachmentPreviews} />
         </div>
       </div>
 

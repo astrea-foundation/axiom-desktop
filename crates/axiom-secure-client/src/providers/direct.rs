@@ -188,21 +188,57 @@ fn request_input_budget(input: &Input) -> Result<u64> {
 }
 
 pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>> {
-    let (path, bundled) = if let Some(path) = std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE") {
-        (PathBuf::from(path), false)
-    } else {
-        if relay.as_str().trim_end_matches('/') != "https://api.axiom.stream" {
-            return Ok(None);
+    if let Some(path) = std::env::var_os("AXIOM_DIRECT_CLIENT_CONFIG_FILE") {
+        return load_config(std::path::Path::new(&path), false, relay).map(Some);
+    }
+    if relay.as_str().trim_end_matches('/') != "https://api.axiom.stream" {
+        return Ok(None);
+    }
+    let executable = std::env::current_exe()
+        .map_err(|_| SecureClientError::configuration("native executable location unavailable"))?;
+    if let Some(path) = bundled_config(&executable)? {
+        return load_config(&path, true, relay).map(Some);
+    }
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    if std::env::var("AXIOMCLI_USE_INSTALLED_IMAGE_RUNTIME").as_deref() == Ok("1") {
+        match macos_dev_image_config(std::path::Path::new("/Applications/Axiom.app"), relay) {
+            Ok(Some(config)) => return Ok(Some(config)),
+            Ok(None) => {
+                tracing::warn!("No AstreaAI image runtime found in /Applications/Axiom.app")
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Could not use the installed AstreaAI image runtime")
+            }
         }
-        let executable = std::env::current_exe().map_err(|_| {
-            SecureClientError::configuration("native executable location unavailable")
-        })?;
-        let Some(path) = bundled_config(&executable)? else {
-            return Ok(None);
-        };
-        (path, true)
+    }
+    Ok(None)
+}
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+fn macos_dev_image_config(app: &std::path::Path, relay: &url::Url) -> Result<Option<DirectConfig>> {
+    // The Developer ID signature seals the public publisher pins and verifier.
+    // Recheck the installed app at startup so upgrades supply their current pins.
+    const REQUIREMENT: &str = concat!(
+        "=anchor apple generic and identifier \"stream.axiom.desktop\"",
+        " and certificate leaf[subject.OU] = \"TUYZ893FMJ\"",
+        " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+    );
+    let Some(path) = bundled_config_in(&app.join("Contents/Resources"))? else {
+        return Ok(None);
     };
-    load_config(&path, bundled, relay).map(Some)
+    let signed = std::process::Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict", "-R", REQUIREMENT])
+        .arg(app)
+        .env_clear()
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !signed {
+        return Err(SecureClientError::configuration(
+            "the installed Axiom Desktop signature did not verify",
+        ));
+    }
+    let config = load_config(&path, true, relay)?;
+    Ok(config.image_generation.then_some(config))
 }
 
 fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
@@ -215,6 +251,10 @@ fn bundled_config(executable: &std::path::Path) -> Result<Option<PathBuf>> {
     let Some(directory) = executable.parent().and_then(std::path::Path::parent) else {
         return Ok(None);
     };
+    bundled_config_in(directory)
+}
+
+fn bundled_config_in(directory: &std::path::Path) -> Result<Option<PathBuf>> {
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
@@ -405,6 +445,22 @@ mod installed_bundle_tests {
         assert!(bundled_config(&executable).is_err());
         std::fs::write(&identity, br#"{"schemaVersion":1,"product":"desktop"}"#).unwrap();
         assert!(bundled_config(&executable).unwrap().is_some());
+    }
+
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    #[test]
+    fn development_desktop_rejects_an_unsigned_installed_app_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("Axiom.app");
+        let resources = app.join("Contents/Resources");
+        installed_executable(&resources);
+        std::fs::write(
+            resources.join("axiom-install.json"),
+            br#"{"schemaVersion":1,"product":"desktop"}"#,
+        )
+        .unwrap();
+        let origin = url::Url::parse("https://api.axiom.stream").unwrap();
+        assert!(macos_dev_image_config(&app, &origin).is_err());
     }
 
     #[cfg(unix)]

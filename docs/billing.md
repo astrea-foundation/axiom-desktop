@@ -32,7 +32,9 @@ then purchased dollars when fallback is enabled. The two balances are never summ
 
 Free trials share a configurable budget across all accounts and providers over
 the preceding five hours. Once it is full, new trial-funded requests show **Free
-trials are currently at capacity** and a check-back time. Existing requests finish
+trials are currently at capacity** and a check-back time in the computer's own
+time zone. In Desktop the notice includes **Upgrade plan**, which opens Balance to
+choose a plan or add credit and keep chatting. Existing requests finish
 normally; their cost can take the shared spending over the limit and move the
 retry time later. Subscription allowance and purchased dollars remain usable
 when available and do not contribute to the trial budget. Purchased fallback

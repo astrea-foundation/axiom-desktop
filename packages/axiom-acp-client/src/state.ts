@@ -46,6 +46,8 @@ export type ClientTimelineItem = {
   kind: "user" | "assistant" | "reasoning" | "tool" | "plan" | "activity" | "error";
   text: string;
   status?: string;
+  reasoningStartedAtMs?: number;
+  reasoningDurationMs?: number;
   /// True only when the authoritative durable item carries evidence that its
   /// exact terminal provider response was verified. Session preflight state
   /// is deliberately not promoted to this per-response claim.
@@ -163,6 +165,11 @@ function object(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function timestampMs(value: unknown): number | undefined {
+  const timestamp = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 function deliveryMetadata(record: Record<string, unknown>, update: Record<string, unknown>): DeliveryMetadata | null {
   const topMeta = object(record._meta);
   const updateMeta = object(update._meta);
@@ -272,8 +279,15 @@ function fromDurable(item: DurableTimelineItem): ClientTimelineItem {
       return { id: item.id, turnId: item.turnId ?? undefined, clientItemId, sequence: item.sequence, kind: "user", text: item.content, status: item.status, raw: item };
     case "assistant_message":
       return { id: item.id, turnId: item.turnId ?? undefined, sequence: item.sequence, kind: "assistant", text: item.content, status: item.status, terminalVerified, finishReason: typeof metadata.finish_reason === "string" ? metadata.finish_reason : undefined, raw: item };
-    case "reasoning":
-      return { id: item.id, turnId: item.turnId ?? undefined, sequence: item.sequence, kind: "reasoning", text: item.content, status: item.status, terminalVerified, finishReason: typeof metadata.finish_reason === "string" ? metadata.finish_reason : undefined, raw: item };
+    case "reasoning": {
+      const reasoningStartedAtMs = timestampMs(item.createdAt);
+      const lastDeltaAt = timestampMs(metadata.last_reasoning_delta_at);
+      const reasoningDurationMs = lastDeltaAt !== undefined && reasoningStartedAtMs !== undefined
+        ? Math.max(0, lastDeltaAt - reasoningStartedAtMs) : undefined;
+      return { id: item.id, turnId: item.turnId ?? undefined, sequence: item.sequence, kind: "reasoning",
+        text: item.content, status: item.status, reasoningStartedAtMs, reasoningDurationMs, terminalVerified,
+        finishReason: typeof metadata.finish_reason === "string" ? metadata.finish_reason : undefined, raw: item };
+    }
     case "tool_call": {
       const tool = durableTool(item);
       return { id: item.id, turnId: item.turnId ?? undefined, sequence: item.sequence, kind: "tool", text: tool.title, status: item.status, raw: item, tool };
@@ -734,25 +748,33 @@ export class AxiomStateStore extends EventEmitter {
       const recentItems = [...session.timeline].reverse();
       const boundary = recentItems.findIndex((item) => item.kind === "tool" || item.kind === "user");
       const segment = kind === "user" || boundary < 0 ? recentItems : recentItems.slice(0, boundary);
-      const existing = metadata?.timelineItemId
+      let item = metadata?.timelineItemId
         ? session.timeline.find((item) => item.id === itemId)
         : segment.find((item) => item.id === itemId
           || (turnId && kind !== "user" && item.kind === kind && item.turnId === turnId));
-      if (existing) {
-        existing.text += text;
-        existing.status = kind === "user" ? "completed" : "streaming";
-        if (kind !== "user") existing.terminalVerified = false;
+      const status = kind === "user" ? "completed" : "streaming";
+      if (item) {
+        item.text += text;
+        item.status = status;
+        if (kind !== "user") item.terminalVerified = false;
+      } else {
+        item = {
+          id: session.timeline.some((item) => item.id === itemId) ? crypto.randomUUID() : itemId,
+          turnId,
+          clientItemId: metadata?.clientItemId ?? undefined,
+          kind,
+          text,
+          status,
+          ...(kind === "user" && Array.isArray(object(update._meta)?.axiomAttachments)
+            ? { raw: { metadata: { attachments: object(update._meta)!.axiomAttachments } } } : {}),
+        };
+        session.timeline.push(item);
       }
-      else session.timeline.push({
-        id: session.timeline.some((item) => item.id === itemId) ? crypto.randomUUID() : itemId,
-        turnId,
-        clientItemId: metadata?.clientItemId ?? undefined,
-        kind,
-        text,
-        status: kind === "user" ? "completed" : "streaming",
-        ...(kind === "user" && Array.isArray(object(update._meta)?.axiomAttachments)
-          ? { raw: { metadata: { attachments: object(update._meta)!.axiomAttachments } } } : {}),
-      });
+      if (kind === "reasoning" && text && !messageId.startsWith("provider:")) {
+        const chunkAt = timestampMs(metadata?.lastMessageAt) ?? Date.now();
+        item.reasoningStartedAtMs ??= chunkAt;
+        item.reasoningDurationMs = Math.max(item.reasoningDurationMs ?? 0, chunkAt - item.reasoningStartedAtMs);
+      }
       if (metadata) this.textRevisions.set(record.sessionId, metadata.threadRevision);
     } else if (type === "tool_call" || type === "tool_call_update") {
       // The validated call replaces the transient "writing tool call" row.

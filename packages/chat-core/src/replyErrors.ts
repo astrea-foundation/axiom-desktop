@@ -1,3 +1,13 @@
+const TRIAL_CAPACITY = /^(?:provider error: )?(Free trials are currently at capacity\b.*)$/s;
+
+/**
+ * Desktop and the web gateway both report a full shared trial window with this
+ * text. Older Desktop rows carry an internal "provider error: " prefix.
+ */
+export function trialCapacityMessage(detail: string): string | null {
+  return TRIAL_CAPACITY.exec(detail.trim())?.[1] ?? null;
+}
+
 /** Presentation only: these errors still fail the reply's completion checks. */
 export function replyErrorPresentation(detail: string): { message: string; interrupted: boolean } | null {
   switch (detail.trim()) {

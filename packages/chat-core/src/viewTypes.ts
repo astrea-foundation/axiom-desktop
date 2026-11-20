@@ -397,6 +397,8 @@ export type ClientTimelineItem = {
   kind: "user" | "assistant" | "reasoning" | "tool" | "plan" | "activity" | "error";
   text: string;
   status?: string;
+  /** Time covered by this reasoning item's streamed text, when recorded. */
+  reasoningDurationMs?: number;
   /// True only when the authoritative durable item carries evidence that its
   /// exact terminal provider response was verified. Session preflight state
   /// is deliberately not promoted to this per-response claim.

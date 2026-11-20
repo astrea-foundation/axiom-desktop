@@ -2,7 +2,7 @@
 import { AlertTriangle, CheckCircle2, ListChecks, LoaderCircle } from "lucide-react";
 import type { ClientSessionState, ClientTimelineItem } from "@axiom/chat-core/viewTypes";
 import type { PendingUserMessage } from "@axiom/chat-core/types";
-import { replyErrorPresentation } from "@axiom/chat-core/replyErrors";
+import { replyErrorPresentation, trialCapacityMessage } from "@axiom/chat-core/replyErrors";
 import { AttachmentCards, StoredAttachments, attachmentSummaries } from "./Attachments";
 import type { AttachmentPreviews } from "@axiom/chat-core/attachmentPreviews";
 import { MessageBubble } from "./MessageBubble";
@@ -11,8 +11,23 @@ import { InteractionCard } from "./InteractionCard";
 import { DismissibleNotice } from "./DismissibleNotice";
 import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./timelinePresentation";
 
-function ActivityRow({ item, onRetry }: { item: ClientTimelineItem; onRetry?: () => Promise<void> }) {
+function ActivityRow({ item, onRetry, onUpgrade }: {
+  item: ClientTimelineItem; onRetry?: () => Promise<void>; onUpgrade?: () => void;
+}) {
   const error = item.kind === "error";
+  const capacity = error ? trialCapacityMessage(item.text) : null;
+  // Plans and paid credit are not limited by the shared free-trial window.
+  if (capacity) return <DismissibleNotice data-timeline-kind="activity" role="alert" className="flex items-start gap-2 rounded-lg bg-[var(--color-danger-soft)] px-3 py-2 text-[12.5px] text-[var(--color-danger-strong)]">
+    <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+    <div className="min-w-0">
+      <p className="break-words">{capacity}</p>
+      {onUpgrade ? <p className="mt-1 text-[var(--color-text-secondary)]">Plans and paid credit aren’t affected, so you can keep chatting now.</p> : null}
+      {onUpgrade || onRetry ? <div className="mt-2 flex flex-wrap gap-2">
+        {onUpgrade ? <button type="button" className="rounded-lg bg-[var(--color-cherry)] px-2.5 py-1 font-medium text-on-accent hover:bg-[var(--color-cherry-bright)]" onClick={onUpgrade}>Upgrade plan</button> : null}
+        {onRetry ? <button type="button" className="rounded px-2 py-1 text-[var(--color-cherry)] hover:bg-[var(--wash-row)]" onClick={() => void onRetry().catch(() => {})}>Retry</button> : null}
+      </div> : null}
+    </div>
+  </DismissibleNotice>;
   if (error && item.text.includes("Intel TDX environment is OutOfDate")) return <div role="status" data-timeline-kind="activity"
     className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] text-[var(--color-warning)]">
     <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -50,6 +65,7 @@ export function TimelineView({
   pendingUserMessage,
   onRevise,
   onContinue,
+  onUpgrade,
   attachmentPreviews,
 }: {
   session: ClientSessionState;
@@ -57,6 +73,8 @@ export function TimelineView({
   pendingUserMessage?: PendingUserMessage | null;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
   onContinue?: () => Promise<void>;
+  /** Opens the host's plans or billing screen from a free-trial capacity notice. */
+  onUpgrade?: () => void;
   attachmentPreviews?: AttachmentPreviews;
 }) {
   const presentation = presentTimeline(session.timeline);
@@ -70,6 +88,14 @@ export function TimelineView({
   }
   const activeTurnId = session.activeTurnId ?? latestUser?.turnId;
   const responseActive = session.running || isStopping;
+  const showPendingUser = Boolean(
+    pendingUserMessage
+      && pendingUserMessage.sessionId === session.sessionId
+      && !session.timeline.some((item) => item.clientItemId === pendingUserMessage.id),
+  );
+  // The validated tool row takes over as soon as the call arrives.
+  const draftingToolCall = !showPendingUser && session.running && Boolean(session.toolCallDraftTurnId)
+    && (!session.activeTurnId || session.activeTurnId === session.toolCallDraftTurnId);
   // A turn split by tool calls renders several assistant segments; the final
   // segment's Copy action copies the reply body of the whole turn.
   const turnReplies = new Map<string, string[]>();
@@ -80,20 +106,27 @@ export function TimelineView({
     if (turnId) turnReplies.set(turnId, [...turnReplies.get(turnId) ?? [], row.message.content.trim()]);
   }
   const turnsWithErrors = new Set(session.timeline.filter((item) => item.kind === "error" && item.turnId).map((item) => item.turnId));
+  let hasThinking = false;
   const rows = presentation.map((row) => {
     if (row.kind === "message") {
       if ((session.compaction || isStopping) && row.message.role === "assistant" && !row.message.content && !row.message.reasoningContent) return null;
       const source = sources.get(row.message.id);
       const turnId = turnsByItem.get(row.message.id);
       const summaries = attachmentSummaries(source?.raw);
+      const rowResponseActive = responseActive && (turnId && activeTurnId
+        ? turnId === activeTurnId : !source || source.id === latestUser?.id);
+      const showGenerationIndicator = rowResponseActive && !isStopping && !session.compaction && !draftingToolCall;
+      const isThinking = showGenerationIndicator && Boolean(row.message.reasoningStreaming && row.message.reasoningContent?.trim())
+        && !row.message.content.trim() && !row.message.continues;
+      hasThinking ||= isThinking;
       return <div key={row.key} data-timeline-kind={row.message.role}>
         {row.message.role === "user" ? <StoredAttachments key={`${session.sessionId}:${row.message.id}`} threadId={session.sessionId} userItemId={row.message.id} summaries={summaries}
           initialFiles={attachmentPreviews?.get(source?.clientItemId)} /> : null}
         <MessageBubble message={row.message} revisionHasAttachments={Boolean(summaries.length)}
         onContinue={!responseActive && turnId === latestReplyTurn ? onContinue : undefined}
-        responseActive={responseActive && (turnId && activeTurnId
-          ? turnId === activeTurnId : !source || source.id === latestUser?.id)}
-        showGenerationIndicator={!isStopping}
+        responseActive={rowResponseActive}
+        isThinking={isThinking}
+        showGenerationIndicator={showGenerationIndicator}
         showFailureNotice={!turnId || !turnsWithErrors.has(turnId)}
         copyContent={turnId && row.message.role === "assistant" && !["failed", "interrupted", "cancelled"].includes(row.message.status) ? turnReplies.get(turnId)?.join("\n\n") : undefined}
         revisionText={source?.text} onRevise={source && onRevise ? (text) => onRevise(source.id, text) : undefined} /></div>;
@@ -102,13 +135,9 @@ export function TimelineView({
       return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={responseActive} /></div>;
     }
     return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item}
-      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestReplyTurn ? onContinue : undefined} />;
+      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestReplyTurn ? onContinue : undefined}
+      onUpgrade={onUpgrade} />;
   });
-  const showPendingUser = Boolean(
-    pendingUserMessage
-      && pendingUserMessage.sessionId === session.sessionId
-      && !session.timeline.some((item) => item.clientItemId === pendingUserMessage.id),
-  );
   if (showPendingUser && pendingUserMessage) {
     rows.push(
       <div key={pendingUserMessage.id} data-timeline-kind="user"><AttachmentCards files={pendingUserMessage.attachments ?? []} /><MessageBubble
@@ -122,11 +151,7 @@ export function TimelineView({
     );
   }
   const lastAlreadyShowsGeneration = !showPendingUser
-    && hasActiveResponse(presentation);
-  // Shown only while the model streams a tool call; the validated tool row
-  // takes its place as soon as the call itself arrives.
-  const draftingToolCall = !showPendingUser && session.running && Boolean(session.toolCallDraftTurnId)
-    && (!session.activeTurnId || session.activeTurnId === session.toolCallDraftTurnId);
+    && (hasThinking || hasActiveResponse(presentation));
 
   return (
     <div className="chat-timeline">

@@ -900,22 +900,39 @@ async fn secure_stream_failure<T>(
     Err(error)
 }
 
+/// The runtime runs on the user's computer, so the retry time uses its time zone.
+/// Trials reopen within five hours, so the time is today or tomorrow.
+fn trial_capacity_message<Tz: chrono::TimeZone>(
+    retry_at: Option<i64>,
+    now: &chrono::DateTime<Tz>,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Some(at) = retry_at.and_then(|at| chrono::DateTime::from_timestamp(at, 0)) else {
+        return "Free trials are currently at capacity. Please try again later.".to_owned();
+    };
+    let at = at.with_timezone(&now.timezone());
+    let time = at.format("%-I:%M %p");
+    if at.date_naive() == now.date_naive() {
+        format!("Free trials are currently at capacity. Check back at {time}.")
+    } else if now.date_naive().succ_opt() == Some(at.date_naive()) {
+        format!("Free trials are currently at capacity. Check back at {time} tomorrow.")
+    } else {
+        format!(
+            "Free trials are currently at capacity. Check back on {} at {time}.",
+            at.format("%b %-d")
+        )
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn map_secure_error(error: axiom_secure_client::SecureClientError) -> AxiomError {
     if error.code() == axiom_secure_client::SecureErrorCode::TrialCapacity {
-        let message = error
-            .retry_at()
-            .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
-            .map_or_else(
-                || error.safe_detail().to_owned(),
-                |at| {
-                    format!(
-                        "Free trials are currently at capacity. Check back at {} UTC.",
-                        at.format("%Y-%m-%d %H:%M:%S")
-                    )
-                },
-            );
-        return AxiomError::Provider(message);
+        return AxiomError::TrialCapacity(trial_capacity_message(
+            error.retry_at(),
+            &chrono::Local::now(),
+        ));
     }
     match error.kind() {
         ProviderFailureKind::Cancelled => AxiomError::Cancelled,
@@ -1479,6 +1496,52 @@ mod tests {
         Arc, Mutex as StdMutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn trial_capacity_retry_time_uses_the_computers_time_zone() {
+        use chrono::{FixedOffset, TimeZone};
+        // 2026-11-20 19:30 UTC is 2:30 PM in New York and 4:30 AM the next day in Tokyo.
+        let retry = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 19, 30, 0)
+            .unwrap()
+            .timestamp();
+        let new_york = FixedOffset::west_opt(5 * 3600).unwrap();
+        let tokyo = FixedOffset::east_opt(9 * 3600).unwrap();
+        assert_eq!(
+            super::trial_capacity_message(
+                Some(retry),
+                &new_york.with_ymd_and_hms(2026, 11, 20, 11, 0, 0).unwrap()
+            ),
+            "Free trials are currently at capacity. Check back at 2:30 PM."
+        );
+        assert_eq!(
+            super::trial_capacity_message(
+                Some(retry),
+                &tokyo.with_ymd_and_hms(2026, 11, 21, 0, 15, 0).unwrap()
+            ),
+            "Free trials are currently at capacity. Check back at 4:30 AM."
+        );
+        assert_eq!(
+            super::trial_capacity_message(
+                Some(retry),
+                &tokyo.with_ymd_and_hms(2026, 11, 20, 23, 45, 0).unwrap()
+            ),
+            "Free trials are currently at capacity. Check back at 4:30 AM tomorrow."
+        );
+        assert_eq!(
+            super::trial_capacity_message(
+                None,
+                &tokyo.with_ymd_and_hms(2026, 11, 20, 23, 45, 0).unwrap()
+            ),
+            "Free trials are currently at capacity. Please try again later."
+        );
+        // The message is shown as written, without an internal error prefix.
+        assert_eq!(
+            crate::AxiomError::TrialCapacity("Free trials are currently at capacity.".into())
+                .to_string(),
+            "Free trials are currently at capacity."
+        );
+    }
 
     use super::*;
     use axum::{
