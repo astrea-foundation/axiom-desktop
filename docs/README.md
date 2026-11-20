@@ -17,6 +17,7 @@ must be recorded against the actual source revision and signed installers.
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Encrypted local storage](local-storage.md) | Binary assets, forward migration, OS-protected keys and recovery |
 | [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
+| [0.1.28 release notes](releases/0.1.28.md) | Smaller default images and longer waits for an available GPU |
 | [0.1.27 release notes](releases/0.1.27.md) | Chats settings page, Clear all chats, and faster first replies |
 | [0.1.26 release notes](releases/0.1.26.md) | Sidebar thread menus on hover and keyboard focus |
 | [0.1.25 release notes](releases/0.1.25.md) | Windows Qwen verification, chat controls and image error details |
