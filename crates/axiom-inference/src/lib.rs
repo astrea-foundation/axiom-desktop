@@ -25,6 +25,8 @@ pub struct ImageGenerationRequest<'a> {
     pub prompt: &'a str,
     pub references: &'a [(&'a str, &'a ImageContent)],
     pub dimensions: Option<ImageDimensions>,
+    /// The caller can wait through the controller queue and the generation deadline.
+    pub allow_long_queue: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -151,6 +151,26 @@ impl ImageRuntimePolicy {
     }
 
     pub fn dimensions(&self, ratio: &str) -> Result<ImageDimensions, &'static str> {
+        self.dimensions_with_limit(ratio, self.image.max_pixels)
+    }
+
+    #[must_use]
+    pub fn generation_pixel_limit(&self) -> u64 {
+        self.image.max_pixels.min(1536 * 1536)
+    }
+
+    pub fn generation_dimensions(&self, ratio: &str) -> Result<ImageDimensions, &'static str> {
+        // Custom policies can admit an exact ratio whose smallest grid exceeds
+        // the default generation area.
+        self.dimensions_with_limit(ratio, self.generation_pixel_limit())
+            .or_else(|_| self.dimensions(ratio))
+    }
+
+    fn dimensions_with_limit(
+        &self,
+        ratio: &str,
+        max_pixels: u64,
+    ) -> Result<ImageDimensions, &'static str> {
         let bad = "Unsupported image aspect ratio.";
         if !self.image.aspect_ratios.iter().any(|r| r == ratio) {
             return Err(bad);
@@ -176,7 +196,7 @@ impl ImageRuntimePolicy {
         }
         w /= a;
         h /= a;
-        let scale = (self.image.max_pixels / (1024 * w * h)).isqrt();
+        let scale = (max_pixels / (1024 * w * h)).isqrt();
         if scale == 0 || w.min(h) * scale * 32 < 256 {
             return Err(bad);
         }
@@ -192,6 +212,32 @@ impl ImageRuntimePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_uses_the_smaller_of_the_default_and_the_policy_limit() {
+        let mut runtime = ImageRuntimePolicy::default();
+        assert_eq!(runtime.dimensions("1:1").unwrap().width, 2048);
+        assert_eq!(runtime.generation_dimensions("1:1").unwrap().width, 1536);
+        runtime.image.max_pixels = 1024 * 1024;
+        runtime.validate().unwrap();
+        assert_eq!(runtime.generation_dimensions("1:1").unwrap().width, 1024);
+    }
+
+    #[test]
+    fn custom_policy_ratios_that_require_more_pixels_remain_usable() {
+        let mut runtime = ImageRuntimePolicy::default();
+        runtime.image.aspect_ratios.push("99:25".into());
+        runtime.image.default_aspect_ratio = "99:25".into();
+        runtime.validate().unwrap();
+        assert_eq!(
+            runtime.generation_dimensions("99:25").unwrap(),
+            ImageDimensions {
+                width: 3168,
+                height: 800,
+            }
+        );
+    }
+
     #[test]
     fn reference_default_size_is_explicit_and_rejects_malformed_policy_values() {
         let mut runtime = ImageRuntimePolicy::default();

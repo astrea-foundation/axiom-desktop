@@ -11,15 +11,18 @@ use axiom_inference::{
 };
 use axiom_pool_client::{
     attestation::VerifiedWorker,
-    direct::{DirectClient, DirectConfig, ExecutionOptions},
+    direct::{CapacityUnavailable, DirectClient, DirectConfig, ExecutionOptions},
 };
-use axiom_pool_protocol::types::{Input, Limits, Message};
+use axiom_pool_protocol::{
+    frames::Rejection,
+    types::{Input, Limits, Message},
+};
 use std::{
     path::PathBuf,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> SecureClientError {
@@ -45,12 +48,12 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
     if let Some(capacity) = error.downcast_ref::<axiom_pool_client::TrialCapacity>() {
         return SecureClientError::trial_capacity(capacity.retry_at);
     }
-    if let Some(capacity) = error.downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>() {
+    if let Some(capacity) = error.downcast_ref::<CapacityUnavailable>() {
         let detail = match capacity {
-            axiom_pool_client::direct::CapacityUnavailable::Preparation => {
+            CapacityUnavailable::Preparation | CapacityUnavailable::QueuedImage => {
                 "AstreaAI is temporarily busy. Your request was not submitted; try again shortly."
             }
-            axiom_pool_client::direct::CapacityUnavailable::Exchange => {
+            CapacityUnavailable::Exchange => {
                 "AstreaAI is overloaded. Your request did not complete; it was not replayed."
             }
         };
@@ -64,9 +67,9 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
             i64::try_from(now().saturating_add(2)).unwrap_or(i64::MAX),
         ));
     }
-    if let Some(refusal) = error.downcast_ref::<axiom_pool_protocol::frames::Rejection>() {
+    if let Some(refusal) = error.downcast_ref::<Rejection>() {
         // Only the request-bound encrypted refusal followed by clean EOF can
-        // reach this type. Do not automatically replay an inference request.
+        // reach this type. A terminal error for the caller carries no replay permission.
         return SecureClientError::with_code(
             axiom_inference::ProviderFailureKind::RateLimited,
             crate::error::SecureErrorCode::RateLimited,
@@ -85,9 +88,63 @@ fn exchange_error(error: &anyhow::Error, cancelled: bool, image: bool) -> Secure
     })
 }
 
+fn image_error(error: anyhow::Error, cancelled: bool) -> SecureClientError {
+    if cancelled {
+        return SecureClientError::cancelled();
+    }
+    error
+        .downcast::<SecureClientError>()
+        .unwrap_or_else(|error| exchange_error(&error, false, true))
+}
+
 pub const ID: &str = "axiom-direct";
 pub const MODEL: &str = "direct:qwen3.8-27b";
 const PROFILE: &str = "axiom-snp-nvidia-v1";
+const IMAGE_ADMISSION_WAIT: Duration = Duration::from_secs(600);
+
+async fn wait_for_image_capacity<T, F, Fut>(
+    retry_until: Instant,
+    cancel: &CancellationToken,
+    mut attempt: F,
+) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut + Send,
+    Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
+{
+    let mut backoff = Duration::from_secs(2);
+    loop {
+        anyhow::ensure!(!cancel.is_cancelled(), "cancelled");
+        if Instant::now() >= retry_until {
+            return Err(CapacityUnavailable::QueuedImage.into());
+        }
+        let error = match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        // Preparation backpressure precedes dispatch. The typed worker refusal
+        // also proves the request never reached the engine. Exchange errors do not.
+        let delay = match error.downcast_ref::<CapacityUnavailable>() {
+            Some(CapacityUnavailable::QueuedImage) => Duration::from_secs(5),
+            Some(CapacityUnavailable::Preparation) => {
+                let delay = backoff;
+                backoff = (backoff * 2).min(Duration::from_secs(16));
+                delay
+            }
+            _ => match error.downcast_ref::<Rejection>() {
+                Some(refusal) => Duration::from_secs(u64::from(refusal.retry_after_secs)),
+                None => return Err(error),
+            },
+        };
+        let retry_at = (Instant::now() + delay).min(retry_until);
+        tokio::select! {
+            () = cancel.cancelled() => anyhow::bail!("cancelled"),
+            () = tokio::time::sleep_until(retry_at) => {}
+        }
+        if Instant::now() >= retry_until {
+            return Err(error);
+        }
+    }
+}
 
 /// The grant bounds the decrypted envelope, including JSON escaping, signed
 /// bindings and proof. Reserve a coarse MiB budget for this input rather than
@@ -375,14 +432,22 @@ pub(crate) fn models(config: &SecureClientConfig) -> Vec<ModelInfo> {
     let mut model = ModelInfo {
         id: MODEL.into(),
         label: "Qwen3.8 Uncensored · AstreaAI".into(),
-        // Locally pinned offering: carries its own tag so image policy follows
-        // the same catalog-tag rule as relay offerings.
-        tags: vec![axiom_inference::ModelTag {
-            id: axiom_inference::UNCENSORED_MODEL_TAG.into(),
-            label: "Uncensored".into(),
-            tone: axiom_inference::ModelTagTone::Pink,
-            position: 50,
-        }],
+        // Locally pinned offering: carries its own tags, sorted by position, so
+        // image policy follows the same catalog-tag rule as relay offerings.
+        tags: vec![
+            axiom_inference::ModelTag {
+                id: "fast".into(),
+                label: "Fast".into(),
+                tone: axiom_inference::ModelTagTone::Blue,
+                position: 30,
+            },
+            axiom_inference::ModelTag {
+                id: axiom_inference::UNCENSORED_MODEL_TAG.into(),
+                label: "Uncensored".into(),
+                tone: axiom_inference::ModelTagTone::Pink,
+                position: 50,
+            },
+        ],
         short_label: "Qwen3.8 Uncensored".into(),
         provider_id: ID.into(),
         provider_label: "AstreaAI".into(),
@@ -477,11 +542,7 @@ impl DirectProvider {
         });
     }
 
-    async fn image_policy(
-        &self,
-        policy: &TrustPolicy,
-        cancel: &CancellationToken,
-    ) -> Result<axiom_inference::ImageRuntimePolicy> {
+    fn image_runtime(&self, policy: &TrustPolicy) -> Result<axiom_inference::ImageRuntimePolicy> {
         let runtime = installed_image_policy(&self.config)?;
         if !policy.is_valid_at(now())
             || !policy.require_nvidia_verified
@@ -492,26 +553,26 @@ impl DirectProvider {
                 "strict image attestation policy required",
             ));
         }
+        Ok(runtime)
+    }
+
+    async fn prepare_image_worker(&self, cancel: &CancellationToken) -> anyhow::Result<()> {
         let worker = self.client.prepare(cancel).await.map_err(|e| {
             tracing::warn!(detail=%e,"direct image preflight failed");
-            if cancel.is_cancelled() {
-                SecureClientError::cancelled()
-            } else if e
-                .downcast_ref::<axiom_pool_client::direct::CapacityUnavailable>()
-                .is_some()
-            {
-                exchange_error(&e, false, true)
+            if e.is::<CapacityUnavailable>() {
+                e
             } else {
-                SecureClientError::attestation("AstreaAI image workload verification failed")
+                SecureClientError::attestation("AstreaAI image workload verification failed").into()
             }
         })?;
         self.keep_warm();
         if !worker.supports("image") || !worker.supports("tools") || !worker.supports("vision") {
             return Err(SecureClientError::capability(
                 "signed release does not support image generation tools",
-            ));
+            )
+            .into());
         }
-        Ok(runtime)
+        Ok(())
     }
     async fn generate(
         &self,
@@ -538,10 +599,27 @@ impl DirectProvider {
                 "Provide a prompt and at most five local reference images",
             ));
         }
-        let runtime = self.image_policy(policy, &cancel).await?;
+        let started_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string();
+        if let Some(tx) = &progress {
+            let queued = axiom_inference::ImageGenerationProgress {
+                stage: axiom_inference::ImageGenerationStage::Queued,
+                percent: 0,
+            };
+            tokio::select! {
+                () = cancel.cancelled() => return Err(SecureClientError::cancelled()),
+                _ = tx.send(queued) => {}
+            }
+        }
+        let retry_until = Instant::now() + IMAGE_ADMISSION_WAIT;
+        let wait_until = now() + IMAGE_ADMISSION_WAIT.as_secs();
+        let runtime = self.image_runtime(policy)?;
         let size = request.dimensions.unwrap_or(
             runtime
-                .dimensions(&runtime.image.default_aspect_ratio)
+                .generation_dimensions(&runtime.image.default_aspect_ratio)
                 .map_err(SecureClientError::capability)?,
         );
         if size.validate().is_err()
@@ -573,21 +651,6 @@ impl DirectProvider {
             .iter()
             .map(axiom_pool_protocol::vision::InlineImage::pixels)
             .sum();
-        let started_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .to_string();
-        if let Some(tx) = &progress {
-            let _ = tx
-                .send(axiom_inference::ImageGenerationProgress {
-                    stage: axiom_inference::ImageGenerationStage::Queued,
-                    percent: 0,
-                })
-                .await;
-        }
-        let updates = progress.clone();
-        let mut previous_update = None;
         let input = Input::Image {
             prompt: request.prompt.into(),
             references,
@@ -598,43 +661,92 @@ impl DirectProvider {
             seed: rand_core::RngCore::next_u32(&mut rand_core::OsRng),
         };
         let input_bytes = request_input_budget(&input)?;
-        let (worker, output) = self
-            .client
-            .execute_with(
-                input,
-                Limits {
-                    context_tokens: 8192,
-                    output_tokens: 1,
-                    input_bytes,
-                    output_bytes: 64 * 1024 * 1024,
-                    image_pixels: u64::from(size.width) * u64::from(size.height),
-                    image_steps: 8,
-                    input_image_pixels,
-                    deadline: now() + 180,
-                },
-                None,
-                move |frame| {
-                    let updates = updates.clone();
-                    let update = image_progress(&frame, previous_update);
-                    if let Ok(Some(update)) = &update {
-                        previous_update = Some(*update);
-                    }
-                    async move {
-                        if let Some(update) = update?
-                            && let Some(tx) = updates
-                        {
-                            let _ = tx.send(update).await;
-                        }
-                        Ok(())
-                    }
-                },
-                cancel.clone(),
-            )
+        let logical_request_id = axiom_pool_protocol::random_id();
+        let execute = |image_queue_deadline: Option<Instant>| {
+            let cancel = &cancel;
+            let input = &input;
+            let request_id = logical_request_id.as_str();
+            let updates = progress.clone();
+            async move {
+                let prepare = self.prepare_image_worker(cancel);
+                match image_queue_deadline {
+                    Some(until) => tokio::time::timeout_at(until, prepare)
+                        .await
+                        .map_err(|_| CapacityUnavailable::QueuedImage)??,
+                    None => prepare.await?,
+                }
+                anyhow::ensure!(
+                    policy.is_valid_at(now()),
+                    "trust policy expired before image dispatch"
+                );
+                let mut previous_update = None;
+                self.client
+                    .execute_with_options(
+                        input.clone(),
+                        Limits {
+                            context_tokens: 8192,
+                            output_tokens: 1,
+                            input_bytes,
+                            output_bytes: 64 * 1024 * 1024,
+                            image_pixels: u64::from(size.width) * u64::from(size.height),
+                            image_steps: 8,
+                            input_image_pixels,
+                            deadline: now() + 180,
+                        },
+                        ExecutionOptions {
+                            pinned: None,
+                            request_id: Some(request_id),
+                            image_queue_deadline,
+                        },
+                        move |frame| {
+                            let updates = updates.clone();
+                            let update = image_progress(&frame, previous_update);
+                            if let Ok(Some(update)) = &update {
+                                previous_update = Some(*update);
+                            }
+                            async move {
+                                if let Some(update) = update?
+                                    && let Some(tx) = updates
+                                {
+                                    let _ = tx.send(update).await;
+                                }
+                                Ok(())
+                            }
+                        },
+                        cancel.clone(),
+                    )
+                    .await
+            }
+        };
+        let result = if request.allow_long_queue {
+            let result = wait_for_image_capacity(retry_until, &cancel, || async {
+                let queued = tokio::time::timeout_at(
+                    retry_until,
+                    self.client
+                        .image_queue_turn(&logical_request_id, wait_until, &cancel),
+                )
+                .await
+                .map_err(|_| CapacityUnavailable::QueuedImage)??;
+                if queued {
+                    execute(Some(retry_until)).await.map(Ok)
+                } else {
+                    // An account outside the rollout gets the worker's short wait.
+                    Ok(execute(None).await)
+                }
+            })
             .await
-            .map_err(|e| {
-                tracing::warn!(detail=%e,"direct image exchange failed");
-                exchange_error(&e, cancel.is_cancelled(), true)
-            })?;
+            .and_then(std::convert::identity);
+            if result.is_err() {
+                self.client.cancel_image_queue(&logical_request_id).await;
+            }
+            result
+        } else {
+            execute(None).await
+        };
+        let (worker, output) = result.map_err(|e| {
+            tracing::warn!(detail=%e,"direct image exchange failed");
+            image_error(e, cancel.is_cancelled())
+        })?;
         if !policy.is_valid_at(now()) {
             return Err(SecureClientError::attestation(
                 "trust policy expired before image completion",
@@ -710,10 +822,8 @@ fn image_progress(
 ) -> anyhow::Result<Option<axiom_inference::ImageGenerationProgress>> {
     use axiom_inference::{ImageGenerationProgress, ImageGenerationStage};
     let update = match frame.kind.as_str() {
-        "accepted" => ImageGenerationProgress {
-            stage: ImageGenerationStage::Generating,
-            percent: 1,
-        },
+        // The worker acknowledges requests before acquiring GPU capacity. The
+        // first usage frame arrives after dispatch and starts sampling progress.
         "usage" => {
             let usage: axiom_pool_protocol::types::Usage =
                 serde_json::from_value(frame.data.clone())?;
@@ -777,7 +887,11 @@ impl SecureProvider for DirectProvider {
         policy: &TrustPolicy,
         cancel: CancellationToken,
     ) -> Result<axiom_inference::ImageRuntimePolicy> {
-        self.image_policy(policy, &cancel).await
+        let runtime = self.image_runtime(policy)?;
+        self.prepare_image_worker(&cancel)
+            .await
+            .map_err(|error| image_error(error, cancel.is_cancelled()))?;
+        Ok(runtime)
     }
     async fn image_request(
         &self,
@@ -1035,6 +1149,7 @@ impl Session {
                 ExecutionOptions {
                     pinned: Some(&self.worker),
                     request_id: request_id.as_deref(),
+                    ..ExecutionOptions::default()
                 },
                 move |frame| {
                     let events = subscribers.clone();
@@ -1274,10 +1389,19 @@ mod tests {
 
     #[test]
     fn image_step_usage_advances_without_claiming_completion() {
-        use axiom_inference::ImageGenerationStage;
-        let mut previous = None;
+        use axiom_inference::{ImageGenerationProgress, ImageGenerationStage};
+        let mut previous = Some(ImageGenerationProgress {
+            stage: ImageGenerationStage::Queued,
+            percent: 0,
+        });
+        for kind in ["accepted", "heartbeat"] {
+            assert!(
+                image_progress(&progress_frame(kind, 0), previous)
+                    .unwrap()
+                    .is_none()
+            );
+        }
         for (kind, steps, expected) in [
-            ("accepted", 0, 1),
             ("usage", 0, 1),
             ("usage", 2, 24),
             ("usage", 2, 24),
@@ -1426,7 +1550,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_typed_authenticated_refusal_becomes_busy_and_is_not_auto_replayed() {
+    fn only_a_typed_authenticated_refusal_becomes_a_terminal_busy_error() {
         let error = anyhow::Error::new(axiom_pool_protocol::frames::Rejection {
             code: "WORKER_BUSY".into(),
             retry_after_secs: 2,
@@ -1452,6 +1576,93 @@ mod tests {
         assert!(!mapped.retryable());
         assert!(mapped.safe_detail().contains("did not complete"));
         assert!(!mapped.safe_detail().contains("not started"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn image_queue_waits_through_preparation_backpressure_and_worker_refusals() {
+        let cancel = CancellationToken::new();
+        let start = Instant::now();
+        let mut attempts = 0;
+        let result = wait_for_image_capacity(start + IMAGE_ADMISSION_WAIT, &cancel, || {
+            attempts += 1;
+            std::future::ready(match attempts {
+                1 => Err(CapacityUnavailable::Preparation.into()),
+                2 => Err(Rejection {
+                    code: "QUEUE_TIMEOUT".into(),
+                    retry_after_secs: 3,
+                }
+                .into()),
+                _ => Ok("completed"),
+            })
+        })
+        .await;
+        assert_eq!(result.unwrap(), "completed");
+        assert_eq!(attempts, 3);
+        assert_eq!(start.elapsed(), Duration::from_secs(5));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn image_queue_does_not_retry_an_exchange_or_untyped_failure() {
+        for error in [
+            CapacityUnavailable::Exchange.into(),
+            anyhow::anyhow!("WORKER_BUSY"),
+        ] {
+            let cancel = CancellationToken::new();
+            let mut first_error = Some(error);
+            let result =
+                wait_for_image_capacity(Instant::now() + IMAGE_ADMISSION_WAIT, &cancel, || {
+                    std::future::ready(Err::<(), _>(first_error.take().expect("single attempt")))
+                })
+                .await;
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn image_admission_wait_stops_on_cancellation_or_deadline() {
+        let cancel = CancellationToken::new();
+        let mut attempts = 0;
+        let attempt = || {
+            attempts += 1;
+            std::future::ready(Err::<(), _>(CapacityUnavailable::Preparation.into()))
+        };
+        let (result, ()) = tokio::join!(
+            wait_for_image_capacity(Instant::now() + IMAGE_ADMISSION_WAIT, &cancel, attempt),
+            async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                cancel.cancel();
+            }
+        );
+        assert_eq!(result.unwrap_err().to_string(), "cancelled");
+        assert_eq!(attempts, 1);
+
+        let cancel = CancellationToken::new();
+        let result =
+            wait_for_image_capacity(Instant::now() + Duration::from_secs(1), &cancel, || {
+                attempts += 1;
+                std::future::ready(Err::<(), _>(CapacityUnavailable::Preparation.into()))
+            })
+            .await;
+        assert!(result.unwrap_err().is::<CapacityUnavailable>());
+        assert_eq!(attempts, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queue_position_is_polled_for_ten_minutes() {
+        let cancel = CancellationToken::new();
+        let started = Instant::now();
+        let mut polls = 0;
+        let result = wait_for_image_capacity(started + IMAGE_ADMISSION_WAIT, &cancel, || {
+            polls += 1;
+            std::future::ready(Err::<(), _>(CapacityUnavailable::QueuedImage.into()))
+        })
+        .await;
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<CapacityUnavailable>(),
+            Some(CapacityUnavailable::QueuedImage)
+        ));
+        assert_eq!(started.elapsed(), Duration::from_secs(600));
+        assert_eq!(polls, 120);
     }
 
     fn installed() -> SecureClientConfig {
@@ -1541,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_image_contract_keeps_five_references_and_full_size_square_default() {
+    fn direct_image_contract_defaults_to_1536_square_and_keeps_legacy_sizes() {
         let runtime = direct_image_runtime();
         runtime.validate().unwrap();
         assert!(runtime.image.lora.is_none());
@@ -1549,9 +1760,10 @@ mod tests {
         assert_eq!(runtime.image.max_references, 5);
         assert!(runtime.references_use_default_size());
         let size = runtime
-            .dimensions(&runtime.image.default_aspect_ratio)
+            .generation_dimensions(&runtime.image.default_aspect_ratio)
             .unwrap();
-        assert_eq!((size.width, size.height), (2048, 2048));
+        assert_eq!((size.width, size.height), (1536, 1536));
+        assert_eq!(runtime.image.max_pixels, 2048 * 2048);
         assert!(runtime.image.aspect_ratios.contains(&"2:3".into()));
         let config = installed();
         assert!(
@@ -1559,6 +1771,13 @@ mod tests {
                 .iter()
                 .all(|model| model.has_tag(axiom_inference::UNCENSORED_MODEL_TAG))
         );
+        assert!(models(&config).iter().all(|model| {
+            model.has_tag("fast")
+                && model
+                    .tags
+                    .windows(2)
+                    .all(|pair| (pair[0].position, &pair[0].id) < (pair[1].position, &pair[1].id))
+        }));
     }
 
     #[tokio::test]
@@ -1592,6 +1811,7 @@ mod tests {
                         prompt: "A dog in a garden",
                         references: &[],
                         dimensions: None,
+                        allow_long_queue: true,
                     },
                     false,
                     None,
@@ -1622,6 +1842,7 @@ mod tests {
                         prompt: "A dog",
                         references: &[],
                         dimensions: None,
+                        allow_long_queue: true,
                     },
                     false,
                     None,
