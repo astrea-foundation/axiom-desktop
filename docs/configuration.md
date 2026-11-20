@@ -233,8 +233,8 @@ New images default to **1:1 square (1536×1536)**. The supported ratios are
 `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `1:2`, `2:1`, `9:21`,
 and `21:9`. Other ratios, including extreme values, fail before provider dispatch.
 The client sends concrete dimensions, including the default, so retained workers
-use the same sizes. Model instructions favor higher resolutions for image
-quality. Reference-based calls without an aspect ratio use the same default size.
+use the same sizes. Reference-based calls without an aspect ratio use the same
+default size. Regeneration uses the dimensions saved with the original image.
 
 Vision-capable chat models automatically receive the shared `generate`
 and `view_image` tools when the AstreaAI image adapter is installed and
@@ -301,9 +301,16 @@ recommending a model switch. See the
 [image-generation contract](../../axiom-inference/docs/image-generation.md).
 
 Image tools forward authenticated progress percentages through the native
-client, including queued, generating and finishing states. Updated image workers
-send the latest completed sampling-step count about once per second. Sampling
-maps to 1–95%; 99% marks the image manifest and the remaining completion work.
+client, including queued, generating and finishing states. “Waiting for GPU”
+continues through the worker's acknowledgment and queue heartbeats. Once the
+controller enables the account, image calls keep a position for up to ten minutes before
+starting inference. The execution reservation and fresh worker verification
+apply when the request reaches the front. The client uses one request ID,
+and Stop releases its waiting position. Accounts outside the rollout and older
+controllers use the worker's short admission wait. A lost or unverified exchange
+ends the call without a replay. After dispatch, the worker reports
+completed sampling steps about once per second. Sampling maps
+to 1–95%. The image manifest sets 99% while the remaining completion work runs.
 Counters can stay unchanged during conditioning or decoding. The UI shows percentages
 while work is pending; its percentage and progress bar disappear after successful
 result verification and settlement. This requires the

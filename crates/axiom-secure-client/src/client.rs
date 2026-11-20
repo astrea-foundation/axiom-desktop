@@ -164,6 +164,7 @@ impl SecureClient {
                 prompt,
                 references: &references,
                 dimensions,
+                allow_long_queue: true,
             },
             progress,
             cancellation,
