@@ -133,6 +133,7 @@ export class AgentSidecar {
           AXIOM_AUTH_URL: this.origins.auth,
           AXIOM_BASE_URL: this.origins.api,
           ...localProfile({ packaged: app.isPackaged, environment: process.env, home: app.getPath("home") }).sidecarEnv,
+          ...(!app.isPackaged && process.platform === "darwin" ? { AXIOMCLI_USE_INSTALLED_IMAGE_RUNTIME: "1" } : {}),
         },
         inheritEnv: DESKTOP_SIDECAR_INHERITED_ENV,
         // API-key automation belongs to the standalone CLI, never the
