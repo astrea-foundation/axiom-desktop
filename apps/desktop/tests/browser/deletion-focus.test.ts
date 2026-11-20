@@ -1398,6 +1398,33 @@ for (const platform of ["linux", "win32", "darwin"]) {
     } finally { await page.close(); }
   });
 
+  test(`a full free-trial window offers Upgrade plan, which opens Balance (${platform})`, async () => {
+    const { page, errors } = await openApp(platform);
+    try {
+      await page.getByRole("button", { name: "Viewed Existing thread", exact: true }).click();
+      const transcript = page.getByRole("region", { name: "Chat messages" });
+      await page.evaluate(() => (window as any).__deletionTest.setTimeline([
+        { id: "prompt", turnId: "capacity-turn", kind: "user", text: "Tell me more.", status: "completed" },
+        { id: "capacity", turnId: "capacity-turn", kind: "error", status: "failed",
+          text: "Free trials are currently at capacity. Check back at 2:30 PM." },
+      ], false));
+      const notice = transcript.getByRole("alert");
+      await notice.getByText("Free trials are currently at capacity. Check back at 2:30 PM.", { exact: true }).waitFor();
+      await notice.getByText("Plans and paid credit aren’t affected, so you can keep chatting now.", { exact: true }).waitFor();
+      if (platform === "linux" && process.env.AXIOM_TRIAL_CAPACITY_SCREENSHOT) {
+        await page.setViewportSize({ width: 865, height: 650 });
+        for (const theme of ["light", "dark"] as const) {
+          await page.emulateMedia({ colorScheme: theme });
+          await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, theme);
+          await page.screenshot({ path: `${process.env.AXIOM_TRIAL_CAPACITY_SCREENSHOT}-${theme}.png`, animations: "disabled" });
+        }
+      }
+      await notice.getByRole("button", { name: "Upgrade plan", exact: true }).click();
+      await page.getByRole("region", { name: "Balance and payments" }).waitFor();
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
   test(`unexpected stream endings show one notice with optional details (${platform})`, async () => {
     const { page, errors } = await openApp(platform);
     try {
@@ -3858,7 +3885,7 @@ test("gift redemption shows the code, updates balance, retries safely and clears
 });
 
 
-for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider order and composer logos preserve ${remembered} selection`, async () => {
+for (const remembered of ["auto", "near-glm"]) test(`picker and composer name models without providers and preserve ${remembered} selection`, async () => {
   const model = (id: string, label: string, providerId: string, upstreamModel: string) => ({
     id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
     upstreamModel, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192,
@@ -3877,25 +3904,18 @@ for (const remembered of ["auto", "near-glm"]) test(`Tinfoil default, provider o
     await control.waitFor();
     await control.click();
     const picker = page.getByRole("dialog", { name: "Choose a model" });
-    const hosts = picker.getByRole("group", { name: "Filter by host" }).getByRole("button");
-    assert.match(await hosts.nth(0).innerText(), /^All/);
-    assert.match(await hosts.nth(1).innerText(), /^Tinfoil/);
-    assert.match(await hosts.nth(2).innerText(), /^NEAR AI/);
+    assert.equal(await picker.getByRole("group", { name: "Filter by host" }).count(), 0, "people choose models, not providers");
+    assert.doesNotMatch(await picker.innerText(), /Tinfoil|NEAR AI/);
+    assert.equal(await picker.locator("[data-model-tag-tone], .model-tag-dot").count(), 0);
     const list = picker.getByRole("group", { name: "Models" });
     assert.ok((await list.locator('[aria-current="true"]').innerText()).startsWith(currentLabel));
-    await hosts.nth(1).click();
-    assert.equal(await hosts.nth(1).getAttribute("aria-pressed"), "true");
     const choices = list.getByRole("button");
-    assert.equal(await choices.count(), 2);
-    assert.match(await choices.first().innerText(), /^DeepSeek V4.1 Flash/);
+    assert.deepEqual((await choices.allInnerTexts()).map(text => text.split("\n")[0]), ["DeepSeek V4.1 Flash", "Gemma 4", "GLM 5.3 Flash"]);
     await choices.first().click();
     const selected = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
     const logos = selected.locator("img");
-    assert.deepEqual(await logos.evaluateAll(images => images.map(image => image.getAttribute("title"))), ["Tinfoil", "DeepSeek"]);
-    await page.waitForFunction(() => [...document.querySelectorAll('button[title="Select model"] img')].every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0));
-    const providerBounds = (await logos.nth(0).boundingBox())!;
-    const modelBounds = (await logos.nth(1).boundingBox())!;
-    assert.ok(providerBounds.x + providerBounds.width <= modelBounds.x);
+    assert.deepEqual(await logos.evaluateAll(images => images.map(image => image.getAttribute("title"))), ["DeepSeek"]);
+    assert.equal(await selected.getAttribute("title"), "Select model");
     await page.locator("textarea[data-chat-input]").fill("Keep the chosen model");
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     assert.equal(await selected.isVisible(), true);
@@ -3921,7 +3941,7 @@ test("new sessions default to NEAR's abliterated DeepSeek and fall back to Tinfo
   }
 });
 
-test("model picker filters by catalog tags, hosts, capabilities and tag search", async () => {
+test("model picker filters by neutral catalog tags, capabilities and tag search", async () => {
   const tag = (id: string, label: string, tone: string, position: number) => ({ id, label, tone, position });
   const cheap = tag("cheap", "Cheap", "green", 10);
   const model = (id: string, label: string, providerId: string, tags: ReturnType<typeof tag>[], supportsImages = false) => ({
@@ -3945,7 +3965,9 @@ test("model picker filters by catalog tags, hosts, capabilities and tag search",
     const status = picker.locator('[aria-live="polite"]');
     assert.deepEqual(await tags.getByRole("button").allInnerTexts(), ["Uncensored", "Cheap", "Fast", "Intelligent", "New"]);
     assert.equal(await rows.count(), 4);
-    assert.match(await rows.first().innerText(), /Tinfoil\s*Cheap\s*Fast/);
+    assert.match(await rows.first().innerText(), /^DeepSeek V4.1 Flash\s*Cheap\s*Fast/);
+    assert.equal(await picker.locator("[data-model-tag-tone], .model-tag-dot").count(), 0, "tags carry no catalog colours");
+    assert.equal(await picker.getByRole("group", { name: "Filter by host" }).count(), 0);
 
     await tags.getByRole("button", { name: "Cheap", exact: true }).click();
     assert.equal(await rows.count(), 2);
@@ -4024,6 +4046,63 @@ test("model picker is never clipped by the window or a clipping container", asyn
   } finally { await page.close(); }
 });
 
+test("one row per model starts new threads on the best provider and keeps each thread's provider", async () => {
+  const model = (id: string, providerId: string, upstreamModel: string, label: string, prices: [number, number], images: boolean, files: boolean) => ({
+    id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
+    upstreamModel, thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192, autoCompactThresholdTokens: 27853,
+    supportsImages: images, fileMimeTypes: files ? ["application/pdf"] : [],
+    inputPriceMicrousdPerMillionTokens: prices[0], outputPriceMicrousdPerMillionTokens: prices[1],
+  });
+  // Tinfoil is cheaper on average, but only NEAR accepts images: more capabilities win first.
+  const tinfoil = (images: boolean) => model("tinfoil-deepseek-v4-1-flash", "tinfoil", "deepseek-v4-1-flash", "DeepSeek V4.1 Flash", [200_000, 800_000], images, true);
+  const near = model("deepseek-v4-1-flash", "near", "deepseek-ai/DeepSeek-V4.1-Flash", "DeepSeek V4.1 Flash", [280_000, 1_100_000], true, true);
+  const glm = model("glm-5-3", "near", "zai-org/GLM-5.3", "GLM 5.3", [900_000, 3_200_000], false, false);
+  const catalog = { models: [tinfoil(false), near, glm] } as unknown as ListModelsResponse;
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "tinfoil-deepseek-v4-1-flash");
+  try {
+    const control = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
+    await control.click();
+    const picker = page.getByRole("dialog", { name: "Choose a model" });
+    const rows = picker.getByRole("group", { name: "Models" }).getByRole("button");
+    assert.equal(await rows.count(), 2, "both providers of DeepSeek share one row");
+    assert.match(await rows.first().innerText(), /^DeepSeek V4.1 Flash[\s\S]*\$0\.28 in, \$1\.1 out/, "the row shows the price of the provider it will use");
+    assert.match(await picker.locator('[aria-live="polite"]').innerText(), /^2 models$/);
+    await page.keyboard.press("Escape");
+
+    await page.locator("textarea[data-chat-input]").fill("Start on the best provider");
+    await page.locator("textarea[data-chat-input]").press("Control+Enter");
+    await page.waitForFunction(() => (window as any).__deletionTest.calls.some((call: any) => call.method === "prompt"));
+    const started = await page.evaluate(() => (window as any).__deletionTest.settingsCalls.at(-1));
+    assert.equal(started.model, "deepseek-v4-1-flash", "a remembered Tinfoil choice still starts on the provider with more capabilities");
+
+    // Tinfoil now matches NEAR's capabilities and is cheaper. The running thread keeps NEAR.
+    await page.evaluate((models) => {
+      (window as any).axiomDesktop.agent.listModels = async () => ({ models });
+      window.dispatchEvent(new Event("focus"));
+    }, [tinfoil(true), near, glm]);
+    await page.waitForFunction(() => document.querySelector(".composer-shell")?.textContent?.includes("DeepSeek V4.1 Flash"));
+    const before = await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length);
+    await control.click();
+    const selectedRow = picker.getByRole("group", { name: "Models" }).locator('[aria-current="true"]');
+    await page.waitForFunction(() => document.querySelector('[role="dialog"] [aria-current="true"]')?.textContent?.includes("$0.28 in"));
+    assert.match(await selectedRow.innerText(), /^DeepSeek V4.1 Flash/);
+    await selectedRow.click();
+    await page.waitForTimeout(100);
+    const after = await page.evaluate((start) => (window as any).__deletionTest.settingsCalls.slice(start), before);
+    assert.ok(after.every((request: any) => request.model === undefined || request.model === "deepseek-v4-1-flash"), JSON.stringify(after));
+
+    // A new thread picks again and now gets Tinfoil.
+    await page.getByRole("button", { name: "New thread", exact: true }).click();
+    await page.locator("textarea[data-chat-input]").fill("New thread, new choice");
+    const prompts = (await calls(page)).filter(call => call.method === "prompt").length;
+    await page.locator("textarea[data-chat-input]").press("Control+Enter");
+    await page.waitForFunction((count) => (window as any).__deletionTest.calls.filter((call: any) => call.method === "prompt").length > count, prompts);
+    const restarted = await page.evaluate(() => (window as any).__deletionTest.settingsCalls.at(-1));
+    assert.equal(restarted.model, "tinfoil-deepseek-v4-1-flash");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("model picker greys out the models of a temporarily unavailable provider", async () => {
   const model = (id: string, label: string, providerId: string, priced = true) => ({
     id, label, shortLabel: label, providerId, providerLabel: providerId === "near" ? "NEAR AI" : "Tinfoil",
@@ -4042,11 +4121,10 @@ test("model picker greys out the models of a temporarily unavailable provider", 
     const rows = picker.getByRole("group", { name: "Models" }).getByRole("button", { includeHidden: true });
     assert.equal(await rows.count(), 4);
     assert.deepEqual(await rows.evaluateAll(buttons => buttons.map(button => (button as HTMLButtonElement).disabled)), [false, false, true, true]);
-    assert.match(await rows.nth(2).innerText(), /NEAR AI[\s\S]*Temporarily unavailable/);
+    assert.match(await rows.nth(2).innerText(), /^MiniMax M3[\s\S]*Temporarily unavailable/);
+    assert.doesNotMatch(await picker.innerText(), /NEAR AI|Tinfoil/);
+    assert.equal(await rows.nth(2).getAttribute("title"), "Temporarily unavailable");
     assert.match(await picker.locator('[aria-live="polite"]').innerText(), /^2 models, 2 temporarily unavailable$/);
-    const near = picker.getByRole("group", { name: "Filter by host" }).locator("button", { hasText: "NEAR AI" });
-    assert.equal(await near.isDisabled(), true);
-    assert.equal(await near.getAttribute("title"), "NEAR AI is temporarily unavailable");
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
     if (process.env.AXIOM_UNAVAILABLE_MODEL_SCREENSHOT) {
       await picker.screenshot({ path: process.env.AXIOM_UNAVAILABLE_MODEL_SCREENSHOT });
@@ -4065,7 +4143,7 @@ test("model picker greys out the models of a temporarily unavailable provider", 
   } finally { await page.close(); }
 });
 
-test("catalog refresh withdraws saved models and shows Tinfoil upload icons", async () => {
+test("catalog refresh withdraws saved models and shows upload icons", async () => {
   const { page, errors } = await openApp();
   try {
     await page.evaluate(() => {
@@ -4085,11 +4163,9 @@ test("catalog refresh withdraws saved models and shows Tinfoil upload icons", as
     await unavailable.click();
     const picker = page.getByRole("dialog", {name: "Choose a model"});
     await picker.getByRole("button", { name: /New vision/ }).waitFor();
-    assert.equal(await picker.getByRole("group", { name: "Filter by host" }).count(), 0, "a single host needs no host filter");
     assert.equal(await picker.getByRole("img", {name:"Image uploads"}).count(), 1);
     assert.equal(await picker.getByRole("img", {name:"File uploads"}).count(), 1);
-    const logo = picker.locator('img[title="Tinfoil"]');
-    assert.ok(await logo.evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > 0));
+    assert.equal(await picker.locator('img[title="Tinfoil"]').count(), 0, "rows do not name the provider");
     assert.doesNotMatch(await picker.innerText(), /: Images|File uploads/);
     await page.evaluate(() => document.getAnimations().forEach(animation => animation.finish()));
     await page.screenshot({path:"/tmp/axiom-provider-picker.png"});

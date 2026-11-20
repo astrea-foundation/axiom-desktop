@@ -2,7 +2,7 @@ import type { ClientState, ListModelsResponse } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { desktopErrorMessage } from "./signInFlow";
 import type { ProviderModel, ReasoningEffort } from "./types";
-import { compareModelPreference } from "./modelPreferences";
+import { compareModelPreference, preferredOffering } from "./modelPreferences";
 
 import { explicitReasoningEfforts, isReasoningEffort, reconcileReasoningEffort } from "./reasoningSettings";
 
@@ -110,11 +110,14 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     if (!selectedModel) return;
     setReasoningEffort(effectiveReasoningEffort);
     if (surface !== "thread") {
-      setModelId(selectedModel.id);
-      preferredModelId.current = selectedModel.id;
+      // A new thread starts on the best provider for the chosen model; an
+      // existing thread keeps the provider it started with.
+      const preferred = preferredOffering(models, selectedModel.id) ?? selectedModel;
+      setModelId(preferred.id);
+      preferredModelId.current = preferred.id;
       preferredReasoningEffort.current = effectiveReasoningEffort;
     }
-  }, [selectedModel, reasoningEffort, effectiveReasoningEffort, surface]);
+  }, [models, selectedModel, reasoningEffort, effectiveReasoningEffort, surface]);
 
   const activeSession = activeThreadId ? agentState.sessions[activeThreadId] ?? null : null;
 
@@ -165,10 +168,13 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
       if (cancelled) return;
       const available = providerModels(response);
       if (available.length === 0) throw new Error("this account has no available models");
-      const rememberedModel = preferredModelId.current;
-      const nextModel = rememberedModel || available[0]!.id;
+      const unavailable = unavailableProviderModels(response, available);
+      // The remembered model may name a provider that is now down or no longer
+      // preferred; a new thread uses the best available provider for that model.
+      const rememberedModel = preferredModelId.current || available[0]!.id;
+      const nextModel = preferredOffering(available, rememberedModel, { known: unavailable })?.id ?? rememberedModel;
       setModels(available);
-      setUnavailableModels(unavailableProviderModels(response, available));
+      setUnavailableModels(unavailable);
       if (!activeThreadIdRef.current) {
         const thinking = reconcileReasoningEffort(preferredReasoningEffort.current, available.find((model) => model.id === nextModel)?.supportedReasoningEfforts ?? []);
         setModelId(nextModel);

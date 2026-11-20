@@ -16,7 +16,7 @@ import type { ClientSessionState } from "@axiom/chat-core/viewTypes";
 import type { ProviderModel, ReasoningEffort } from "@axiom/chat-core/types";
 import { explicitReasoningEfforts, reconcileReasoningEffort } from "@axiom/chat-core/reasoningSettings";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
-import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
+import { ModelBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
 import { DraftAttachments, type AttachmentControl } from "./Attachments";
@@ -124,7 +124,7 @@ export function ChatComposer({
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
   const selectedThinking = reconcileReasoningEffort(reasoningEffort, supportedReasoningEfforts);
   const canAttach = accountReady && !requiresSignIn && !!selectedModel && (selectedModel.supportsImages === true || !!selectedModel.fileMimeTypes?.length);
-  const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.providerLabel}’s ${selectedModel.shortLabel}`;
+  const attachmentHint = !selectedModel ? 'Choose a model to attach files' : !canAttach ? 'Choose a model that supports image or file uploads' : `Attach files supported by ${selectedModel.shortLabel}`;
   const imageMismatch = attachments?.items.some((file) => !acceptsAttachment(selectedModel, file));
   const canSend = !preparing && (accountReady || requiresSignIn) && (Boolean(value.trim()) || Boolean(attachments?.items.length)) && !attachments?.busy && !imageMismatch && (Boolean(selectedModel) || requiresSignIn);
   const responseActive = isStreaming || isStopping;
@@ -221,12 +221,7 @@ export function ChatComposer({
                 title={!accountReady && !requiresSignIn ? "Available once your account is ready." : modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
               >
                 {selectedModel ? (
-                  <>
-                    <span title={selectedModel.providerLabel} className="inline-flex shrink-0">
-                      <ProviderBrandIcon providerId={selectedModel.providerId} providerLabel={selectedModel.providerLabel} className="pointer-events-none h-3.5 w-3.5" />
-                    </span>
-                    <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
-                  </>
+                  <ModelBrandIcon model={selectedModel} className="h-3.5 w-3.5 shrink-0" />
                 ) : (
                   <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
                 )}

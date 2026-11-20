@@ -318,3 +318,27 @@ test("completed reply actions stay visible instead of appearing only on hover", 
   assert.ok(bar);
   assert.doesNotMatch(bar, /opacity-0/);
 });
+
+test("a full free-trial window offers an upgrade alongside the local retry time", () => {
+  const capacity = (text: string): ClientTimelineItem => ({ id: "capacity", turnId: "turn-1", kind: "error", text, status: "failed" });
+  const idle = { ...session([user, capacity("Free trials are currently at capacity. Check back at 2:30 PM.")]), running: false };
+  let upgrades = 0;
+  const element = createElement(TimelineView, { session: idle, onUpgrade: () => { upgrades += 1; } });
+  const html = renderToStaticMarkup(element);
+  assert.match(html, /Free trials are currently at capacity\. Check back at 2:30 PM\./);
+  assert.match(html, /Plans and paid credit aren’t affected, so you can keep chatting now\./);
+  assert.equal(html.match(/>Upgrade plan</g)?.length, 1);
+  assert.doesNotMatch(html, /Details/);
+  // Rows saved by older runtimes carried an internal error prefix.
+  const legacy = renderToStaticMarkup(createElement(TimelineView, {
+    session: { ...idle, timeline: [user, capacity("provider error: Free trials are currently at capacity. Check back at 2026-11-20 19:30:00 UTC.")] },
+    onUpgrade: () => {},
+  }));
+  assert.doesNotMatch(legacy, /provider error/);
+  assert.match(legacy, />Upgrade plan</);
+  // Without a billing screen the notice stays a plain explanation.
+  const web = render([user, capacity("Free trials are currently at capacity. Please try again later.")]);
+  assert.match(web, /Please try again later\./);
+  assert.doesNotMatch(web, /Upgrade plan/);
+  assert.equal(upgrades, 0);
+});

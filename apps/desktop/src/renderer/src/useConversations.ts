@@ -1,6 +1,8 @@
 import { localPayloads } from "./localPayloads";
 import { flushLocalState, registerUpdateFlush, releaseLocalStateFlush } from "./updateFlush";
 import { acceptsAttachment } from "./attachments";
+import { preferredOffering } from "./modelPreferences";
+import { reconcileReasoningEffort } from "./reasoningSettings";
 import { AttachmentPreviews } from "./attachmentPreviews";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -34,7 +36,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
   openSignIn: () => void, setUiError: (error: string | null) => void) {
   const { surface, setSurface, activeThreadId, setActiveThreadId, activeThreadIdRef,
     navigationRevision, threadPreparation, setThreadPreparation, cancelThreadPreparation } = navigation;
-  const { desktopReady, selectedModel, effectiveReasoningEffort, rememberSelection, restorePreferredSelection } = catalog;
+  const { desktopReady, models, selectedModel: currentModel, effectiveReasoningEffort: currentReasoningEffort, rememberSelection, restorePreferredSelection } = catalog;
   const draftAccount = agentState.connected && agentState.account?.state === "valid" ? agentState.account.account?.id ?? null : null;
   localPayloads.setContext(draftAccount, agentState.runtimeInstanceId, connection.revision);
   const [draft, setDraft, writeDraft, writeDraftDurable] = useAccountDraft(draftAccount, surface === "thread" ? activeThreadId : null, setUiError, connection.revision);
@@ -374,17 +376,23 @@ export function useConversations(agentState: ClientState, connection: ReturnType
       setUiError("Restart Axiom to apply the Web privacy controls. No message was sent.");
       return;
     }
-    if (!selectedModel) {
+    if (!currentModel) {
       setUiError("Wait for the model catalog before sending.");
       return;
     }
     const files = attachmentDraft.attachments;
+    const creatingThread = surface !== "thread" || !activeThreadId;
+    // A thread's provider is chosen once, when it starts: the best provider
+    // for the chosen model that accepts this draft's attachments.
+    const selectedModel = creatingThread
+      ? preferredOffering(models, currentModel.id, { accepts: (model) => files.every((file) => acceptsAttachment(model, file)) }) ?? currentModel
+      : currentModel;
+    const effectiveReasoningEffort = reconcileReasoningEffort(currentReasoningEffort, selectedModel.supportedReasoningEfforts);
     if (files.some((file) => !acceptsAttachment(selectedModel, file))) {
       setUiError("Choose a model that supports these image or file uploads."); return;
     }
     if (files.length && !api.promptWithAttachments) { setUiError("Restart Axiom to enable attachments. Your draft was kept."); return; }
     const webEnabled = webAccess.enabled;
-    const creatingThread = surface !== "thread" || !activeThreadId;
     let submissionId: string;
     try {
       messageQueue.current!.sync(agentState, api);

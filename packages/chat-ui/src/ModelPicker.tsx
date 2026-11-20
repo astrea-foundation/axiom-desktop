@@ -2,12 +2,11 @@
 import { Check, FileText, Image, Search } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderModel } from "./types";
-import { ModelBrandIcon, ProviderBrandIcon } from "./ModelBrandIcon";
+import { ModelBrandIcon } from "./ModelBrandIcon";
 import { formatModelPricing } from "./modelPricing";
-import { compareModelPreference } from "./modelPreferences";
+import { compareModelGroups, groupModels, modelGroupKey } from "./modelGroups";
 import {
   catalogCapabilities,
-  catalogHosts,
   catalogTags,
   countModels,
   hasActiveModelFilters,
@@ -22,6 +21,11 @@ interface ModelPickerProps {
   /** Models whose provider is temporarily down: listed greyed out, never selectable. */
   unavailableModels?: ProviderModel[];
   selectedModelId: string;
+  /**
+   * Receives an exact catalog offering. Each model is one row however many
+   * providers serve it: the selected model keeps its current provider, and any
+   * other row offers its preferred provider (see `compareOfferings`).
+   */
   onSelect: (modelId: string) => void;
 }
 
@@ -78,22 +82,7 @@ const CAPABILITIES: Record<ModelCapability, { label: string; summary: string; Ic
 
 const chipBase = "flex shrink-0 items-center transition-colors disabled:cursor-default disabled:opacity-40";
 const chipActive = "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile";
-const chipIdle = "text-[var(--color-text-tertiary)] enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-secondary)]";
-
-function CountBadge({ count, active }: { count: number; active: boolean }) {
-  return (
-    <span
-      className={[
-        "min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] tabular-nums",
-        active
-          ? "bg-[var(--color-cherry)] text-on-accent"
-          : "bg-[var(--color-cherry-glow)] text-[var(--color-text-muted)]",
-      ].join(" ")}
-    >
-      {count}
-    </span>
-  );
-}
+const chipIdle = "text-[var(--color-text-tertiary)] enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-secondary)] shadow-[inset_0_0_0_1px_var(--color-border)]";
 
 function ModelRow({ model, selected, unavailable, onSelect }: {
   model: ProviderModel;
@@ -108,7 +97,7 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
   return (
     <button
       type="button"
-      title={unavailable ? `${model.providerLabel} is temporarily unavailable` : model.model}
+      title={unavailable ? "Temporarily unavailable" : model.model}
       aria-current={selected ? "true" : undefined}
       disabled={unavailable}
       data-model-unavailable={unavailable ? "true" : undefined}
@@ -131,32 +120,23 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
             {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
           </span>
         </span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[10.5px] text-[var(--color-text-muted)]">
-          <ProviderBrandIcon providerId={model.providerId} providerLabel={model.providerLabel} className="h-[11px] w-[11px] shrink-0" />
-          <span className="shrink-0">{model.providerLabel}</span>
-          {tags.length ? (
-            <span className="flex min-w-0 gap-[3px] overflow-hidden pl-0.5">
-              {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
-                <span
-                  key={tag.id}
-                  data-model-tag-tone={tag.tone}
-                  className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-semibold"
-                >
-                  {tag.label}
-                </span>
-              ))}
-              {hiddenTags > 0 ? (
-                <span
-                  data-model-tag-tone="gray"
-                  title={tags.slice(MAX_ROW_TAGS).map((tag) => tag.label).join(", ")}
-                  className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-semibold"
-                >
-                  +{hiddenTags}
-                </span>
-              ) : null}
-            </span>
-          ) : null}
-        </span>
+        {tags.length ? (
+          <span className="mt-0.5 flex min-w-0 gap-[3px] overflow-hidden whitespace-nowrap">
+            {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
+              <span key={tag.id} className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-medium">
+                {tag.label}
+              </span>
+            ))}
+            {hiddenTags > 0 ? (
+              <span
+                title={tags.slice(MAX_ROW_TAGS).map((tag) => tag.label).join(", ")}
+                className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-medium"
+              >
+                +{hiddenTags}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
       </span>
       <span className="w-[8.25rem] shrink-0 text-right">
         {unavailable ? (
@@ -188,45 +168,48 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
   const [placement, setPlacement] = useState<Placement>(UNPLACED);
   const [search, setSearch] = useState("");
   const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(() => new Set());
-  const [selectedHosts, setSelectedHosts] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedCapabilities, setSelectedCapabilities] = useState<ReadonlySet<ModelCapability>>(() => new Set());
 
-  const sorted = useMemo(() => [...models].sort(compareModelPreference), [models]);
+  // One row per model. The selected model shows the offering in use; every
+  // other row shows the provider it would get if chosen now.
+  const selectedKey = useMemo(() => {
+    const selected = [...models, ...(unavailableModels ?? [])].find((model) => model.id === selectedModelId);
+    return selected ? modelGroupKey(selected) : null;
+  }, [models, unavailableModels, selectedModelId]);
+  const groups = useMemo(() => groupModels(models).sort(compareModelGroups), [models]);
+  const sorted = useMemo(() => groups.map((group) => (
+    group.key === selectedKey ? group.offerings.find((model) => model.id === selectedModelId) : undefined
+  ) ?? group.offerings[0]!), [groups, selectedKey, selectedModelId]);
   const tagOptions = useMemo(() => catalogTags(sorted), [sorted]);
-  // A provider that is down keeps its rows and host chip, greyed out, instead of vanishing.
-  const unavailable = useMemo(
-    () => (unavailableModels ?? []).filter((model) => !models.some((available) => available.id === model.id)).sort(compareModelPreference),
-    [models, unavailableModels],
-  );
-  const hostOptions = useMemo(() => catalogHosts([...sorted, ...unavailable]), [sorted, unavailable]);
+  // A model whose every provider is down keeps its row, greyed out, instead of vanishing.
+  const unavailable = useMemo(() => {
+    const available = new Set(groups.map((group) => group.key));
+    return groupModels((unavailableModels ?? []).filter((model) => !available.has(modelGroupKey(model))))
+      .sort(compareModelGroups)
+      .map((group) => group.offerings[0]!);
+  }, [groups, unavailableModels]);
   const capabilityOptions = useMemo(() => catalogCapabilities(sorted), [sorted]);
 
-  // A catalog refresh can withdraw a tag or host; ignore stale selections
-  // instead of silently filtering everything out.
+  // A catalog refresh can withdraw a tag; ignore stale selections instead of
+  // silently filtering everything out.
   const filters = useMemo<ModelFilters>(() => ({
     query: search.trim().toLocaleLowerCase(),
     tags: new Set([...selectedTags].filter((id) => tagOptions.some((tag) => tag.id === id))),
-    hosts: new Set([...selectedHosts].filter((id) => hostOptions.some((host) => host.id === id))),
     capabilities: new Set([...selectedCapabilities].filter((capability) => capabilityOptions.includes(capability))),
-  }), [search, selectedTags, selectedHosts, selectedCapabilities, tagOptions, hostOptions, capabilityOptions]);
+  }), [search, selectedTags, selectedCapabilities, tagOptions, capabilityOptions]);
   const visible = useMemo(() => sorted.filter((model) => matchesModelFilters(model, filters)), [sorted, filters]);
   const visibleUnavailable = useMemo(() => unavailable.filter((model) => matchesModelFilters(model, filters)), [unavailable, filters]);
   const filtering = hasActiveModelFilters(filters);
-  const showHosts = hostOptions.length > 1;
 
   const summary = [
-    [
-      ...tagOptions.filter((tag) => filters.tags.has(tag.id)).map((tag) => tag.label),
-      ...capabilityOptions.filter((capability) => filters.capabilities.has(capability))
-        .map((capability) => CAPABILITIES[capability].summary),
-    ].join(" + "),
-    hostOptions.filter((host) => filters.hosts.has(host.id)).map((host) => host.label).join(" or "),
-  ].filter(Boolean).join(", ");
+    ...tagOptions.filter((tag) => filters.tags.has(tag.id)).map((tag) => tag.label),
+    ...capabilityOptions.filter((capability) => filters.capabilities.has(capability))
+      .map((capability) => CAPABILITIES[capability].summary),
+  ].join(" + ");
 
   const clearFilters = () => {
     setSearch("");
     setSelectedTags(new Set());
-    setSelectedHosts(new Set());
     setSelectedCapabilities(new Set());
     searchRef.current?.focus();
   };
@@ -289,77 +272,37 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
       }}
       className={`glass-panel-solid shadow-glass-pop animate-pop-in absolute bottom-10 left-0 z-40 flex max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col rounded-[10px] ${cramped ? "overflow-y-auto" : "overflow-hidden"}`}
     >
-      <div className="shrink-0 border-b border-[var(--color-border)] px-3 pb-1 pt-3">
+      <div className="shrink-0 border-b border-[var(--color-border)] px-3 pb-2 pt-3">
         <label className="flex h-8 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)]">
           <Search size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
           <input
             ref={searchRef}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder={tagOptions.length ? "Search models, tags or hosts" : "Search models"}
+            placeholder={tagOptions.length ? "Search models or tags" : "Search models"}
             aria-label="Search models"
             className="min-w-0 flex-1 bg-transparent text-[12.5px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
         </label>
 
-        {tagOptions.length ? (
-          <div role="group" aria-label="Filter by tag" className="flex flex-wrap gap-1 pt-2">
-            {tagOptions.map((tag) => {
-              const active = filters.tags.has(tag.id);
-              const count = active ? visible.length : countModels(sorted, filters, { tags: new Set([...filters.tags, tag.id]) });
-              return (
-                <button
-                  key={tag.id}
-                  type="button"
-                  aria-pressed={active}
-                  disabled={!active && count === 0}
-                  title={`${count} ${count === 1 ? "model" : "models"}`}
-                  data-model-tag-tone={tag.tone}
-                  onClick={() => setSelectedTags(toggled(filters.tags, tag.id))}
-                  className={[
-                    chipBase,
-                    "h-6 gap-1 rounded-full pl-[7px] pr-2 text-[11.5px]",
-                    active ? chipActive : `${chipIdle} shadow-[inset_0_0_0_1px_var(--color-border)]`,
-                  ].join(" ")}
-                >
-                  <span aria-hidden="true" className="model-tag-dot h-1.5 w-1.5 rounded-full" />
-                  {tag.label}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-
-        {showHosts || capabilityOptions.length ? (
-          <div className="flex items-center gap-1 pb-1 pt-1.5">
-            {showHosts ? (
-              <div role="group" aria-label="Filter by host" className="flex min-w-0 flex-wrap gap-1">
-                <button
-                  type="button"
-                  aria-pressed={filters.hosts.size === 0}
-                  onClick={() => setSelectedHosts(new Set())}
-                  className={[chipBase, "h-7 gap-1.5 rounded-[8px] pl-2.5 pr-1.5 text-[12px]", filters.hosts.size === 0 ? chipActive : chipIdle].join(" ")}
-                >
-                  All
-                  <CountBadge count={countModels(sorted, filters, { hosts: new Set() })} active={filters.hosts.size === 0} />
-                </button>
-                {hostOptions.map((host) => {
-                  const active = filters.hosts.has(host.id);
-                  const count = countModels(sorted, filters, { hosts: new Set([host.id]) });
-                  const down = !sorted.some((model) => model.providerId === host.id);
+        {tagOptions.length || capabilityOptions.length ? (
+          <div className="flex items-start gap-2 pt-2">
+            {tagOptions.length ? (
+              <div role="group" aria-label="Filter by tag" className="flex min-w-0 flex-1 flex-wrap gap-1">
+                {tagOptions.map((tag) => {
+                  const active = filters.tags.has(tag.id);
+                  const count = active ? visible.length : countModels(sorted, filters, { tags: new Set([...filters.tags, tag.id]) });
                   return (
                     <button
-                      key={host.id}
+                      key={tag.id}
                       type="button"
                       aria-pressed={active}
-                      title={down ? `${host.label} is temporarily unavailable` : undefined}
                       disabled={!active && count === 0}
-                      onClick={() => setSelectedHosts(toggled(filters.hosts, host.id))}
-                      className={[chipBase, "h-7 gap-1.5 rounded-[8px] pl-2 pr-1.5 text-[12px]", active ? chipActive : chipIdle].join(" ")}
+                      title={`${count} ${count === 1 ? "model" : "models"}`}
+                      onClick={() => setSelectedTags(toggled(filters.tags, tag.id))}
+                      className={[chipBase, "h-6 rounded-full px-2.5 text-[11.5px]", active ? chipActive : chipIdle].join(" ")}
                     >
-                      <ProviderBrandIcon providerId={host.id} providerLabel={host.label} className="h-3.5 w-3.5 shrink-0" />
-                      <span>{host.label}</span>
-                      <CountBadge count={count} active={active} />
+                      {tag.label}
                     </button>
                   );
                 })}
@@ -380,13 +323,9 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
                       title={label}
                       disabled={!active && count === 0}
                       onClick={() => setSelectedCapabilities(toggled(filters.capabilities, capability))}
-                      className={[
-                        chipBase,
-                        "h-7 w-7 justify-center rounded-[8px]",
-                        active ? chipActive : `${chipIdle} shadow-[inset_0_0_0_1px_var(--color-border)]`,
-                      ].join(" ")}
+                      className={[chipBase, "h-6 w-6 justify-center rounded-full", active ? chipActive : chipIdle].join(" ")}
                     >
-                      <Icon size={13} aria-hidden="true" />
+                      <Icon size={12} aria-hidden="true" />
                     </button>
                   );
                 })}

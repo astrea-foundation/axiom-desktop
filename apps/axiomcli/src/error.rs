@@ -19,6 +19,9 @@ pub enum AxiomError {
     OutsideWorkspace(PathBuf),
     #[error("provider error: {0}")]
     Provider(String),
+    /// Free-trial capacity is full. The message is already written for the user.
+    #[error("{0}")]
+    TrialCapacity(String),
     #[error("{message}")]
     SecureProvider {
         kind: axiom_inference::ProviderFailureKind,

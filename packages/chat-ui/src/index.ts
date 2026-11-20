@@ -6,8 +6,10 @@ export { ModelBrandIcon, ProviderBrandIcon, normalizeCompanyName } from "./Model
 export { ModelPicker } from "./ModelPicker";
 export { formatModelPricing } from "./modelPricing";
 export { compareModelPreference } from "./modelPreferences";
-export { catalogCapabilities, catalogHosts, catalogTags, countModels, emptyModelFilters, filterModels, hasActiveModelFilters, matchesModelFilters, modelHasCapability, toggled } from "./modelFilters";
-export type { HostOption, ModelCapability, ModelFilters } from "./modelFilters";
+export { catalogCapabilities, catalogTags, countModels, emptyModelFilters, filterModels, hasActiveModelFilters, matchesModelFilters, modelHasCapability, toggled } from "./modelFilters";
+export type { ModelCapability, ModelFilters } from "./modelFilters";
+export { averagePrice, capabilityCount, compareModelGroups, compareOfferings, groupModels, modelGroupKey, preferredOffering } from "./modelGroups";
+export type { ModelGroup } from "./modelGroups";
 export { OverflowTitle } from "./OverflowTitle";
 export type { ModelTag, ModelTagTone, ProviderModel, ReasoningEffort } from "./types";
 

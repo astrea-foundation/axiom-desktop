@@ -408,9 +408,10 @@ Use Attach, paste an image, or drop files anywhere in the main chat panel,
 including its empty space and transcript. A drop indicator marks the panel;
 the sidebar and Proxy view do not attach files. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
-the accessible label for their meaning. The picker can filter by catalog tag,
-host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
-for tags, refreshes and unavailable models.
+the accessible label for their meaning. The picker lists each model once and
+can filter by catalog tag and upload support. A new thread starts on the best
+provider for the chosen model; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
+for that rule, tags, refreshes and unavailable models.
 
 Image uploads accept PNG/JPEG/WebP/GIF. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files

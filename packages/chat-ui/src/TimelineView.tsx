@@ -2,7 +2,7 @@
 import { AlertTriangle, CheckCircle2, ListChecks, LoaderCircle } from "lucide-react";
 import type { ClientSessionState, ClientTimelineItem } from "@axiom/chat-core/viewTypes";
 import type { PendingUserMessage } from "@axiom/chat-core/types";
-import { replyErrorPresentation } from "@axiom/chat-core/replyErrors";
+import { replyErrorPresentation, trialCapacityMessage } from "@axiom/chat-core/replyErrors";
 import { AttachmentCards, StoredAttachments, attachmentSummaries } from "./Attachments";
 import type { AttachmentPreviews } from "@axiom/chat-core/attachmentPreviews";
 import { MessageBubble } from "./MessageBubble";
@@ -11,8 +11,23 @@ import { InteractionCard } from "./InteractionCard";
 import { DismissibleNotice } from "./DismissibleNotice";
 import { hasActiveResponse, messageRevisionSources, presentTimeline } from "./timelinePresentation";
 
-function ActivityRow({ item, onRetry }: { item: ClientTimelineItem; onRetry?: () => Promise<void> }) {
+function ActivityRow({ item, onRetry, onUpgrade }: {
+  item: ClientTimelineItem; onRetry?: () => Promise<void>; onUpgrade?: () => void;
+}) {
   const error = item.kind === "error";
+  const capacity = error ? trialCapacityMessage(item.text) : null;
+  // Plans and paid credit are not limited by the shared free-trial window.
+  if (capacity) return <DismissibleNotice data-timeline-kind="activity" role="alert" className="flex items-start gap-2 rounded-lg bg-[var(--color-danger-soft)] px-3 py-2 text-[12.5px] text-[var(--color-danger-strong)]">
+    <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+    <div className="min-w-0">
+      <p className="break-words">{capacity}</p>
+      {onUpgrade ? <p className="mt-1 text-[var(--color-text-secondary)]">Plans and paid credit aren’t affected, so you can keep chatting now.</p> : null}
+      {onUpgrade || onRetry ? <div className="mt-2 flex flex-wrap gap-2">
+        {onUpgrade ? <button type="button" className="rounded-lg bg-[var(--color-cherry)] px-2.5 py-1 font-medium text-on-accent hover:bg-[var(--color-cherry-bright)]" onClick={onUpgrade}>Upgrade plan</button> : null}
+        {onRetry ? <button type="button" className="rounded px-2 py-1 text-[var(--color-cherry)] hover:bg-[var(--wash-row)]" onClick={() => void onRetry().catch(() => {})}>Retry</button> : null}
+      </div> : null}
+    </div>
+  </DismissibleNotice>;
   if (error && item.text.includes("Intel TDX environment is OutOfDate")) return <div role="status" data-timeline-kind="activity"
     className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] text-[var(--color-warning)]">
     <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -50,6 +65,7 @@ export function TimelineView({
   pendingUserMessage,
   onRevise,
   onContinue,
+  onUpgrade,
   attachmentPreviews,
 }: {
   session: ClientSessionState;
@@ -57,6 +73,8 @@ export function TimelineView({
   pendingUserMessage?: PendingUserMessage | null;
   onRevise?: (userItemId: string, text: string) => Promise<void>;
   onContinue?: () => Promise<void>;
+  /** Opens the host's plans or billing screen from a free-trial capacity notice. */
+  onUpgrade?: () => void;
   attachmentPreviews?: AttachmentPreviews;
 }) {
   const presentation = presentTimeline(session.timeline);
@@ -117,7 +135,8 @@ export function TimelineView({
       return <div key={row.item.tool.callId} data-timeline-kind="tool"><ToolCallCard tool={row.item.tool} threadId={session.sessionId} responseActive={responseActive} /></div>;
     }
     return <ActivityRow key={JSON.stringify([session.sessionId, row.key, row.item.text])} item={row.item}
-      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestReplyTurn ? onContinue : undefined} />;
+      onRetry={!responseActive && row.item.kind === "error" && row.item.turnId === latestReplyTurn ? onContinue : undefined}
+      onUpgrade={onUpgrade} />;
   });
   if (showPendingUser && pendingUserMessage) {
     rows.push(

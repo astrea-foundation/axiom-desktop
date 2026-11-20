@@ -477,8 +477,10 @@ requests use account token leases; renderers cannot select URLs, headers or an
 arbitrary principal. See [billing controls](billing.md#integration).
 
 Billing status can include shared `trial_capacity` metadata. Trial admission
-errors are typed `TRIAL_CAPACITY` with a retry timestamp; clients show a capacity
-message and retry time. Existing work finishes normally and paid funding stays
+errors are typed `TRIAL_CAPACITY` with a retry timestamp; AxiomCLI reports them
+without an internal error prefix and formats the retry time in the local time zone.
+Clients show the capacity message and retry time, and Desktop offers an upgrade
+action that opens Balance. Existing work finishes normally and paid funding stays
 usable when new trial requests are paused. No plaintext inference path is added.
 
 Security projections require the registered provider identity, accepted key

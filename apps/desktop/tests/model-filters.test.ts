@@ -3,7 +3,6 @@ import test from "node:test";
 import type { ModelTag, ProviderModel } from "@axiom/chat-ui";
 import {
   catalogCapabilities,
-  catalogHosts,
   catalogTags,
   countModels,
   emptyModelFilters,
@@ -52,7 +51,7 @@ const catalog = [
 const filters = (patch: Partial<ModelFilters> = {}): ModelFilters => ({ ...emptyModelFilters(), ...patch });
 const ids = (models: ProviderModel[]) => models.map((entry) => entry.id);
 
-test("tags combine with AND, hosts with OR, and results keep provider preference order", () => {
+test("tags and capabilities combine with AND, and results keep preference order", () => {
   assert.deepEqual(ids(filterModels(catalog, filters())), [
     "tinfoil-deepseek-v4-1-flash",
     "tinfoil-kimi-k3",
@@ -63,29 +62,21 @@ test("tags combine with AND, hosts with OR, and results keep provider preference
   ]);
   assert.deepEqual(ids(filterModels(catalog, filters({ tags: new Set(["cheap", "uncensored"]) }))), ["direct:qwen3.8-27b"]);
   assert.deepEqual(
-    ids(filterModels(catalog, filters({ tags: new Set(["cheap"]), hosts: new Set(["tinfoil", "axiom-direct"]) }))),
-    ["tinfoil-deepseek-v4-1-flash", "direct:qwen3.8-27b"],
-  );
-  assert.deepEqual(
     ids(filterModels(catalog, filters({ tags: new Set(["cheap"]), capabilities: new Set(["images"]) }))),
     ["qwen3-6-35b", "direct:qwen3.8-27b"],
   );
 });
 
-test("search matches names, upstream models, hosts and tag labels", () => {
+test("search matches names, upstream models and tag labels, never providers", () => {
   assert.deepEqual(ids(filterModels(catalog, filters({ query: "uncensored" }))), ["direct:qwen3.8-27b"]);
   assert.deepEqual(ids(filterModels(catalog, filters({ query: "minimaxai" }))), ["minimax-m3"]);
-  assert.deepEqual(ids(filterModels(catalog, filters({ query: "tinfoil" }))), ["tinfoil-deepseek-v4-1-flash", "tinfoil-kimi-k3"]);
+  assert.deepEqual(ids(filterModels(catalog, filters({ query: "near ai" }))), []);
+  assert.deepEqual(ids(filterModels(catalog, filters({ query: "astreaai" }))), []);
   assert.equal(filterModels(catalog, filters({ query: "nothing-like-this" })).length, 0);
 });
 
 test("filter options come from the catalog and counts preview the next selection", () => {
   assert.deepEqual(catalogTags(catalog).map((entry) => entry.id), ["uncensored", "cheap", "intelligent", "new"]);
-  assert.deepEqual(catalogHosts(catalog), [
-    { id: "tinfoil", label: "Tinfoil" },
-    { id: "near", label: "NEAR AI" },
-    { id: "axiom-direct", label: "AstreaAI" },
-  ]);
   assert.deepEqual(catalogCapabilities(catalog), ["images", "files"]);
   assert.deepEqual(catalogCapabilities(catalog.filter((entry) => entry.supportsImages)), ["files"]);
   assert.deepEqual(catalogTags([model("legacy", "near", "legacy")]), []);
@@ -93,8 +84,7 @@ test("filter options come from the catalog and counts preview the next selection
   const cheapOnly = filters({ tags: new Set(["cheap"]) });
   assert.equal(countModels(catalog, cheapOnly), 4);
   assert.equal(countModels(catalog, cheapOnly, { tags: new Set(["cheap", "intelligent"]) }), 0);
-  assert.equal(countModels(catalog, cheapOnly, { hosts: new Set(["near"]) }), 2);
-  assert.equal(countModels(catalog, cheapOnly, { hosts: new Set() }), 4);
+  assert.equal(countModels(catalog, cheapOnly, { capabilities: new Set(["images"]) }), 2);
 });
 
 test("toggling and clearing filters is immutable", () => {
@@ -104,6 +94,6 @@ test("toggling and clearing filters is immutable", () => {
   assert.deepEqual([...toggled(added, "cheap")], ["new"]);
   assert.deepEqual([...original], ["cheap"]);
   assert.equal(hasActiveModelFilters(filters()), false);
-  assert.equal(hasActiveModelFilters(filters({ hosts: new Set(["near"]) })), true);
+  assert.equal(hasActiveModelFilters(filters({ capabilities: new Set(["files"]) })), true);
   assert.equal(hasActiveModelFilters(filters({ query: "glm" })), true);
 });

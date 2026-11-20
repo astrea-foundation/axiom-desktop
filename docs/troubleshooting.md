@@ -226,7 +226,8 @@ restoration is guarded for normal exit and panic.
 
 ## Trial and invoice capacity
 
-If free trials are at capacity, use the displayed retry time or add paid credit.
+If free trials are at capacity, use the displayed retry time, or choose **Upgrade
+plan** in the notice to open Balance and pick a plan or add paid credit.
 A running response continues; this limit affects new trial-funded requests. Retry
 times can move when other admitted requests settle.
 
