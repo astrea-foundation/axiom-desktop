@@ -204,10 +204,10 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
         match macos_dev_image_config(std::path::Path::new("/Applications/Axiom.app"), relay) {
             Ok(Some(config)) => return Ok(Some(config)),
             Ok(None) => {
-                tracing::warn!("No AstreaAI image runtime found in /Applications/Axiom.app")
+                tracing::warn!("No AstreaAI image runtime found in /Applications/Axiom.app");
             }
             Err(error) => {
-                tracing::warn!(%error, "Could not use the installed AstreaAI image runtime")
+                tracing::warn!(%error, "Could not use the installed AstreaAI image runtime");
             }
         }
     }

@@ -569,6 +569,11 @@ region still work at 125% and 150%. Unit, browser and a hidden macOS Electron
 window check cover the stored choice, shortcuts and layout; they do not replace
 a Windows window.
 
+The Windows portability job builds this revision's Desktop app and opens a
+native Electron window with an isolated profile. It records zoom and window
+size at startup, sends the Ctrl shortcuts to the native window, checks
+Appearance and maximize/restore at both sizes, and relaunches at the saved size.
+
 The 0.1.12 offline package and website Setup were published after signed Windows
 installation qualification. The live older-to-current first-launch check then
 found a separate native updater failure: the canonical job path is rejected

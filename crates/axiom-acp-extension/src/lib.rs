@@ -1392,7 +1392,7 @@ pub struct LogoutRequest {}
 #[request(method = "_axiom/billing/status", response = BillingStatusResponse)]
 pub struct BillingStatusRequest {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
 #[request(method = "_axiom/billing/crypto_options", response = CryptoOptionsResponse)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CryptoOptionsRequest {

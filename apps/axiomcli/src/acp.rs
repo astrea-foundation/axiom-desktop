@@ -1707,6 +1707,7 @@ struct PendingDelete {
 }
 
 #[derive(Clone, Copy)]
+#[repr(u64)]
 enum ExtensionFeature {
     SessionContinuation = 1 << 29,
     LegacyPayloadImport = 1 << 27,
