@@ -636,6 +636,13 @@ To keep streamed replies responsive, blocks over 50,000 characters (10,000 for
 automatic language detection), or beyond a 100,000-character per-message highlighting
 budget, remain plain text without truncation. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
+**Settings → Appearance → Interface size** scales text, icons and spacing together
+by zooming the window: 100%, 110%, 125% or 150%. Windows and Linux start at 110%
+and macOS at 100%. `Ctrl` (`⌘` on macOS) with `+`, `-` and `0` steps through the
+same sizes and returns to the platform default. The choice is stored per desktop
+profile in `interface-size.json`, applies to every window, and is set before a
+window first appears. At 150% the smallest window grows from 960×640 to 1080×720 so
+Settings keeps its desktop layout.
 Enabled Web and Agent controls, Agent selection indicators, and the composer's
 Send/Stop button use Axiom signal orange (`#FF7653`) in light mode. Dark mode uses
 neutral white/gray selections and buttons. Filled controls use dark labels and

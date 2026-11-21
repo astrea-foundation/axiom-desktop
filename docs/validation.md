@@ -561,6 +561,14 @@ incomplete resets must reopen with a visible error. Native/controller and browse
 tests cover isolated files, mock credentials, exclusion, confirmation and retry;
 these do not replace Windows vault and installer qualification.
 
+Interface size requires Windows VM qualification before release: on a fresh
+profile confirm the window first appears at 110% with no size jump, that
+`Ctrl` with `+`, `-` and `0` change it and Settings → Appearance follows, that
+the choice survives a restart, and that the frameless window controls and drag
+region still work at 125% and 150%. Unit, browser and a hidden macOS Electron
+window check cover the stored choice, shortcuts and layout; they do not replace
+a Windows window.
+
 The 0.1.12 offline package and website Setup were published after signed Windows
 installation qualification. The live older-to-current first-launch check then
 found a separate native updater failure: the canonical job path is rejected
