@@ -63,6 +63,7 @@ pub struct AccountAuthority {
 pub struct ExecutionOptions<'a> {
     pub pinned: Option<&'a VerifiedWorker>,
     pub request_id: Option<&'a str>,
+    pub image_queue_deadline: Option<tokio::time::Instant>,
 }
 
 fn execution_request_id(value: Option<&str>) -> Result<String> {
@@ -104,6 +105,7 @@ fn elapsed_ms(start: Instant) -> u64 {
 #[derive(Debug)]
 pub enum CapacityUnavailable {
     Preparation,
+    QueuedImage,
     Exchange,
 }
 impl std::fmt::Display for CapacityUnavailable {
@@ -112,6 +114,18 @@ impl std::fmt::Display for CapacityUnavailable {
     }
 }
 impl std::error::Error for CapacityUnavailable {}
+
+async fn before_image_queue_expiry<T>(
+    deadline: Option<tokio::time::Instant>,
+    work: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match deadline {
+        Some(until) => tokio::time::timeout_at(until, work)
+            .await
+            .map_err(|_| CapacityUnavailable::QueuedImage)?,
+        None => work.await,
+    }
+}
 
 async fn public_challenge(
     client: &reqwest::Client,
@@ -395,6 +409,55 @@ impl DirectClient {
     pub async fn prepare(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
         self.prepare_until(now() + 180, cancel).await
     }
+    /// Check the account controller's waiting position before obtaining an
+    /// execution grant. Only routing and request identity leave the client.
+    pub async fn image_queue_turn(
+        &self,
+        request_id: &str,
+        wait_until: u64,
+        cancel: &CancellationToken,
+    ) -> Result<bool> {
+        let Some(account) = &self.account else {
+            return Ok(false);
+        };
+        let value = tokio::time::timeout(
+            Duration::from_secs(10),
+            account.metadata(
+                "image-queue",
+                json!({
+                    "request_id": request_id,
+                    "model_manifest": self.config.model_manifest,
+                    "logical_origin": self.config.origin,
+                    "client_key": ClientKey::from_signing(&account.key),
+                    "wait_until": wait_until,
+                }),
+                cancel,
+            ),
+        )
+        .await
+        .map_err(|_| CapacityUnavailable::Preparation)??;
+        if value.is_null() {
+            return Ok(false);
+        }
+        match value["status"].as_str() {
+            Some("ready") => Ok(true),
+            Some("waiting") => Err(CapacityUnavailable::QueuedImage.into()),
+            _ => anyhow::bail!("invalid image queue response"),
+        }
+    }
+    pub async fn cancel_image_queue(&self, request_id: &str) {
+        if let Some(account) = &self.account {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                account.metadata(
+                    "image-queue/cancel",
+                    json!({"request_id": request_id}),
+                    &CancellationToken::new(),
+                ),
+            )
+            .await;
+        }
+    }
     /// Renew with thirty seconds of extra headroom before a foreground request
     /// would have to wait. This sends only public evidence and admission.
     pub async fn prewarm(&self, cancel: &CancellationToken) -> Result<VerifiedWorker> {
@@ -494,7 +557,7 @@ impl DirectClient {
             limits,
             ExecutionOptions {
                 pinned,
-                request_id: None,
+                ..ExecutionOptions::default()
             },
             on_frame,
             cancel,
@@ -564,9 +627,20 @@ impl DirectClient {
             "direct request deadline exceeds fresh proof window"
         );
         let image_operation = matches!(&input, Input::Image { .. });
-        let (verified, client, reused) = self.verified_until(limits.deadline, cancel).await?;
+        let queue_deadline = options.image_queue_deadline;
+        ensure!(
+            queue_deadline.is_none() || (image_operation && self.account.is_some()),
+            "image queue position requires an account image request"
+        );
+        let (verified, client, reused) =
+            before_image_queue_expiry(queue_deadline, self.verified_until(limits.deadline, cancel))
+                .await?;
         timings.verification_ms = elapsed_ms(started);
         timings.proof_reused = reused;
+        ensure!(
+            !image_operation || (self.config.image_generation && verified.supports("image")),
+            "image generation requires installed and signed authorization"
+        );
         let has_images = matches!(&input, Input::Chat { messages, .. }
             if messages.iter().any(|message| !message.images.is_empty()))
             || matches!(&input, Input::Image { references, .. } if !references.is_empty());
@@ -612,18 +686,20 @@ impl DirectClient {
         };
         let (grant, grant_doc) = if let Some(account) = &self.account {
             let key = ClientKey::from_signing(&key);
-            let value = account
-                .metadata(
-                    "reserve",
-                    json!({
-                        "request_id":request_id,"model_manifest":cfg.model_manifest,
-                        "operation":if image_operation {"image"} else {"chat"},"limits":limits,
-                        "client_key":key,"challenge":axiom_pool_protocol::random_challenge(),
-                        "preferred_worker":expected,"include_evidence":false
-                    }),
-                    cancel,
-                )
-                .await?;
+            let mut request = json!({
+                "request_id":request_id,"model_manifest":cfg.model_manifest,
+                "operation":if image_operation {"image"} else {"chat"},"limits":limits,
+                "client_key":key,"challenge":axiom_pool_protocol::random_challenge(),
+                "preferred_worker":expected,"include_evidence":false
+            });
+            if queue_deadline.is_some() {
+                request["require_image_queue"] = json!(true);
+            }
+            let value = before_image_queue_expiry(
+                queue_deadline,
+                account.metadata("reserve", request, cancel),
+            )
+            .await?;
             let ticket: axiom_pool_protocol::types::Ticket = axiom_pool_protocol::verify(
                 &serde_json::from_value::<SignedDocument>(value["ticket"].clone())?,
                 &account.issuer_key,

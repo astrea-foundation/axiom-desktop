@@ -25,7 +25,7 @@ export function allowedBillingUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return value.length <= 4096 && !/[\x00-\x20]/.test(value) && url.protocol === "https:" && !url.username && !url.password && !url.port
-      && ((url.hostname === "checkout.stripe.com" && url.pathname.startsWith("/c/pay/")) ||
+      && ((url.hostname === "checkout.stripe.com" && /^\/[cg]\/pay\//.test(url.pathname)) ||
           (url.hostname === "billing.stripe.com" && url.pathname.startsWith("/p/session/")));
   } catch { return false; }
 }

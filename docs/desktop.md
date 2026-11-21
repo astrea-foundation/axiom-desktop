@@ -371,8 +371,8 @@ failure or account/runtime change.
 The default policy lets the model choose `aspect_ratio` from `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`,
 `16:9`, `1:2`, `2:1`, `9:21`, and `21:9`. The default for new images is **1:1**.
 Native code selects the largest exact ratio on the supported 32-pixel grid,
-within 4,194,304 pixels. This gives 2048×2048 for 1:1, 1664×2496 for 2:3, and
-2560×1440 for 16:9. Without a ratio, reference-based requests use the same
+within 2,359,296 pixels. This gives 1536×1536 for 1:1, 1216×1824 for 2:3, and
+2048×1152 for 16:9. Without a ratio, reference-based requests use the same
 default size.
 
 The installed AstreaAI client supplies the current default, ratio list and
@@ -404,9 +404,10 @@ Use Attach, paste an image, or drop files anywhere in the main chat panel,
 including its empty space and transcript. A drop indicator marks the panel;
 the sidebar and Proxy view do not attach files. Image and file icons
 in the model picker show the selected model's current capabilities; hover or use
-the accessible label for their meaning. The picker can filter by catalog tag,
-host and upload support; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
-for tags, refreshes and unavailable models.
+the accessible label for their meaning. The picker lists each model once and
+can filter by catalog tag and upload support. A new thread starts on the best
+provider for the chosen model; see [catalog discovery](provider-catalogs.md#model-tags-and-picker-filters)
+for that rule, tags, refreshes and unavailable models.
 
 Image uploads accept PNG/JPEG/WebP/GIF. File-capable Tinfoil models accept
 text/code, Markdown, CSV, HTML, JSON, XML, PDF and Office Open XML files

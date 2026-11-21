@@ -21,6 +21,7 @@
     "./modelPricing": "./src/modelPricing.ts",
     "./modelPreferences": "./src/modelPreferences.ts",
     "./modelFilters": "./src/modelFilters.ts",
+    "./modelGroups": "./src/modelGroups.ts",
     "./OverflowTitle": "./src/OverflowTitle.tsx",
     "./*": "./src/*.tsx",
     "./privacyProof": "./src/privacyProof.ts",

@@ -1108,6 +1108,7 @@ mod tests {
 
         struct ServerState {
             billing: RwLock<Value>,
+            card_error: RwLock<Value>,
             payment: RwLock<Value>,
             gift_calls: AtomicUsize,
             provision_status: AtomicUsize,
@@ -1194,6 +1195,17 @@ mod tests {
             Json(state.billing.read().expect("billing fixture").clone())
         }
 
+        async fn create_card_payment(
+            State(state): State<Arc<ServerState>>,
+            headers: HeaderMap,
+        ) -> (HttpStatus, Json<Value>) {
+            check_native_bearer(&headers);
+            (
+                HttpStatus::SERVICE_UNAVAILABLE,
+                Json(state.card_error.read().expect("card error fixture").clone()),
+            )
+        }
+
         async fn redeem_gift(
             State(state): State<Arc<ServerState>>,
             headers: HeaderMap,
@@ -1249,6 +1261,7 @@ mod tests {
                     "currency": "microUSD", "payment_account": payment(ready),
                     "zec_usd_quote": null, "trial_capacity": null
                 })),
+                card_error: RwLock::new(Value::Null),
                 payment: RwLock::new(payment(true)),
                 gift_calls: AtomicUsize::new(0),
                 provision_status: AtomicUsize::new(200),
@@ -1265,6 +1278,7 @@ mod tests {
                     delete(|| async { HttpStatus::NO_CONTENT }),
                 )
                 .route("/api/v1/billing/status", get(get_status))
+                .route("/api/v1/billing/stripe/payments", post(create_card_payment))
                 .route("/api/v1/billing/gift-codes/redeem", post(redeem_gift))
                 .route("/api/v1/billing/deposit-address", post(provision))
                 .with_state(Arc::clone(&state));
@@ -1297,6 +1311,46 @@ mod tests {
                 state,
                 server,
                 _directory: directory,
+            }
+        }
+
+        #[tokio::test]
+        async fn card_checkout_reports_processor_unavailability_for_known_errors() {
+            let fixture = fixture(true).await;
+            let action = axiom_acp_extension::CreditBillingAction::CreateCardPayment {
+                id: uuid::Uuid::new_v4().to_string(),
+                amount_microusd: 10_000_000,
+            };
+            for (body, expected) in [
+                (json!({"detail": {"code": "billing_unavailable"}}), true),
+                (
+                    json!({"detail": "Card payments are temporarily unavailable."}),
+                    true,
+                ),
+                (json!({"detail": "Axiom service unavailable"}), false),
+            ] {
+                *fixture
+                    .state
+                    .card_error
+                    .write()
+                    .expect("card error fixture") = body;
+                let error = fixture
+                    .client
+                    .credit_control(&action, &CancellationToken::new())
+                    .await
+                    .expect_err("unavailable checkout");
+                assert_eq!(
+                    matches!(error, AxiomError::CardProcessorUnavailable),
+                    expected
+                );
+                assert_eq!(
+                    error.to_string(),
+                    if expected {
+                        "The credit card processor is temporarily unavailable."
+                    } else {
+                        "provider error: Axiom credit billing returned HTTP 503 Service Unavailable"
+                    }
+                );
             }
         }
 

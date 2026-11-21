@@ -64,8 +64,13 @@ test("billing actions are finite and cannot redirect native credentials or payme
     assert.throws(() => validateCreditAction(action));
   }
   assert(allowedBillingUrl("https://checkout.stripe.com/c/pay/fixture"));
+  assert(allowedBillingUrl("https://checkout.stripe.com/g/pay/cs_fixture#stripe-fragment"));
   assert(allowedBillingUrl("https://billing.stripe.com/p/session/fixture"));
-  for (const url of ["https://evil.invalid", "https://checkout.stripe.com.evil.invalid/c/pay/x", "https://user@checkout.stripe.com/c/pay/x", "https://checkout.stripe.com/other", "javascript:alert(1)"]) assert(!allowedBillingUrl(url));
+  for (const url of ["https://evil.invalid", "https://checkout.stripe.com.evil.invalid/g/pay/x",
+    "https://user@checkout.stripe.com/c/pay/x", "https://checkout.stripe.com/other", "javascript:alert(1)",
+    "http://checkout.stripe.com/g/pay/x", "https://checkout.stripe.com:8443/g/pay/x",
+    "https://checkout.stripe.com/g/pay/../../elsewhere", "https://checkout.stripe.com/x/pay/x",
+  ]) assert(!allowedBillingUrl(url));
 });
 
 test("credit usage validates both bucket and model totals without changing its denomination", () => {

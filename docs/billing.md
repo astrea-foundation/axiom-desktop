@@ -57,10 +57,13 @@ cover twice the plan price in API cost; these are weekly benefits rather than
 fixed calendar-month totals. The server catalog and model-pricing policy are
 authoritative.
 
-**Card** opens hosted Stripe Checkout. **Crypto** offers the configured currencies
+**Card** opens hosted Stripe Checkout on `checkout.stripe.com`, which supports
+both `/c/pay/` and `/g/pay/` links. **Crypto** offers the configured currencies
 and a separate direct Zcash deposit option. Money paid is displayed in USD;
 confirmed funding adds the server-verified dollar value to purchased credit. Payment return
 links do not prove payment: the server reconciles the original owned record.
+If Stripe cannot process a billing request, Desktop displays “The credit card
+processor is temporarily unavailable.”
 Retry an uncertain operation under the same ID. Card details and billing
 credentials stay outside the renderer and conversation.
 
@@ -72,6 +75,12 @@ Pending/unknown attempts count against the cap, and refunds do not replenish
 it. Subscription charges are separate. Turning off prevents new dispatch;
 already submitted payments still reconcile. An authentication-required attempt
 can be cancelled before replacing its card/authorization.
+
+Billing’s **Usage** section shows the credits and purchased dollars used by settled
+requests. It refreshes about every 30 seconds while visible and when the window
+regains focus, even if card history is unavailable. A failed usage refresh displays
+an error in the section.
+For accounts included in a credit denomination reset, totals start at that reset.
 
 The Usage screen separates allowance credits from purchased dollars, with exact model totals.
 Legacy monetary usage remains available for older accounts. API key reference

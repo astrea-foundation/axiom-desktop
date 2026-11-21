@@ -230,6 +230,10 @@ impl PoolClient {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(AuthenticationRejected.into());
         }
+        if route == "image-queue" && response.status() == reqwest::StatusCode::NOT_FOUND {
+            // An older controller has only the bounded worker queue.
+            return Ok(Value::Null);
+        }
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(direct::CapacityUnavailable::Preparation.into());
         }

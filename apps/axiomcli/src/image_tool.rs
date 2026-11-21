@@ -40,7 +40,7 @@ pub(crate) fn configure_runtime_definition(
     tool.function.parameters["properties"]["aspect_ratio"]["default"] =
         json!(p.default_aspect_ratio);
     let size = runtime
-        .dimensions(&p.default_aspect_ratio)
+        .generation_dimensions(&p.default_aspect_ratio)
         .expect("validated runtime default");
     if p.max_references == 0 {
         tool.function.parameters["properties"]["reference_image_ids"]["description"] =
@@ -56,7 +56,7 @@ pub(crate) fn configure_runtime_definition(
         "Omit aspect_ratio to retain a reference's shape."
     };
     tool.function.description = format!(
-        "Create or change one image only when the user requests it. Images work best at higher resolutions; the native client computes the largest supported dimensions. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically. Vision-capable chat models also receive a preview as visual input after the tool responses; inspect that preview directly without calling view_image again for the new result.",
+        "Create or change one image only when the user requests it. The native client fits the requested aspect ratio within the generation pixel budget. Available aspect ratios: {}. New images default to {} at {}×{}. Use up to {} distinct conversation-local reference_image_ids; refer to them as <image1>, <image2>, etc. in order and describe what to preserve. {} Results appear automatically. Vision-capable chat models also receive a preview as visual input after the tool responses; inspect that preview directly without calling view_image again for the new result.",
         p.aspect_ratios.join(", "),
         p.default_aspect_ratio,
         size.width,
@@ -408,7 +408,7 @@ impl Tool for ImageGenerationTool {
         "generate"
     }
     fn description(&self) -> &'static str {
-        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. Images work best at higher resolutions: the native client chooses the largest supported image with that exact aspect ratio on the 32-pixel grid, within 4,194,304 pixels. New images default to 1:1 square at 2048×2048. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls preserve the first reference's output dimensions or aspect ratio within the limits. The result is displayed automatically. Vision-capable chat models receive a visual preview after the tool responses; inspect it directly without calling view_image again for the new result."
+        "Create one image with Axiom's encrypted image service only when the user requests image creation or changes. Provide a self-contained prompt and optional aspect_ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3. The native client fits the exact aspect ratio on a 32-pixel grid within 2,359,296 pixels. New images default to 1:1 square at 1536×1536. Available aspect ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 1:2, 2:1, 9:21 and 21:9. To edit or use references, supply up to five exact conversation-local image IDs in reference_image_ids. In the prompt refer to them as <image1>, <image2>, etc. in that array's order; describe each reference's role and what to preserve. Without an aspect_ratio, reference-based calls use the installed default size or retain the first reference's shape within the pixel budget. The result is displayed automatically. Vision-capable chat models receive a visual preview after the tool responses; inspect it directly without calling view_image again for the new result."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object", "properties":{
@@ -417,7 +417,7 @@ impl Tool for ImageGenerationTool {
                 "items":{"type":"string","pattern":"^img_[0-9a-f]{32}$"},
                 "description":"Ordered references from this conversation. First is <image1>, second <image2>, etc. Omit or pass [] for text-only generation."},
             "aspect_ratio":{"type":"string","enum":IMAGE_ASPECT_RATIOS,"default":"1:1",
-                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client chooses the largest supported dimensions at this ratio. Omit to use 2048×2048 square for a new image or the signed installation default for references."}},
+                "description":"Width:height, for example 1:1, 16:9, 9:16, 3:2 or 4:3. The client fits the ratio within the generation pixel budget. Omit to use 1536×1536 square for a new image or the installed default for references."}},
             "required":["prompt"], "additionalProperties":false})
     }
 
@@ -505,20 +505,23 @@ impl Tool for ImageGenerationTool {
         let dimensions = if let Some(ratio) = args.aspect_ratio.as_deref() {
             Some(
                 runtime
-                    .dimensions(ratio)
+                    .generation_dimensions(ratio)
                     .map_err(|e| AxiomError::Tool(e.into()))?,
             )
         } else {
             match (args.width, args.height) {
                 (None, None) if runtime.references_use_default_size() => Some(
                     runtime
-                        .dimensions(&runtime.image.default_aspect_ratio)
+                        .generation_dimensions(&runtime.image.default_aspect_ratio)
                         .map_err(|e| AxiomError::Tool(e.into()))?,
                 ),
                 (None, None) => sources
                     .first()
                     .map(|source| {
-                        reference_output_dimensions_with_limit(source, runtime.image.max_pixels)
+                        reference_output_dimensions_with_limit(
+                            source,
+                            runtime.generation_pixel_limit(),
+                        )
                     })
                     .transpose()?
                     .flatten(),
@@ -572,50 +575,6 @@ impl Tool for ImageGenerationTool {
         };
         image_result(context, image)
     }
-}
-
-/// Exact ratios use reduced integer grid units; increasing the scale always
-/// increases area, so the last valid scale is the largest supported image.
-#[cfg(test)]
-pub(crate) fn dimensions_for_aspect_ratio(ratio: &str) -> Result<axiom_inference::ImageDimensions> {
-    let invalid = || {
-        AxiomError::Tool("Use an aspect ratio such as 1:1, 16:9, 9:16, 3:2 or 4:3 that fits the supported image limits.".into())
-    };
-    if !IMAGE_ASPECT_RATIOS.contains(&ratio) {
-        return Err(invalid());
-    }
-    let (width, height) = ratio.split_once(':').ok_or_else(invalid)?;
-    if width.is_empty()
-        || height.is_empty()
-        || width.len() > 4
-        || height.len() > 4
-        || !width
-            .bytes()
-            .chain(height.bytes())
-            .all(|byte| byte.is_ascii_digit())
-    {
-        return Err(invalid());
-    }
-    let width: u32 = width.parse().map_err(|_| invalid())?;
-    let height: u32 = height.parse().map_err(|_| invalid())?;
-    if width == 0 || height == 0 {
-        return Err(invalid());
-    }
-    let (mut a, mut b) = (width, height);
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    let (width, height) = (width / a, height / a);
-    for scale in (1..=(256 / width).min(256 / height)).rev() {
-        let size = axiom_inference::ImageDimensions {
-            width: width * 32 * scale,
-            height: height * 32 * scale,
-        };
-        if size.validate().is_ok() {
-            return Ok(size);
-        }
-    }
-    Err(invalid())
 }
 
 const IMAGE_ASPECT_RATIOS: &[&str] = &[
@@ -732,29 +691,31 @@ pub(crate) mod tests {
             definition.function.parameters["properties"]["reference_image_ids"]["maxItems"],
             3
         );
-        assert!(definition.function.description.contains("2048×2048"));
+        assert!(definition.function.description.contains("1536×1536"));
         assert!(definition.function.description.contains("6:5"));
         assert!(!definition.function.description.contains("0.9"));
     }
 
     #[test]
     fn aspect_ratios_select_the_largest_exact_supported_grid_and_reject_extremes() {
+        let runtime = axiom_inference::ImageRuntimePolicy::default();
         for (ratio, width, height) in [
-            ("1:1", 2048, 2048),
-            ("2:3", 1664, 2496),
-            ("3:2", 2496, 1664),
-            ("16:9", 2560, 1440),
-            ("9:16", 1440, 2560),
-            ("21:9", 2912, 1248),
+            ("1:1", 1536, 1536),
+            ("2:3", 1216, 1824),
+            ("3:2", 1824, 1216),
+            ("16:9", 2048, 1152),
+            ("9:16", 1152, 2048),
+            ("21:9", 2240, 960),
         ] {
             assert_eq!(
-                dimensions_for_aspect_ratio(ratio).unwrap(),
+                runtime.generation_dimensions(ratio).unwrap(),
                 axiom_inference::ImageDimensions { width, height }
             );
         }
         for ratio in IMAGE_ASPECT_RATIOS {
-            let size = dimensions_for_aspect_ratio(ratio).unwrap();
+            let size = runtime.generation_dimensions(ratio).unwrap();
             size.validate().unwrap();
+            assert!(u64::from(size.width) * u64::from(size.height) <= 1536 * 1536);
             let (a, b) = ratio.split_once(':').unwrap();
             let (a, b) = (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap());
             assert_eq!(size.width * b, size.height * a);
@@ -767,14 +728,14 @@ pub(crate) mod tests {
                 height: size.height + 32 * (b / gcd),
             };
             assert!(
-                next.validate().is_err(),
+                u64::from(next.width) * u64::from(next.height) > 1536 * 1536,
                 "{ratio} must already be at its largest exact size"
             );
         }
         for ratio in [
             "300:1", "1:300", "32:1", "0:1", "1:0", "100:101", "", "1.5:1", "1:1:1",
         ] {
-            assert!(dimensions_for_aspect_ratio(ratio).is_err(), "{ratio}");
+            assert!(runtime.generation_dimensions(ratio).is_err(), "{ratio}");
         }
     }
 

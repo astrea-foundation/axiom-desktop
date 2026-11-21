@@ -78,7 +78,7 @@ workspace-package or TypeScript imports.
 The settings screen and category navigation are shared too. Hosts supply the
 available categories and account/storage actions. Web hides Agent, MCP, Proxy,
 native updates and local API-key controls. Unsupported uploads are disabled with
-provider/model-specific hover text. Composer relocation animates on immediate
+model-specific hover text. Composer relocation animates on immediate
 thread creation and respects reduced motion.
 The composer disables model selection during preparation and streaming, dismisses
 an open model picker when either starts, and restores selection when the turn
