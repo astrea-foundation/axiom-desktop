@@ -486,6 +486,13 @@ allowance by model and keeps purchased USD separate. The second returns the
 current provider-quoted USD floor for each network when available. Requests
 from older clients omit both options and retain the previous response shapes.
 
+`billing@9` adds balance plan options, purchases and renewal controls. The
+purchase requires an operation UUID, plan key, catalog version, UTC first
+renewal date and explicit consent to the advertised recurring charge terms.
+The receipt confirms the price and coverage dates. Cancel or resume future
+renewals with the owned subscription UUID. Both the SDK and native sidecar
+gate these actions on version 9. Version 7 and 8 billing actions stay available.
+
 Billing status can include shared `trial_capacity` metadata. Trial admission
 errors are typed `TRIAL_CAPACITY` with a retry timestamp; AxiomCLI reports them
 without an internal error prefix and formats the retry time in the local time zone.

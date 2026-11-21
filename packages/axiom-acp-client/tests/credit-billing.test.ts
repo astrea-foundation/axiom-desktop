@@ -95,6 +95,13 @@ test("credit results negotiated with billing v7 cannot cross an account switch",
   });
   await client.initialize();
   client.state.setAccount({revision: 1, state: "valid", account: {id: "account-a", linkedMethods: []}});
+  assert.deepEqual(await client.creditBilling({kind: "balance_plan_options"}),
+    {result: {kind: "balance_plan_options", value: null}});
+  await assert.rejects(client.creditBilling({kind: "purchase_balance_plan", id: crypto.randomUUID(),
+    plan_key: "standard", catalog_version: "plans-v1", coverage_end_on: "2027-02-28",
+    renewal_consent_version: "balance-renew-v1", renewal_consent_accepted: true}), /Update Axiom/);
+  await assert.rejects(client.creditBilling({kind: "set_balance_plan_renewal", id: crypto.randomUUID(),
+    enabled: false}), /Update Axiom/);
   const pending = client.creditBilling({kind: "summary"});
   await new Promise(r => setImmediate(r));
   const rejection = assert.rejects(pending, /account|context/i);

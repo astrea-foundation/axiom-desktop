@@ -1738,6 +1738,7 @@ enum ExtensionFeature {
     ImageResolution = 1 << 25,
     ToolCallDrafting = 1 << 26,
     CreditBilling = 1 << 28,
+    BalancePlans = 1 << 30,
     BillingReportOptions = 1 << 31,
 }
 
@@ -1839,6 +1840,9 @@ impl ExtensionState {
         }
         if features.billing >= 8 {
             mask |= ExtensionFeature::BillingReportOptions as u64;
+        }
+        if features.billing >= 9 {
+            mask |= ExtensionFeature::BalancePlans as u64;
         }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;

@@ -708,6 +708,12 @@ pub(super) fn credit_billing(
             &context.extension_state,
             ExtensionFeature::BillingReportOptions,
         ))
+        || (matches!(
+            &request.action,
+            extension::CreditBillingAction::BalancePlanOptions
+                | extension::CreditBillingAction::PurchaseBalancePlan { .. }
+                | extension::CreditBillingAction::SetBalancePlanRenewal { .. }
+        ) && !extension_enabled(&context.extension_state, ExtensionFeature::BalancePlans))
     {
         return responder.respond_with_error(extension_not_negotiated());
     }

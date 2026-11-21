@@ -115,7 +115,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 8,
+            billing: 9,
             usage: 1,
             security_evidence: 4,
             web_consent: 1,

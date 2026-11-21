@@ -1217,6 +1217,44 @@ mod tests {
             )
         }
 
+        async fn balance_plan_options(headers: HeaderMap) -> Json<Value> {
+            check_native_bearer(&headers);
+            Json(json!({
+                "catalog": {"enabled": true, "currency": "usd", "billing_interval": "month",
+                    "allowance_interval_days": 7, "plans": [{"key": "standard", "name": "Standard",
+                    "amount_cents": 1000, "weekly_units": "5000000000", "version": "plans-fixture"}]},
+                "balance_subscription_id": null, "renewal_consent_version": "balance-renew-v1",
+                "renewal_authorized": false, "renewal_failure": null, "coverage_end_on": "2027-02-28",
+                "completion_reserved_units": "100000000"
+            }))
+        }
+
+        async fn purchase_balance_plan(
+            headers: HeaderMap,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            check_native_bearer(&headers);
+            assert_eq!(request["coverage_end_on"], "2027-02-28");
+            assert_eq!(request["catalog_version"], "plans-fixture");
+            assert_eq!(request["renewal_consent_version"], "balance-renew-v1");
+            assert_eq!(request["renewal_consent_accepted"], true);
+            Json(json!({
+                "id": request["id"], "subscription_id": request["id"], "plan_key": request["plan_key"],
+                "amount_cents": 1000, "period_start": "2027-01-30T16:30:00-08:00",
+                "period_end": "2027-02-27T16:30:00-08:00"
+            }))
+        }
+
+        async fn set_balance_plan_renewal(
+            headers: HeaderMap,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            check_native_bearer(&headers);
+            Json(json!({
+                "id": request["id"], "enabled": request["enabled"], "paid_through_at": "2027-02-28T00:30:00Z"
+            }))
+        }
+
         async fn redeem_gift(
             State(state): State<Arc<ServerState>>,
             headers: HeaderMap,
@@ -1290,6 +1328,18 @@ mod tests {
                 )
                 .route("/api/v1/billing/status", get(get_status))
                 .route("/api/v1/billing/stripe/payments", post(create_card_payment))
+                .route(
+                    "/api/v1/billing/subscriptions/balance/options",
+                    get(balance_plan_options),
+                )
+                .route(
+                    "/api/v1/billing/subscriptions/balance/purchase",
+                    post(purchase_balance_plan),
+                )
+                .route(
+                    "/api/v1/billing/subscriptions/balance/renewal",
+                    post(set_balance_plan_renewal),
+                )
                 .route("/api/v1/billing/gift-codes/redeem", post(redeem_gift))
                 .route("/api/v1/billing/deposit-address", post(provision))
                 .with_state(Arc::clone(&state));
@@ -1363,6 +1413,58 @@ mod tests {
                     }
                 );
             }
+        }
+
+        #[tokio::test]
+        async fn balance_plan_receipt_matches_the_confirmed_native_quote() {
+            use axiom_acp_extension::{
+                CreditBillingAction as Action, CreditBillingResult as Output,
+            };
+
+            let fixture = fixture(true).await;
+            let cancel = CancellationToken::new();
+            let Output::BalancePlanOptions(Some(options)) = fixture
+                .client
+                .credit_control(&Action::BalancePlanOptions, &cancel)
+                .await
+                .expect("balance plan options")
+            else {
+                panic!("expected balance plan options");
+            };
+            let plan = &options.catalog.plans[0];
+            let id = uuid::Uuid::new_v4().to_string();
+            let Output::BalancePlanPurchase(receipt) = fixture
+                .client
+                .credit_control(
+                    &Action::PurchaseBalancePlan {
+                        id: id.clone(),
+                        plan_key: plan.key.clone(),
+                        catalog_version: plan.version.clone(),
+                        coverage_end_on: options.coverage_end_on.expect("available end date"),
+                        renewal_consent_version: options.renewal_consent_version,
+                        renewal_consent_accepted: true,
+                    },
+                    &cancel,
+                )
+                .await
+                .expect("balance plan purchase")
+            else {
+                panic!("expected balance plan receipt");
+            };
+            assert_eq!(receipt.id, id);
+            assert_eq!(receipt.amount_cents, plan.amount_cents);
+            let Output::BalancePlanRenewal(renewal) = fixture
+                .client
+                .credit_control(
+                    &Action::SetBalancePlanRenewal { id, enabled: false },
+                    &cancel,
+                )
+                .await
+                .expect("cancel balance renewal")
+            else {
+                panic!("expected balance renewal status");
+            };
+            assert!(!renewal.enabled);
         }
 
         #[tokio::test]

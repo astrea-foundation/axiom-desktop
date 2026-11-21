@@ -2,11 +2,14 @@
 
 use super::*;
 use axiom_acp_extension::{
-    AutomaticTopup, BillingOperation, BillingPortal, CardFundingOptions, CardFundingPayment,
-    CreditBillingAction as Action, CreditBillingResult as Output, CreditPrices, CreditSummary,
-    CreditUsage, SavedBillingCards, SubscriptionPlans,
+    AutomaticTopup, BalancePlanOptions, BalancePlanPurchase, BalancePlanRenewal, BillingOperation,
+    BillingPortal, CardFundingOptions, CardFundingPayment, CreditBillingAction as Action,
+    CreditBillingResult as Output, CreditPrices, CreditSummary, CreditUsage, SavedBillingCards,
+    SubscriptionPlans,
 };
 use serde_json::{Value, json};
+
+const BALANCE_RENEWAL_CONSENT: &str = "balance-renew-v1";
 
 fn invalid() -> AxiomError {
     AxiomError::Protocol("Axiom returned invalid credit billing data".into())
@@ -60,6 +63,43 @@ fn uuid(value: &str) -> Result<()> {
 fn date(value: Option<&str>) -> Result<()> {
     if value.is_some_and(|v| DateTime::parse_from_rfc3339(v).is_err()) {
         return Err(invalid());
+    }
+    Ok(())
+}
+
+fn calendar_date(value: &str) -> Result<chrono::NaiveDate> {
+    let parsed = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| invalid())?;
+    if value.len() != 10 || parsed.to_string() != value {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+
+fn plan_request(id: &str, plan_key: &str, catalog_version: &str) -> Result<()> {
+    uuid(id)?;
+    if !["starter", "standard", "plus", "max"].contains(&plan_key)
+        || catalog_version.is_empty()
+        || catalog_version.len() > 80
+        || catalog_version.chars().any(char::is_control)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_plans(value: &SubscriptionPlans) -> Result<()> {
+    if value.currency != "usd"
+        || value.billing_interval != "month"
+        || value.allowance_interval_days != 7
+        || value.plans.len() > 20
+    {
+        return Err(invalid());
+    }
+    for plan in &value.plans {
+        credit_integer(&plan.weekly_units, false)?;
+        if plan.amount_cents > 1_000_000 {
+            return Err(invalid());
+        }
     }
     Ok(())
 }
@@ -170,6 +210,44 @@ impl BillingClient {
         let (method, path, body) = match action {
             Action::Summary => (reqwest::Method::GET, "/summary".into(), None),
             Action::Plans => (reqwest::Method::GET, "/plans".into(), None),
+            Action::BalancePlanOptions => (
+                reqwest::Method::GET,
+                "/subscriptions/balance/options".into(),
+                None,
+            ),
+            Action::PurchaseBalancePlan {
+                id,
+                plan_key,
+                catalog_version,
+                coverage_end_on,
+                renewal_consent_version,
+                renewal_consent_accepted,
+            } => {
+                plan_request(id, plan_key, catalog_version)?;
+                calendar_date(coverage_end_on)?;
+                if renewal_consent_version != BALANCE_RENEWAL_CONSENT || !renewal_consent_accepted {
+                    return Err(AxiomError::Protocol(
+                        "Accept the terms for automatic balance renewal to subscribe.".into(),
+                    ));
+                }
+                (
+                    reqwest::Method::POST,
+                    "/subscriptions/balance/purchase".into(),
+                    Some(
+                        json!({"id": id, "plan_key": plan_key, "catalog_version": catalog_version,
+                               "coverage_end_on": coverage_end_on, "renewal_consent_version": renewal_consent_version,
+                               "renewal_consent_accepted": renewal_consent_accepted}),
+                    ),
+                )
+            }
+            Action::SetBalancePlanRenewal { id, enabled } => {
+                uuid(id)?;
+                (
+                    reqwest::Method::POST,
+                    "/subscriptions/balance/renewal".into(),
+                    Some(json!({"id": id, "enabled": enabled})),
+                )
+            }
             Action::Prices => (reqwest::Method::GET, "/credits/prices".into(), None),
             Action::Usage {
                 period,
@@ -208,16 +286,7 @@ impl BillingClient {
                 plan_key,
                 catalog_version,
             } => {
-                uuid(id)?;
-                if !["starter", "standard", "plus", "max"].contains(&plan_key.as_str()) {
-                    return Err(invalid());
-                }
-                if catalog_version.is_empty()
-                    || catalog_version.len() > 80
-                    || catalog_version.chars().any(char::is_control)
-                {
-                    return Err(invalid());
-                }
+                plan_request(id, plan_key, catalog_version)?;
                 (
                     reqwest::Method::POST,
                     if matches!(action, Action::Checkout { .. }) {
@@ -341,6 +410,20 @@ impl BillingClient {
             self.ensure_account_current(&lease)?;
             return Ok(Output::Summary(None));
         }
+        if response.status() == StatusCode::NOT_FOUND
+            && matches!(action, Action::BalancePlanOptions)
+        {
+            self.ensure_account_current(&lease)?;
+            return Ok(Output::BalancePlanOptions(None));
+        }
+        if response.status() == StatusCode::CONFLICT
+            && matches!(
+                action,
+                Action::PurchaseBalancePlan { .. } | Action::SetBalancePlanRenewal { .. }
+            )
+        {
+            return Err(AxiomError::BalancePlanConflict);
+        }
         if response.status() == StatusCode::NOT_FOUND && matches!(action, Action::CardOptions) {
             self.ensure_account_current(&lease)?;
             return Ok(Output::CardOptions(CardFundingOptions {
@@ -382,20 +465,82 @@ impl BillingClient {
                     "subscription plans",
                 )
                 .await?;
-                if value.currency != "usd"
-                    || value.billing_interval != "month"
-                    || value.allowance_interval_days != 7
-                    || value.plans.len() > 20
-                {
-                    return Err(invalid());
+                validate_plans(&value)?;
+                Output::Plans(value)
+            }
+            Action::BalancePlanOptions => {
+                let body =
+                    decode_bounded_json::<Value>(response, cancellation, "balance plan options")
+                        .await?;
+                if body["renewal_consent_version"] != BALANCE_RENEWAL_CONSENT {
+                    self.ensure_account_current(&lease)?;
+                    return Ok(Output::BalancePlanOptions(None));
                 }
-                for plan in &value.plans {
-                    credit_integer(&plan.weekly_units, false)?;
-                    if plan.amount_cents > 1_000_000 {
+                let value: BalancePlanOptions =
+                    serde_json::from_value(body).map_err(|_| invalid())?;
+                validate_plans(&value.catalog)?;
+                credit_integer(&value.completion_reserved_units, false)?;
+                if let Some(id) = &value.balance_subscription_id {
+                    uuid(id)?;
+                }
+                if let Some(end) = &value.coverage_end_on {
+                    calendar_date(end)?;
+                    if !value.catalog.enabled {
                         return Err(invalid());
                     }
                 }
-                Output::Plans(value)
+                if (value.renewal_authorized && value.balance_subscription_id.is_none())
+                    || value.renewal_failure.as_deref().is_some_and(|reason| {
+                        !value.renewal_authorized
+                            || !["insufficient_balance", "payment_review", "missed"]
+                                .contains(&reason)
+                    })
+                {
+                    return Err(invalid());
+                }
+                Output::BalancePlanOptions(Some(value))
+            }
+            Action::PurchaseBalancePlan {
+                id,
+                plan_key,
+                coverage_end_on,
+                ..
+            } => {
+                let value = decode_bounded_json::<BalancePlanPurchase>(
+                    response,
+                    cancellation,
+                    "balance plan purchase",
+                )
+                .await?;
+                uuid(&value.subscription_id)?;
+                let start =
+                    DateTime::parse_from_rfc3339(&value.period_start).map_err(|_| invalid())?;
+                let end = DateTime::parse_from_rfc3339(&value.period_end).map_err(|_| invalid())?;
+                if &value.id != id
+                    || &value.plan_key != plan_key
+                    || !(50..=1_000_000).contains(&value.amount_cents)
+                    || end <= start
+                    || end.with_timezone(&chrono::Utc).date_naive()
+                        != calendar_date(coverage_end_on)?
+                {
+                    return Err(invalid());
+                }
+                Output::BalancePlanPurchase(value)
+            }
+            Action::SetBalancePlanRenewal { id, enabled } => {
+                let value = decode_bounded_json::<BalancePlanRenewal>(
+                    response,
+                    cancellation,
+                    "balance plan renewal",
+                )
+                .await?;
+                if &value.id != id
+                    || &value.enabled != enabled
+                    || DateTime::parse_from_rfc3339(&value.paid_through_at).is_err()
+                {
+                    return Err(invalid());
+                }
+                Output::BalancePlanRenewal(value)
             }
             Action::Prices => {
                 let value =

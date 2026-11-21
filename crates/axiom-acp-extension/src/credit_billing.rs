@@ -91,6 +91,34 @@ pub struct SubscriptionPlans {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct BalancePlanOptions {
+    pub catalog: SubscriptionPlans,
+    pub balance_subscription_id: Option<String>,
+    pub renewal_consent_version: String,
+    pub renewal_authorized: bool,
+    pub renewal_failure: Option<String>,
+    pub coverage_end_on: Option<String>,
+    pub completion_reserved_units: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BalancePlanPurchase {
+    pub id: String,
+    pub subscription_id: String,
+    pub plan_key: String,
+    pub amount_cents: u64,
+    pub period_start: String,
+    pub period_end: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BalancePlanRenewal {
+    pub id: String,
+    pub enabled: bool,
+    pub paid_through_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SavedBillingCard {
     pub id: String,
     pub brand: String,
@@ -229,6 +257,19 @@ pub struct CreditPrices {
 pub enum CreditBillingAction {
     Summary,
     Plans,
+    BalancePlanOptions,
+    PurchaseBalancePlan {
+        id: String,
+        plan_key: String,
+        catalog_version: String,
+        coverage_end_on: String,
+        renewal_consent_version: String,
+        renewal_consent_accepted: bool,
+    },
+    SetBalancePlanRenewal {
+        id: String,
+        enabled: bool,
+    },
     Prices,
     Usage {
         period: Option<String>,
@@ -287,6 +328,9 @@ pub enum CreditBillingAction {
 pub enum CreditBillingResult {
     Summary(Option<Box<CreditSummary>>),
     Plans(SubscriptionPlans),
+    BalancePlanOptions(Option<BalancePlanOptions>),
+    BalancePlanPurchase(BalancePlanPurchase),
+    BalancePlanRenewal(BalancePlanRenewal),
     Prices(CreditPrices),
     Usage(CreditUsage),
     Operation(BillingOperation),
