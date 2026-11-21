@@ -64,8 +64,13 @@ test("billing actions are finite and cannot redirect native credentials or payme
     assert.throws(() => validateCreditAction(action));
   }
   assert(allowedBillingUrl("https://checkout.stripe.com/c/pay/fixture"));
+  assert(allowedBillingUrl("https://checkout.stripe.com/g/pay/cs_fixture#stripe-fragment"));
   assert(allowedBillingUrl("https://billing.stripe.com/p/session/fixture"));
-  for (const url of ["https://evil.invalid", "https://checkout.stripe.com.evil.invalid/c/pay/x", "https://user@checkout.stripe.com/c/pay/x", "https://checkout.stripe.com/other", "javascript:alert(1)"]) assert(!allowedBillingUrl(url));
+  for (const url of ["https://evil.invalid", "https://checkout.stripe.com.evil.invalid/g/pay/x",
+    "https://user@checkout.stripe.com/c/pay/x", "https://checkout.stripe.com/other", "javascript:alert(1)",
+    "http://checkout.stripe.com/g/pay/x", "https://checkout.stripe.com:8443/g/pay/x",
+    "https://checkout.stripe.com/g/pay/../../elsewhere", "https://checkout.stripe.com/x/pay/x",
+  ]) assert(!allowedBillingUrl(url));
 });
 
 test("credit usage validates both bucket and model totals without changing its denomination", () => {
@@ -90,6 +95,13 @@ test("credit results negotiated with billing v7 cannot cross an account switch",
   });
   await client.initialize();
   client.state.setAccount({revision: 1, state: "valid", account: {id: "account-a", linkedMethods: []}});
+  assert.deepEqual(await client.creditBilling({kind: "balance_plan_options"}),
+    {result: {kind: "balance_plan_options", value: null}});
+  await assert.rejects(client.creditBilling({kind: "purchase_balance_plan", id: crypto.randomUUID(),
+    plan_key: "standard", catalog_version: "plans-v1", coverage_end_on: "2027-02-28",
+    renewal_consent_version: "balance-renew-v1", renewal_consent_accepted: true}), /Update Axiom/);
+  await assert.rejects(client.creditBilling({kind: "set_balance_plan_renewal", id: crypto.randomUUID(),
+    enabled: false}), /Update Axiom/);
   const pending = client.creditBilling({kind: "summary"});
   await new Promise(r => setImmediate(r));
   const rejection = assert.rejects(pending, /account|context/i);

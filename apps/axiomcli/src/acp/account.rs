@@ -697,7 +697,14 @@ pub(super) fn credit_billing(
     responder: Responder<extension::CreditBillingResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
-    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling) {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling)
+        || (matches!(
+            &request.action,
+            extension::CreditBillingAction::BalancePlanOptions
+                | extension::CreditBillingAction::PurchaseBalancePlan { .. }
+                | extension::CreditBillingAction::SetBalancePlanRenewal { .. }
+        ) && !extension_enabled(&context.extension_state, ExtensionFeature::BalancePlans))
+    {
         return responder.respond_with_error(extension_not_negotiated());
     }
     let client = context.billing.clone();

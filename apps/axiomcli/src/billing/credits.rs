@@ -2,11 +2,14 @@
 
 use super::*;
 use axiom_acp_extension::{
-    AutomaticTopup, BillingOperation, BillingPortal, CardFundingOptions, CardFundingPayment,
-    CreditBillingAction as Action, CreditBillingResult as Output, CreditPrices, CreditSummary,
-    CreditUsage, SavedBillingCards, SubscriptionPlans,
+    AutomaticTopup, BalancePlanOptions, BalancePlanPurchase, BalancePlanRenewal, BillingOperation,
+    BillingPortal, CardFundingOptions, CardFundingPayment, CreditBillingAction as Action,
+    CreditBillingResult as Output, CreditPrices, CreditSummary, CreditUsage, SavedBillingCards,
+    SubscriptionPlans,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+
+const BALANCE_RENEWAL_CONSENT: &str = "balance-renew-v1";
 
 fn invalid() -> AxiomError {
     AxiomError::Protocol("Axiom returned invalid credit billing data".into())
@@ -39,14 +42,13 @@ pub fn valid_billing_url(value: &str) -> bool {
             && url.username().is_empty()
             && url.password().is_none()
             && url.port().is_none()
-            && matches!((url.host_str(), url.path()),
-                (Some("checkout.stripe.com"), path) if path.starts_with("/c/pay/"))
-            || url.scheme() == "https"
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.port().is_none()
-                && url.host_str() == Some("billing.stripe.com")
-                && url.path().starts_with("/p/session/")
+            && match url.host_str() {
+                Some("checkout.stripe.com") => {
+                    url.path().starts_with("/c/pay/") || url.path().starts_with("/g/pay/")
+                }
+                Some("billing.stripe.com") => url.path().starts_with("/p/session/"),
+                _ => false,
+            }
     })
 }
 
@@ -61,6 +63,43 @@ fn uuid(value: &str) -> Result<()> {
 fn date(value: Option<&str>) -> Result<()> {
     if value.is_some_and(|v| DateTime::parse_from_rfc3339(v).is_err()) {
         return Err(invalid());
+    }
+    Ok(())
+}
+
+fn calendar_date(value: &str) -> Result<chrono::NaiveDate> {
+    let parsed = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| invalid())?;
+    if value.len() != 10 || parsed.to_string() != value {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+
+fn plan_request(id: &str, plan_key: &str, catalog_version: &str) -> Result<()> {
+    uuid(id)?;
+    if !["starter", "standard", "plus", "max"].contains(&plan_key)
+        || catalog_version.is_empty()
+        || catalog_version.len() > 80
+        || catalog_version.chars().any(char::is_control)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_plans(value: &SubscriptionPlans) -> Result<()> {
+    if value.currency != "usd"
+        || value.billing_interval != "month"
+        || value.allowance_interval_days != 7
+        || value.plans.len() > 20
+    {
+        return Err(invalid());
+    }
+    for plan in &value.plans {
+        credit_integer(&plan.weekly_units, false)?;
+        if plan.amount_cents > 1_000_000 {
+            return Err(invalid());
+        }
     }
     Ok(())
 }
@@ -171,6 +210,44 @@ impl BillingClient {
         let (method, path, body) = match action {
             Action::Summary => (reqwest::Method::GET, "/summary".into(), None),
             Action::Plans => (reqwest::Method::GET, "/plans".into(), None),
+            Action::BalancePlanOptions => (
+                reqwest::Method::GET,
+                "/subscriptions/balance/options".into(),
+                None,
+            ),
+            Action::PurchaseBalancePlan {
+                id,
+                plan_key,
+                catalog_version,
+                coverage_end_on,
+                renewal_consent_version,
+                renewal_consent_accepted,
+            } => {
+                plan_request(id, plan_key, catalog_version)?;
+                calendar_date(coverage_end_on)?;
+                if renewal_consent_version != BALANCE_RENEWAL_CONSENT || !renewal_consent_accepted {
+                    return Err(AxiomError::Protocol(
+                        "Accept the terms for automatic balance renewal to subscribe.".into(),
+                    ));
+                }
+                (
+                    reqwest::Method::POST,
+                    "/subscriptions/balance/purchase".into(),
+                    Some(
+                        json!({"id": id, "plan_key": plan_key, "catalog_version": catalog_version,
+                               "coverage_end_on": coverage_end_on, "renewal_consent_version": renewal_consent_version,
+                               "renewal_consent_accepted": renewal_consent_accepted}),
+                    ),
+                )
+            }
+            Action::SetBalancePlanRenewal { id, enabled } => {
+                uuid(id)?;
+                (
+                    reqwest::Method::POST,
+                    "/subscriptions/balance/renewal".into(),
+                    Some(json!({"id": id, "enabled": enabled})),
+                )
+            }
             Action::Prices => (reqwest::Method::GET, "/credits/prices".into(), None),
             Action::Usage { period, timezone } => {
                 let period = period.as_deref().unwrap_or("all_time");
@@ -202,16 +279,7 @@ impl BillingClient {
                 plan_key,
                 catalog_version,
             } => {
-                uuid(id)?;
-                if !["starter", "standard", "plus", "max"].contains(&plan_key.as_str()) {
-                    return Err(invalid());
-                }
-                if catalog_version.is_empty()
-                    || catalog_version.len() > 80
-                    || catalog_version.chars().any(char::is_control)
-                {
-                    return Err(invalid());
-                }
+                plan_request(id, plan_key, catalog_version)?;
                 (
                     reqwest::Method::POST,
                     if matches!(action, Action::Checkout { .. }) {
@@ -335,6 +403,20 @@ impl BillingClient {
             self.ensure_account_current(&lease)?;
             return Ok(Output::Summary(None));
         }
+        if response.status() == StatusCode::NOT_FOUND
+            && matches!(action, Action::BalancePlanOptions)
+        {
+            self.ensure_account_current(&lease)?;
+            return Ok(Output::BalancePlanOptions(None));
+        }
+        if response.status() == StatusCode::CONFLICT
+            && matches!(
+                action,
+                Action::PurchaseBalancePlan { .. } | Action::SetBalancePlanRenewal { .. }
+            )
+        {
+            return Err(AxiomError::BalancePlanConflict);
+        }
         if response.status() == StatusCode::NOT_FOUND && matches!(action, Action::CardOptions) {
             self.ensure_account_current(&lease)?;
             return Ok(Output::CardOptions(CardFundingOptions {
@@ -344,7 +426,23 @@ impl BillingClient {
                 max_amount_microusd: 1_000_000_000,
             }));
         }
-        ensure_success(response.status(), "credit billing")?;
+        if let Err(error) = ensure_success(response.status(), "credit billing") {
+            if response.status() != StatusCode::SERVICE_UNAVAILABLE {
+                return Err(error);
+            }
+            let body =
+                decode_bounded_json::<Value>(response, cancellation, "credit billing error").await;
+            return Err(match body {
+                Ok(body)
+                    if body["detail"]["code"] == "billing_unavailable"
+                        || body["detail"] == "Card payments are temporarily unavailable." =>
+                {
+                    AxiomError::CardProcessorUnavailable
+                }
+                Err(AxiomError::Cancelled) => AxiomError::Cancelled,
+                _ => error,
+            });
+        }
         let result = match action {
             Action::Summary | Action::Fallback { .. } => {
                 let value =
@@ -360,20 +458,82 @@ impl BillingClient {
                     "subscription plans",
                 )
                 .await?;
-                if value.currency != "usd"
-                    || value.billing_interval != "month"
-                    || value.allowance_interval_days != 7
-                    || value.plans.len() > 20
-                {
-                    return Err(invalid());
+                validate_plans(&value)?;
+                Output::Plans(value)
+            }
+            Action::BalancePlanOptions => {
+                let body =
+                    decode_bounded_json::<Value>(response, cancellation, "balance plan options")
+                        .await?;
+                if body["renewal_consent_version"] != BALANCE_RENEWAL_CONSENT {
+                    self.ensure_account_current(&lease)?;
+                    return Ok(Output::BalancePlanOptions(None));
                 }
-                for plan in &value.plans {
-                    credit_integer(&plan.weekly_units, false)?;
-                    if plan.amount_cents > 1_000_000 {
+                let value: BalancePlanOptions =
+                    serde_json::from_value(body).map_err(|_| invalid())?;
+                validate_plans(&value.catalog)?;
+                credit_integer(&value.completion_reserved_units, false)?;
+                if let Some(id) = &value.balance_subscription_id {
+                    uuid(id)?;
+                }
+                if let Some(end) = &value.coverage_end_on {
+                    calendar_date(end)?;
+                    if !value.catalog.enabled {
                         return Err(invalid());
                     }
                 }
-                Output::Plans(value)
+                if (value.renewal_authorized && value.balance_subscription_id.is_none())
+                    || value.renewal_failure.as_deref().is_some_and(|reason| {
+                        !value.renewal_authorized
+                            || !["insufficient_balance", "payment_review", "missed"]
+                                .contains(&reason)
+                    })
+                {
+                    return Err(invalid());
+                }
+                Output::BalancePlanOptions(Some(value))
+            }
+            Action::PurchaseBalancePlan {
+                id,
+                plan_key,
+                coverage_end_on,
+                ..
+            } => {
+                let value = decode_bounded_json::<BalancePlanPurchase>(
+                    response,
+                    cancellation,
+                    "balance plan purchase",
+                )
+                .await?;
+                uuid(&value.subscription_id)?;
+                let start =
+                    DateTime::parse_from_rfc3339(&value.period_start).map_err(|_| invalid())?;
+                let end = DateTime::parse_from_rfc3339(&value.period_end).map_err(|_| invalid())?;
+                if &value.id != id
+                    || &value.plan_key != plan_key
+                    || !(50..=1_000_000).contains(&value.amount_cents)
+                    || end <= start
+                    || end.with_timezone(&chrono::Utc).date_naive()
+                        != calendar_date(coverage_end_on)?
+                {
+                    return Err(invalid());
+                }
+                Output::BalancePlanPurchase(value)
+            }
+            Action::SetBalancePlanRenewal { id, enabled } => {
+                let value = decode_bounded_json::<BalancePlanRenewal>(
+                    response,
+                    cancellation,
+                    "balance plan renewal",
+                )
+                .await?;
+                if &value.id != id
+                    || &value.enabled != enabled
+                    || DateTime::parse_from_rfc3339(&value.paid_through_at).is_err()
+                {
+                    return Err(invalid());
+                }
+                Output::BalancePlanRenewal(value)
             }
             Action::Prices => {
                 let value =
@@ -615,6 +775,11 @@ mod tests {
             "https://billing.stripe.com/p/session/example"
         ));
         for bad in [
+            "http://checkout.stripe.com/g/pay/x",
+            "https://checkout.stripe.com:8443/g/pay/x",
+            "https://checkout.stripe.com.example.com/g/pay/x",
+            "https://checkout.stripe.com/g/pay/../../elsewhere",
+            "https://checkout.stripe.com/x/pay/x",
             "https://billing.stripe.com.example.com/p/session/x",
             "https://user@billing.stripe.com/p/session/x",
             "javascript:alert(1)",
@@ -622,5 +787,23 @@ mod tests {
         ] {
             assert!(!valid_billing_url(bad));
         }
+    }
+
+    #[test]
+    fn open_card_payment_accepts_current_stripe_checkout_path() {
+        let payment: CardFundingPayment = serde_json::from_value(json!({
+            "id": "20000000-0000-4000-8000-000000000001",
+            "amount_microusd": 10_000_000,
+            "credited_microusd": 0,
+            "refunded_microusd": 0,
+            "status": "open",
+            "checkout_url": "https://checkout.stripe.com/g/pay/cs_fixture#stripe-fragment",
+            "expires_at": "2026-11-21T01:00:00Z",
+            "created_at": "2026-11-21T00:00:00Z",
+            "review_required": false,
+            "cancel_requested": false,
+        }))
+        .unwrap();
+        validate_card_payment(&payment).unwrap();
     }
 }

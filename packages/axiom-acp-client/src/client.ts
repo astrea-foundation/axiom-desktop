@@ -73,7 +73,7 @@ const EXTENSION_CAPABILITIES = {
     desktopMcp: 2,
     localPayload: 2,
     account: 2,
-    billing: 7,
+    billing: 9,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -182,6 +182,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsImageResolution = false;
   private supportsCryptoInvoices = false;
   private supportsCreditBilling = false;
+  private supportsBalancePlans = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -273,6 +274,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsCreditBilling = (meta?.features?.billing ?? 0) >= 7;
+    this.supportsBalancePlans = (meta?.features?.billing ?? 0) >= 9;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -856,6 +858,10 @@ export class AxiomAcpClient extends EventEmitter {
     if (!this.supportsCreditBilling) throw new ProtocolError("Restart Axiom with the updated native app to manage subscriptions and credits.");
     const { validateCreditAction } = await import("./credit-billing.js");
     validateCreditAction(action);
+    if (!this.supportsBalancePlans) {
+      if (action.kind === "balance_plan_options") return {result: {kind: "balance_plan_options", value: null}};
+      if (action.kind === "purchase_balance_plan" || action.kind === "set_balance_plan_renewal") throw new ProtocolError("Update Axiom to manage plans paid from balance.");
+    }
     const context = this.state.accountContextToken();
     const result = await this.process.request<import("./generated/protocol.js").CreditBillingResponse>("_axiom/billing/credits", {action});
     this.assertAccountContext(context);

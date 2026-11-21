@@ -49,6 +49,15 @@ service until its end. A failed renewal does not grant unpaid allowance.
 After a subscription is canceled or expires, choose Subscribe to start a fresh
 Checkout. Pending subscriptions retain their original operation for resumption.
 
+Choose **Pay from balance** in the plan confirmation to subscribe with purchased
+USD. Review the price, weekly credits, first renewal date and remaining balance
+before authorizing the recurring payment. Every month the plan renews at the
+agreed price using purchased credit. If the balance is too low, the plan ends.
+**Cancel renewal** stops future debits and keeps already-paid benefits. Use
+**Resume renewal** before coverage ends to turn it back on. Balance payments work
+while card processing is unavailable, provided any existing card subscription
+or submitted checkout has been resolved.
+
 Purchased credit spends at actual reference API cost: $10 covers $10 of API usage,
 independent of model multipliers or changes to subscription-credit value.
 Subscription credits default to $0.01 of reference API usage at a 1× multiplier.
@@ -59,10 +68,13 @@ cover twice the plan price in API cost; these are weekly benefits rather than
 fixed calendar-month totals. The server catalog and model-pricing policy are
 authoritative.
 
-**Card** opens hosted Stripe Checkout. **Crypto** offers the configured currencies
+**Card** opens hosted Stripe Checkout on `checkout.stripe.com`, which supports
+both `/c/pay/` and `/g/pay/` links. **Crypto** offers the configured currencies
 and a separate direct Zcash deposit option. Money paid is displayed in USD;
 confirmed funding adds the server-verified dollar value to purchased credit. Payment return
 links do not prove payment: the server reconciles the original owned record.
+If Stripe cannot process a billing request, Desktop displays “The credit card
+processor is temporarily unavailable.”
 Retry an uncertain operation under the same ID. Card details and billing
 credentials stay outside the renderer and conversation.
 
@@ -74,6 +86,12 @@ Pending/unknown attempts count against the cap, and refunds do not replenish
 it. Subscription charges are separate. Turning off prevents new dispatch;
 already submitted payments still reconcile. An authentication-required attempt
 can be cancelled before replacing its card/authorization.
+
+Billing’s **Usage** section shows the credits and purchased dollars used by settled
+requests. It refreshes about every 30 seconds while visible and when the window
+regains focus, even if card history is unavailable. A failed usage refresh displays
+an error in the section.
+For accounts included in a credit denomination reset, totals start at that reset.
 
 The Usage screen separates allowance credits from purchased dollars, with exact model totals.
 Legacy monetary usage remains available for older accounts. API key reference
@@ -121,6 +139,10 @@ access-token lease. It validates exact credit strings, allocations, dates and
 hosted destinations before crossing ACP. Account/runtime generations fence
 late replies at the native, SDK, IPC and renderer boundaries. Legacy monetary
 contracts are retained; credits are not relabeled as `paidMicrousd`.
+
+`billing@9` adds consented balance-plan purchases and renewal controls to the
+same contract. Desktop shows these controls when the sidecar and server
+advertise automatic balance renewal.
 
 Older sidecars continue basic funding but need an update for subscription/card
 controls. A 404 summary means the server has not enrolled that account; the UI

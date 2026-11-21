@@ -1738,6 +1738,7 @@ enum ExtensionFeature {
     ImageResolution = 1 << 25,
     ToolCallDrafting = 1 << 26,
     CreditBilling = 1 << 28,
+    BalancePlans = 1 << 30,
 }
 
 struct ExtensionState {
@@ -1835,6 +1836,9 @@ impl ExtensionState {
         }
         if features.billing >= 7 {
             mask |= ExtensionFeature::CreditBilling as u64;
+        }
+        if features.billing >= 9 {
+            mask |= ExtensionFeature::BalancePlans as u64;
         }
         if features.usage >= 1 {
             mask |= ExtensionFeature::Usage as u64;
