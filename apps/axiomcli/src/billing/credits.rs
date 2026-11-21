@@ -6,7 +6,7 @@ use axiom_acp_extension::{
     CreditBillingAction as Action, CreditBillingResult as Output, CreditPrices, CreditSummary,
     CreditUsage, SavedBillingCards, SubscriptionPlans,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn invalid() -> AxiomError {
     AxiomError::Protocol("Axiom returned invalid credit billing data".into())
@@ -39,14 +39,13 @@ pub fn valid_billing_url(value: &str) -> bool {
             && url.username().is_empty()
             && url.password().is_none()
             && url.port().is_none()
-            && matches!((url.host_str(), url.path()),
-                (Some("checkout.stripe.com"), path) if path.starts_with("/c/pay/"))
-            || url.scheme() == "https"
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.port().is_none()
-                && url.host_str() == Some("billing.stripe.com")
-                && url.path().starts_with("/p/session/")
+            && match url.host_str() {
+                Some("checkout.stripe.com") => {
+                    url.path().starts_with("/c/pay/") || url.path().starts_with("/g/pay/")
+                }
+                Some("billing.stripe.com") => url.path().starts_with("/p/session/"),
+                _ => false,
+            }
     })
 }
 
@@ -344,7 +343,23 @@ impl BillingClient {
                 max_amount_microusd: 1_000_000_000,
             }));
         }
-        ensure_success(response.status(), "credit billing")?;
+        if let Err(error) = ensure_success(response.status(), "credit billing") {
+            if response.status() != StatusCode::SERVICE_UNAVAILABLE {
+                return Err(error);
+            }
+            let body =
+                decode_bounded_json::<Value>(response, cancellation, "credit billing error").await;
+            return Err(match body {
+                Ok(body)
+                    if body["detail"]["code"] == "billing_unavailable"
+                        || body["detail"] == "Card payments are temporarily unavailable." =>
+                {
+                    AxiomError::CardProcessorUnavailable
+                }
+                Err(AxiomError::Cancelled) => AxiomError::Cancelled,
+                _ => error,
+            });
+        }
         let result = match action {
             Action::Summary | Action::Fallback { .. } => {
                 let value =
@@ -615,6 +630,11 @@ mod tests {
             "https://billing.stripe.com/p/session/example"
         ));
         for bad in [
+            "http://checkout.stripe.com/g/pay/x",
+            "https://checkout.stripe.com:8443/g/pay/x",
+            "https://checkout.stripe.com.example.com/g/pay/x",
+            "https://checkout.stripe.com/g/pay/../../elsewhere",
+            "https://checkout.stripe.com/x/pay/x",
             "https://billing.stripe.com.example.com/p/session/x",
             "https://user@billing.stripe.com/p/session/x",
             "javascript:alert(1)",
@@ -622,5 +642,23 @@ mod tests {
         ] {
             assert!(!valid_billing_url(bad));
         }
+    }
+
+    #[test]
+    fn open_card_payment_accepts_current_stripe_checkout_path() {
+        let payment: CardFundingPayment = serde_json::from_value(json!({
+            "id": "20000000-0000-4000-8000-000000000001",
+            "amount_microusd": 10_000_000,
+            "credited_microusd": 0,
+            "refunded_microusd": 0,
+            "status": "open",
+            "checkout_url": "https://checkout.stripe.com/g/pay/cs_fixture#stripe-fragment",
+            "expires_at": "2026-11-21T01:00:00Z",
+            "created_at": "2026-11-21T00:00:00Z",
+            "review_required": false,
+            "cancel_requested": false,
+        }))
+        .unwrap();
+        validate_card_payment(&payment).unwrap();
     }
 }

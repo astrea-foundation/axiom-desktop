@@ -46,7 +46,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   const [auto, setAuto] = useState<AutomaticTopup | null>(null);
   const [cards, setCards] = useState<SavedBillingCard[]>([]);
   const [operations, setOperations] = useState<BillingOperation[]>([]);
-  const [usage, setUsage] = useState<CreditUsage | null>(null);
+  const [usage, setUsage] = useState<CreditUsage | "unavailable" | null>(null);
   const [tab, setTab] = useState<"card" | "crypto">("card");
   const [amount, setAmount] = useState("10");
   const [threshold, setThreshold] = useState("5");
@@ -57,7 +57,8 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   const [dirty, setDirty] = useState(false);
   const [chosen, setChosen] = useState<SubscriptionPlan | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const unsupportedRef = useRef(false);
@@ -80,19 +81,20 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
       if (current !== generation.current) return;
       setSummary(s); onSummary(!!s);
       if (s?.subscription && !["creating", "pending"].includes(s.subscription.state)) retireIntent(accountId, s.subscription.id);
-      const o = await call({kind: "card_options"}, "card_options");
+      const [usageRead, optionsRead] = await Promise.allSettled([
+        s ? call({kind: "usage"}, "usage") : null,
+        call({kind: "card_options"}, "card_options"),
+      ]);
       if (current !== generation.current) return;
+      setUsage(usageRead.status === "fulfilled" ? usageRead.value : "unavailable");
+      if (optionsRead.status === "rejected") throw optionsRead.reason;
+      const o = optionsRead.value;
       setOptions(o);
       if (o.enabled) {
         const p = await call({kind: "card_payments"}, "card_payments");
         if (current !== generation.current) return;
         setPayments(p);
         for (const payment of p) if (!["creating", "open", "pending"].includes(payment.status)) retireIntent(accountId, payment.id);
-      }
-      if (s) {
-        const u = await call({kind: "usage"}, "usage");
-        if (current !== generation.current) return;
-        setUsage(u);
       }
       if (s?.capabilities.card) {
         const [p, a, c, history] = await Promise.all([
@@ -107,12 +109,12 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
           setRefill(String(a.amount_cents / 100)); setCap(String(a.monthly_cap_cents / 100)); setCard(a.payment_method_id ?? "");
         }
       }
-      if (current === generation.current) setError(null);
+      if (current === generation.current) setLoadError(null);
     } catch (e) {
       if (current === generation.current) {
         if (e instanceof Error && /Restart Axiom with the updated native app/.test(e.message)) {
           unsupportedRef.current = true; setUnsupported(true); onSummary(false);
-        } else setError(desktopErrorMessage(e, "Could not load billing."));
+        } else setLoadError(desktopErrorMessage(e, "Could not load billing."));
       }
     } finally { if (current === generation.current) reading.current = false; }
   }, [call, onSummary, accountId]);
@@ -121,7 +123,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
     pending.current = false; reading.current = false;
     unsupportedRef.current = false; setUnsupported(false);
     setSummary(null); setPlans([]); setOptions(null); setPayments([]); setAuto(null); setCards([]); setOperations([]);
-    setDirty(false); dirtyRef.current = false; setConsent(false); setBusy(false); setError(null); setNotice(null); setChosen(null); setUsage(null);
+    setDirty(false); dirtyRef.current = false; setConsent(false); setBusy(false); setLoadError(null); setActionError(null); setNotice(null); setChosen(null); setUsage(null);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async (initial = false) => {
       if (!pending.current && (initial || document.visibilityState === "visible")) await load();
@@ -137,7 +139,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   }, [accountId, connected, load]);
   const perform = async (work: () => Promise<unknown>, message?: string) => {
     if (pending.current) return;
-    pending.current = true; setBusy(true); setError(null); setNotice(null);
+    pending.current = true; setBusy(true); setActionError(null); setNotice(null);
     const current = generation.current;
     try {
       await work();
@@ -146,7 +148,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
       await load();
       if (current === generation.current) await onRefreshBilling();
     } catch (e) {
-      if (current === generation.current) setError(desktopErrorMessage(e, "Billing could not be updated. Retry to check the same operation."));
+      if (current === generation.current) setActionError(desktopErrorMessage(e, "Billing could not be updated. Retry to check the same operation."));
     } finally { if (current === generation.current) { pending.current = false; setBusy(false); } }
   };
   const edit = () => { setDirty(true); setConsent(false); };
@@ -170,6 +172,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   const currentSubscription = subscription && !["canceled", "expired"].includes(subscription.state) ? subscription : null;
   const canChangePlan = currentSubscription?.state === "active";
   const pendingSubscription = currentSubscription && ["creating", "pending"].includes(currentSubscription.state);
+  const error = actionError ?? loadError;
   return <div className="space-y-7 text-[13px] text-[var(--color-text-primary)]">
     {summary ? <>
       <div className={`grid gap-3 ${dollarBalanceShown ? "" : "sm:grid-cols-2"}`}>
@@ -261,12 +264,15 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
         {["creating","pending","requires_action"].includes(o.state) ? <><button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "check", id: o.id}, "operation"))}>Check status</button><button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "cancel_topup", id: o.id}, "operation"))}>Cancel attempt</button></> : null}</div>)}
       </div>
     </details> : null}
-    {usage ? <details><summary className="cursor-pointer py-2">Usage</summary><div className="mt-1 space-y-4">
-      <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Weekly &amp; trial credits · {creditAmount(usage.total_units, true)} total</p>
-        {usage.models.map(m => <div key={`c:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{creditAmount(m.units, true)} credits</span></div>)}</div>
-      {usage.purchased ? <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Purchased spend · {purchasedCreditAmount(usage.purchased.total_units, true)}</p>
-        {usage.purchased.models.map(m => <div key={`p:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{purchasedCreditAmount(m.units, true)}</span></div>)}</div> : null}
-    </div></details> : null}
+    {usage ? <details>
+      <summary className="cursor-pointer py-2">Usage</summary>
+      {usage === "unavailable" ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">Couldn’t refresh usage.</p> : <div className="mt-1 space-y-4">
+        <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Weekly &amp; trial credits used · {creditAmount(usage.total_units, true)}</p>
+          {usage.models.map(m => <div key={`c:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{creditAmount(m.units, true)} credits</span></div>)}</div>
+        {usage.purchased ? <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Purchased spend · {purchasedCreditAmount(usage.purchased.total_units, true)}</p>
+          {usage.purchased.models.map(m => <div key={`p:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{purchasedCreditAmount(m.units, true)}</span></div>)}</div> : null}
+      </div>}
+    </details> : null}
     {notice ? <p role="status" className="text-[12px] text-[var(--color-text-secondary)]">{notice}</p> : null}
     {error ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">{error}</p> : null}
   </div>;

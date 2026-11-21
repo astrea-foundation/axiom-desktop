@@ -26,11 +26,15 @@ async function open(clock = false, initiallyHidden = false) {
   await page.route("**/*", route => route.request().url().startsWith(origin) ? route.continue() : route.abort());
   await page.addInitScript(() => {
     const calls: any[] = []; let gate: (() => void) | null = null, held = false, subscription: any = null;
+    let usageUnits = "0", failure: {kind: string; message: string} | null = null;
     let auto: any = {currency:"usd",scale:"100000000",available:true,enabled:false,version:"0",threshold_units:"500000000",amount_cents:1000,monthly_cap_cents:3000,payment_method_id:null,paused_reason:null,cap_month:"2026-11",used_cents:0,consent_version:"auto-topup-v2"};
     Object.assign(window, {__billingTest:{calls,hold:()=>{held=true;},release:()=>{held=false;gate?.();},
+      usage:(units:string)=>{usageUnits=units;},
+      fail:(kind:string | null, message = `Could not load ${kind}`)=>{failure=kind ? {kind, message} : null;},
       subscription:(state:string)=>{subscription={id:"20000000-0000-4000-8000-000000000001",plan_key:"starter",amount_cents:250,weekly_units:"1250000000",state,paid_through_at:"2026-11-01T00:00:00Z",cancel_at_period_end:false,pending_plan_key:null};}},axiomDesktop:{agent:{creditBilling:async (action:any, account:string) => {
       calls.push({action:structuredClone(action),account});
       let kind = action.kind, value: any;
+      if (failure && kind === failure.kind) throw new Error(failure.message);
       switch (kind) {
         case "summary": value = {format:"credits@3",enabled:true,scale:"1000000",revision:"1",policy_version:"credits-v4",reference_microusd_per_credit:1000,default_multiplier_ppm:1000000,paid_fallback:true,payment_review_required:false,
           purchased:{currency:"usd",scale:"100000000",posted_units:account==="account-a"?"800000000":"100000000",held_units:"0",available_units:account==="account-a"?"800000000":"100000000"},trial:{posted_units:"0",held_units:"0"},
@@ -46,7 +50,7 @@ async function open(clock = false, initiallyHidden = false) {
         case "auto_topup": value=auto; break;
         case "configure_auto_topup": auto={...auto,...action.settings,version:String(Number(auto.version)+1)}; value=auto; kind="auto_topup"; break;
         case "operations": case "card_payments": value=[]; break;
-        case "usage": value={period:"all_time",scale:"1000000",total_units:"2500000",allocation:{subscription_units:"2500000",trial_units:"0"},purchased:{currency:"usd",scale:"100000000",total_units:"0",models:[]},models:[{provider:"near",model_id:"fixture",units:"2500000"}]}; break;
+        case "usage": value={period:"all_time",scale:"1000000",total_units:usageUnits,allocation:{subscription_units:usageUnits,trial_units:"0"},purchased:{currency:"usd",scale:"100000000",total_units:"0",models:[]},models:usageUnits === "0" ? [] : [{provider:"near",model_id:"fixture",units:usageUnits}]}; break;
         case "checkout": value={id:action.id,kind:"subscription",state:"pending",url:"https://checkout.stripe.com/c/pay/subscription",amount_cents:250,card:null,created_at:"2026-11-13T00:00:00Z"}; kind="operation"; break;
         case "create_card_payment":
           if (held) await new Promise<void>(resolve=>{gate=resolve;});
@@ -145,6 +149,51 @@ test("billing loads initially while hidden and refreshes on visibility", async (
     assert.deepEqual(errors,[]);
   } finally {await page.close();}
 });
+
+test("usage refreshes independently of card history and reports its own failure", async () => {
+  const {page, errors} = await open(true);
+  try {
+    await page.getByText("Usage", {exact:true}).click();
+    await page.getByText("Weekly & trial credits used · 0", {exact:true}).waitFor();
+    await page.evaluate(() => {
+      (window as any).__billingTest.usage("2500000");
+      (window as any).__billingTest.fail("card_payments");
+    });
+    await page.clock.runFor(30_001);
+    await page.getByText("Could not load card_payments", {exact:true}).waitFor();
+    const total = page.getByText("Weekly & trial credits used · 2.5", {exact:true});
+    await total.waitFor();
+
+    await page.evaluate(() => (window as any).__billingTest.fail("usage"));
+    await page.clock.runFor(30_001);
+    await page.getByText("Couldn’t refresh usage.", {exact:true}).waitFor();
+    assert.equal(await total.count(), 0);
+    await page.getByRole("button", {name:"Continue with card"}).click();
+    await page.getByText(/Complete your payment in the browser/).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {await page.close();}
+});
+
+test("billing refresh keeps a failed checkout visible until the next action", async () => {
+  const {page, errors} = await open(true);
+  try {
+    const message = "The credit card processor is temporarily unavailable.";
+    await page.evaluate(message => (window as any).__billingTest.fail("create_card_payment", message), message);
+    const checkout = page.getByRole("button", {name:"Continue with card"});
+    const alert = page.getByRole("alert").filter({hasText:message});
+    await checkout.click();
+    await alert.waitFor();
+    await page.clock.runFor(30_001);
+    await page.waitForFunction(() => (window as any).__billingTest.calls.filter((c:any) => c.action.kind === "operations").length >= 2);
+    assert(await alert.isVisible());
+    await page.evaluate(() => (window as any).__billingTest.fail(null));
+    await checkout.click();
+    await page.getByText(/Complete your payment in the browser/).waitFor();
+    assert.equal(await alert.count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {await page.close();}
+});
+
 test("a late native card result cannot update the next account's billing screen", async () => {
   const {page,errors}=await open();
   try {
