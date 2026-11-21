@@ -161,7 +161,7 @@ function FolderBlock({
           onClick={onToggle}
           data-folder-id={folder.id}
           {...contextMenuTrigger("folder", folder.id, onOpenMenu)}
-          className="title-scroll-trigger flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
+          className="folder-row-button title-scroll-trigger flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           <ChevronDown
             size={14}
@@ -412,7 +412,7 @@ function SidebarFrame({
               type="button"
               onClick={onNewChat}
               aria-current={welcomeActive ? "page" : undefined}
-              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[9px] pl-0 text-[13px] text-[var(--color-text-secondary)] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)] hover:bg-[var(--wash-hover)] hover:pl-2 hover:text-[var(--color-text-primary)]"
+              className="sidebar-new-thread flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[9px] pl-0 text-[13px] text-[var(--color-text-secondary)] transition-[background-color,color,padding-left] duration-200 ease-[var(--ease-out-expo)] hover:bg-[var(--wash-hover)] hover:pl-2 hover:text-[var(--color-text-primary)]"
             >
               <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border border-current">
                 <Plus size={9} strokeWidth={2.6} />
@@ -423,7 +423,7 @@ function SidebarFrame({
               <button
                 type="button"
                 onClick={onCollapse}
-                className="shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
+                className="sidebar-icon-button shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
                 aria-label="Collapse sidebar"
               >
                 <PanelLeftClose size={16} />
@@ -460,7 +460,7 @@ function SidebarFrame({
             <button
               type="button"
               onClick={onCreateFolder}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
+              className="sidebar-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
               title="New folder"
               aria-label="New folder"
             >

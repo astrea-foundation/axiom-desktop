@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 
 /** Add categories here, then their controls in SettingsSheet. */
 export const SETTINGS_CATEGORIES = [
-  { id: "appearance", label: "Appearance", description: "Make Axiom feel at home on your desktop.", icon: Palette },
+  { id: "appearance", label: "Appearance", description: "Make Axiom feel at home on this device.", icon: Palette },
   { id: "account", label: "Account", description: "Your identity and sign-in methods.", icon: UserRound },
   { id: "chats", label: "Chats", description: "Clear your conversations or start fresh on this computer.", icon: MessagesSquare },
   { id: "usage", label: "Usage", description: "Your spending, by model.", icon: ChartPie },

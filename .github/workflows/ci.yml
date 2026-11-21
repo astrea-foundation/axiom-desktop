@@ -152,6 +152,14 @@ jobs:
         run: git diff --exit-code -- protocol/axiom-acp-extension packages/axiom-acp-client/src/generated
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Exercise interface size in a real Windows Electron window
+        if: runner.os == 'Windows'
+        run: |
+          pnpm build:desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed' }
+          node apps/desktop/scripts/ensure-electron.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Electron setup failed' }
+          node apps/desktop/scripts/check-windows-interface-size.mjs
       - name: Extended deterministic and performance evaluation
         if: inputs.extended == true
         run: bash scripts/axiomcli-eval deterministic

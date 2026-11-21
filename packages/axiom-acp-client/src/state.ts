@@ -239,11 +239,11 @@ function mergeTool(
 function durableTool(item: DurableTimelineItem): ToolActivity {
   const metadata = object(item.metadata) ?? {};
   const content = Array.isArray(metadata.content) ? [...metadata.content] : [];
-  if (
-    item.content
-    && !content.some((entry) => textFromContent(entry) === item.content)
-  ) {
-    content.push({ type: "text", text: item.content });
+  // Background lifecycle rows store their failure reason in state, including in older threads.
+  const text = item.content || (item.status === "failed" && metadata.name === "background_process"
+    && typeof metadata.state === "string" ? metadata.state : "");
+  if (text && !content.some((entry) => textFromContent(entry) === text)) {
+    content.push({ type: "text", text });
   }
   const locations = Array.isArray(metadata.locations)
     ? metadata.locations
@@ -884,6 +884,13 @@ export class AxiomStateStore extends EventEmitter {
     session.lastTimelineSequence = thread.lastTimelineSequence;
     session.lastMessageAt = thread.lastMessageAt ?? null;
     session.lastUserMessageAt = thread.lastUserMessageAt ?? null;
+    // The sidebar also reads the listed copy. A list fetched mid-turn would
+    // otherwise keep reporting "running" after this newer summary ends the turn.
+    // Replace the entry rather than editing it: the list still belongs to its caller.
+    const listed = this.value.catalog.findIndex((entry) => entry.threadId === thread.threadId);
+    if (listed >= 0 && this.value.catalog[listed] !== thread && thread.revision >= this.value.catalog[listed]!.revision) {
+      this.value.catalog = this.value.catalog.map((entry, index) => index === listed ? { ...thread } : entry);
+    }
     return session;
   }
 

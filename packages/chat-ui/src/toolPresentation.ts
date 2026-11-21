@@ -3,6 +3,7 @@ import type { ToolActivity } from "@axiom/chat-core/viewTypes";
 export function redactToolText(text: string): string {
   return text
     .replace(/(?:axm_|axa_|axr_|sk_live_|sk_test_|whsec_)[A-Za-z0-9_-]+/g, "[REDACTED]")
+    .replace(/\b(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,}/g, "[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, "Bearer [REDACTED]")
     .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, "Basic [REDACTED]");
 }
@@ -24,6 +25,54 @@ export function toolName(tool: ToolActivity): string {
 
 export function toolFailed(tool: ToolActivity): boolean {
   return ["failed", "cancelled", "interrupted"].includes(tool.status);
+}
+
+const PROCESS_TOOLS = new Set(["run_command", "run_shell", "start_background", "background_process",
+  "background_status", "background_list", "background_wait", "stop_background"]);
+
+export function isLocalProcessTool(tool: ToolActivity): boolean {
+  return !tool.mcpSource && PROCESS_TOOLS.has(toolName(tool));
+}
+
+function contentText(entry: unknown): string {
+  const block = object(entry);
+  const text = block?.text ?? object(block?.content)?.text;
+  return typeof text === "string" ? text : "";
+}
+
+/** The native process runner emits a ProcessOutcome, a background snapshot, or a plain error. */
+export function localProcessOutput(tool: ToolActivity): Record<string, unknown> | string {
+  for (const entry of tool.content.slice(-8).reverse()) {
+    const text = contentText(entry);
+    if (!text) continue;
+    if (text.length <= 1_048_576 && text.trimStart().startsWith("{")) {
+      try { return object(JSON.parse(text)) ?? text; } catch { /* Truncated native output. */ }
+    }
+    return text;
+  }
+  return "";
+}
+
+function processFailureReason(tool: ToolActivity): string {
+  const result = localProcessOutput(tool);
+  const snapshot = object(result);
+  const outcome = object(snapshot?.outcome) ?? snapshot;
+  const state = typeof result === "string" ? result.trim() : snapshot?.state;
+  const diagnostic = typeof state === "string" ? state.replace(/^(?:failed:\s*)?(?:tool error:\s*)?/i, "") : "";
+  const subject = ["background_process", "background_wait", "background_status"].includes(toolName(tool)) ? "Background task" : "Command";
+  const exitCode = outcome?.exit_code;
+  if (typeof exitCode === "number" && Number.isSafeInteger(exitCode)) return `${subject} exited with code ${exitCode}`;
+  const savedExit = /^process exited with code (-?\d+)$/i.exec(diagnostic);
+  if (savedExit) return `${subject} exited with code ${savedExit[1]}`;
+  if (exitCode === null || diagnostic === "process ended without an exit code") return `${subject} ended without an exit code`;
+  const timeout = /^(process|background wait) timed out after (\d+) seconds$/i.exec(diagnostic);
+  if (timeout) return `${timeout[1] === "background wait" ? "Wait" : subject} timed out after ${timeout[2]} seconds`;
+  if (/^(?:no such file or directory|the system cannot find the (?:file|path) specified)\b/i.test(diagnostic)) return "File or executable not found";
+  if (/^program was not found in the sanitized Windows PATH/i.test(diagnostic)) return "Executable not found";
+  if (/^(?:permission denied|access is denied)\b/i.test(diagnostic)) return "Permission denied";
+  if (/^unknown background task\b/i.test(diagnostic)) return "Background task not found";
+  if (diagnostic === "cancelled") return "Background task cancelled";
+  return `${subject} failed`;
 }
 
 export function toolImageProgress(tool: ToolActivity): ToolActivity["imageProgress"] | null {
@@ -95,15 +144,12 @@ export function toolFailureReason(tool: ToolActivity): string | null {
   if (!toolFailed(tool)) return null;
   if (tool.status === "cancelled") return "Cancelled";
   if (tool.status === "interrupted") return "Interrupted";
+  if (isLocalProcessTool(tool)) return processFailureReason(tool);
   const fetch = isFetchTool(tool);
   const search = toolName(tool) === "web_search";
   const image = isImageGenerationTool(tool);
   // Read only bounded output text, never inputs or the whole raw object.
-  const error = tool.content.slice(-8).map((entry) => {
-    const block = object(entry);
-    const text = block?.text ?? object(block?.content)?.text;
-    return typeof text === "string" ? text.slice(0, 4096) : "";
-  }).join("\n");
+  const error = tool.content.slice(-8).map((entry) => contentText(entry).slice(0, 4096)).join("\n");
   if (/web is off/i.test(error)) return "Web is off";
   if (/sign in to Axiom again/i.test(error)) return "Sign in to Axiom again";
   if (/search limit reached/i.test(error)) return "Search limit reached";
@@ -144,6 +190,10 @@ export function toolLabel(tool: ToolActivity): string {
     const [server, ...parts] = name.slice(5).split("__");
     const target = compact(`${tool.mcpSource?.server ?? server} / ${parts.join("__").replaceAll("_", " ")}`, 120);
     label = `${failed ? "Failed to call" : done ? "Called" : tool.status === "pending" ? "Preparing" : "Calling"} ${target} using MCP`;
+  } else if (isLocalProcessTool(tool) && failed && reason) {
+    // Native titles already redact command flags and their values.
+    const command = tool.title.match(/: `([^`]+)`/)?.[1];
+    label = command ? `${reason} · ${command}` : reason;
   } else if (name === "view_image") {
     const id = viewedImageId(tool);
     label = failed ? `Image viewing failed${reason ? `: ${reason}` : ""}`

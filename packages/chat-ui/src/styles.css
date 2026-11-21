@@ -604,6 +604,121 @@ input {
     inset 0 1px 0 var(--glass-inset-strong);
 }
 
+/* Composer layout follows the composer's own width, so phones, tablets and
+   narrow Desktop windows share one rule. Wide: input above one row of
+   controls, verification/usage and send. Narrow: send sits beside the input
+   and the controls stay on one row; the model name truncates and the TEE
+   badge shows its shield. Its label stays in the accessibility tree; refresh
+   remains available in the proof dialog. */
+.composer-root { container: composer / inline-size; }
+.composer-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+.composer-input { grid-column: 1 / -1; }
+
+@container composer (max-width: 40rem) {
+  .composer-layout { grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; }
+  .composer-input { grid-area: 1 / 1; align-self: center; }
+  .composer-submit { grid-area: 1 / 2; align-self: end; }
+  .composer-controls { grid-area: 2 / 1; flex-wrap: nowrap; gap: 4px; }
+  .composer-actions { grid-area: 2 / 2; gap: 4px; }
+  .composer-model { flex-shrink: 1; min-width: 0; }
+  .composer-model-button { max-width: 100%; }
+  .composer-model-label { min-width: 0; max-width: none; }
+  .tee-badge-separator, .tee-badge-refresh { display: none; }
+  .tee-badge-open { border-radius: 9999px; padding-inline: 6px; min-width: var(--composer-control, 28px); justify-content: center; }
+  .tee-badge-label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+}
+/* Phone widths keep the model name readable by showing toggle icons only. */
+@container composer (max-width: 30rem) {
+  .composer-thinking, .composer-web { width: var(--composer-control, 28px); justify-content: center; padding-inline: 0; }
+  .composer-thinking-label, .composer-thinking-chevron,
+  .composer-web-label, .composer-web-check { display: none; }
+}
+/* The smallest phones keep the provider mark; the name stays accessible. */
+@container composer (max-width: 19rem) {
+  .composer-model-label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+}
+
+/* Touchscreens. iOS zooms into a focused field whose text is under 16px, and
+   fingers need larger targets than a pointer; layouts keep their proportions. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"]),
+  textarea,
+  select { font-size: 16px; }
+  [role="menuitem"], [role="menuitemradio"], .settings-tab { min-height: 44px; }
+  .thread-row, .sidebar-new-thread { height: 44px; }
+  .folder-row-button { min-height: 44px; }
+  .thread-menu-trigger { width: 40px; height: 40px; }
+  .sidebar-icon-button { min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .message-action { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+  .composer-root { --composer-control: 34px; }
+  .composer-model-button, .composer-thinking, .composer-web, .composer-attach, .tee-badge { height: var(--composer-control); }
+  .composer-attach { width: var(--composer-control); display: inline-flex; align-items: center; justify-content: center; }
+  .context-usage-button { width: var(--composer-control); height: var(--composer-control); }
+  .tee-badge-refresh { height: 100%; }
+  .markdown-prose .code-block__copy { min-height: 36px; }
+  .composer-send { min-width: 40px; height: 40px; }
+  /* A long draft scrolls inside the field instead of pushing Send off screen. */
+  textarea[data-chat-input] { max-height: min(240px, 30dvh); }
+}
+/* Short touch screens (small phones, landscape): the welcome intro gives way
+   to the draft, and to everything in landscape. */
+@media (pointer: coarse) and (max-height: 760px) {
+  .welcome-view:has(textarea[data-chat-input]:not(:placeholder-shown)) .welcome-intro { display: none; }
+}
+@media (pointer: coarse) and (max-height: 500px) {
+  .welcome-view { padding-block: 16px; }
+  .welcome-intro { display: none; }
+}
+
+/* Bottom sheets on phones. They render on the body, above the chat. */
+.sheet-root, .model-sheet-root {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; flex-direction: column; justify-content: flex-end;
+}
+.sheet-scrim, .model-sheet-scrim {
+  position: absolute; inset: 0; background: var(--surface-scrim);
+  animation: sheet-scrim-in 180ms ease-out;
+}
+/* Sheets are opaque: list text behind a sheet competes with its choices. */
+.model-sheet, .action-sheet { background: var(--color-bg-elevated); border: 1px solid var(--color-border); }
+.model-sheet {
+  position: relative; max-height: min(85dvh, 640px); border-bottom: 0;
+  border-radius: 18px 18px 0 0; padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-in 260ms var(--ease-out-expo);
+}
+.model-sheet .model-row { min-height: 52px; }
+.model-sheet .model-tag-overflow { min-width: 28px; min-height: 28px; }
+.action-sheet {
+  position: relative; margin: 8px; margin-bottom: calc(8px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 16px;
+  animation: sheet-in 260ms var(--ease-out-expo);
+}
+.action-sheet-item {
+  display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 16px;
+  border-radius: 11px; font-size: 16px; text-align: left;
+}
+.action-sheet-item:focus-visible { outline: 2px solid var(--color-border-accent); outline-offset: -2px; }
+.action-sheet-item:active { background: var(--wash-hover); }
+.action-sheet-cancel { justify-content: center; margin-top: 4px; border-top: 1px solid var(--color-border); border-radius: 0 0 11px 11px; }
+@keyframes sheet-in { from { transform: translateY(100%); } to { transform: none; } }
+/* Narrow settings name the open category in the screen title. */
+[data-settings-view="panel"] [role="tabpanel"] > header > h2 { display: none; }
+@keyframes sheet-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-scrim, .model-sheet-scrim, .model-sheet, .action-sheet { animation: none; }
+}
+
 /* Monochrome provider marks are black SVGs; the dark theme inverts them. */
 .brand-mono {
   filter: brightness(0);
@@ -614,6 +729,24 @@ input {
 .model-tag-pill {
   background: var(--wash-chip);
   color: var(--color-text-tertiary);
+}
+/* The selection button covers the row. Disclosure is a sibling above that hit area. */
+.model-row-select::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+}
+.model-row-select:focus-visible { outline: none; }
+.model-row-select:focus-visible::after,
+.model-tag-overflow:focus-visible {
+  outline: 2px solid var(--color-border-accent);
+  outline-offset: -2px;
+}
+.model-tag-overflow:hover,
+.model-tag-overflow[aria-expanded="true"] {
+  background: var(--wash-chip-hover);
+  color: var(--color-text-primary);
 }
 :root[data-theme="dark"] .brand-mono {
   filter: brightness(0) invert(1);
@@ -721,9 +854,15 @@ input {
   0%, 5% { transform: translateX(0); }
   95%, 100% { transform: translateX(var(--title-scroll-distance)); }
 }
-.title-scroll-trigger:is(:hover, :focus-visible) .overflow-title[data-overflow="true"] > .overflow-title-track,
-.overflow-title[data-overflow="true"]:hover > .overflow-title-track {
+.title-scroll-trigger:focus-visible .overflow-title[data-overflow="true"] > .overflow-title-track {
   animation: title-carousel var(--title-scroll-duration) linear infinite alternate;
+}
+/* Touch has no hover; a tap would otherwise leave the title mid-scroll. */
+@media (hover: hover) {
+  .title-scroll-trigger:hover .overflow-title[data-overflow="true"] > .overflow-title-track,
+  .overflow-title[data-overflow="true"]:hover > .overflow-title-track {
+    animation: title-carousel var(--title-scroll-duration) linear infinite alternate;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .thread-dot-working,

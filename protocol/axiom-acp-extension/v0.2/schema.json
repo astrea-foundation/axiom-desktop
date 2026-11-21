@@ -1938,6 +1938,16 @@
         "providerId": {
           "type": "string"
         },
+        "billingModel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestBillingModel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "contextWindowTokens": {
           "type": [
             "integer",
@@ -2069,6 +2079,26 @@
         "requestId",
         "modelId",
         "providerId"
+      ]
+    },
+    "RequestBillingModel": {
+      "description": "The model used for billing attribution when it differs from the worker model.",
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "modelName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "modelId",
+        "modelName"
       ]
     },
     "InvocationPurpose": {
@@ -3224,6 +3254,77 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "balance_plan_options"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "plan_key": {
+              "type": "string"
+            },
+            "catalog_version": {
+              "type": "string"
+            },
+            "coverage_end_on": {
+              "type": "string"
+            },
+            "renewal_consent_version": {
+              "type": "string"
+            },
+            "renewal_consent_accepted": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "purchase_balance_plan"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "plan_key",
+            "catalog_version",
+            "coverage_end_on",
+            "renewal_consent_version",
+            "renewal_consent_accepted"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "set_balance_plan_renewal"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "prices"
             }
           },
@@ -3244,6 +3345,12 @@
             "timezone": {
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "allowance_only": {
+              "type": [
+                "boolean",
                 "null"
               ]
             },
@@ -3638,6 +3745,61 @@
             },
             "value": {
               "$ref": "#/$defs/SubscriptionPlans"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "balance_plan_options"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BalancePlanOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "balance_plan_purchase"
+            },
+            "value": {
+              "$ref": "#/$defs/BalancePlanPurchase"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "balance_plan_renewal"
+            },
+            "value": {
+              "$ref": "#/$defs/BalancePlanRenewal"
             }
           },
           "required": [
@@ -4106,6 +4268,102 @@
         "version"
       ]
     },
+    "BalancePlanOptions": {
+      "type": "object",
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/SubscriptionPlans"
+        },
+        "balance_subscription_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "renewal_consent_version": {
+          "type": "string"
+        },
+        "renewal_authorized": {
+          "type": "boolean"
+        },
+        "renewal_failure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coverage_end_on": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "completion_reserved_units": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "catalog",
+        "renewal_consent_version",
+        "renewal_authorized",
+        "completion_reserved_units"
+      ]
+    },
+    "BalancePlanPurchase": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "subscription_id": {
+          "type": "string"
+        },
+        "plan_key": {
+          "type": "string"
+        },
+        "amount_cents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "period_start": {
+          "type": "string"
+        },
+        "period_end": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "subscription_id",
+        "plan_key",
+        "amount_cents",
+        "period_start",
+        "period_end"
+      ]
+    },
+    "BalancePlanRenewal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "paid_through_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "enabled",
+        "paid_through_at"
+      ]
+    },
     "CreditPrices": {
       "type": "object",
       "properties": {
@@ -4525,7 +4783,16 @@
       ]
     },
     "CryptoOptionsRequest": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "includeMinimums": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "CryptoOptionsResponse": {
       "type": "object",
@@ -4588,6 +4855,14 @@
         },
         "network": {
           "type": "string"
+        },
+        "min_amount_microusd": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false,

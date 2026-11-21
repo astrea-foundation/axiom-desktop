@@ -7,6 +7,9 @@ settings presentation. Desktop consumes these components through preserved
 renderer re-exports. Hosted applications consume the same committed artifact.
 Image tool cards show a reason when the host identifies a gateway or verification
 failure. Older generic gateway failures retain a neutral completion message.
+Failed local command cards show the exit code or a recorded timeout. Expanding
+a card reveals the bounded diagnostic and captured standard error and output.
+Saved background task rows recover their failure reason from the recorded state.
 The transcript opens the **Thinking** panel during live reasoning and collapses
 it when the reply moves on to text or a tool call, or the turn ends. Hosts can
 supply `ClientTimelineItem.reasoningDurationMs` for the collapsed
@@ -89,6 +92,31 @@ The composer disables model selection during preparation and streaming, dismisse
 an open model picker when either starts, and restores selection when the turn
 ends. Hosts must keep `isStreaming` true through tool calls and cancellation
 cleanup and reject model changes against an active run in their settings handler.
+
+The composer lays out its controls by its own width (a `composer` container
+query), not the viewport. At 40rem and wider the input sits above the model,
+Thinking, attach, Web and Agent controls, followed by the TEE badge, context
+usage and Send/Stop. Below
+40rem, Send/Stop moves beside the input and the controls stay on a single row:
+the model name truncates, and the TEE badge shows only its shield, which still
+opens the privacy proof with its Refresh action. Below 30rem Thinking and Web are
+icon-only, and below 19rem the model chip shows only the provider mark. Hidden
+labels remain accessible names.
+
+Touchscreens (`pointer: coarse`) get phone behavior without changing Desktop:
+fields use 16px text so iOS does not zoom on focus; Return in the composer adds a
+line (Cmd/Ctrl+Return still sends); menus, sidebar rows, message actions and
+composer controls grow to finger-sized targets; and a long draft scrolls inside
+the field. The model picker does not focus its search there, so the keyboard
+does not cover the list. On phones (`pointer: coarse` and at most 640px wide or
+500px tall) the model picker and the thread/folder actions menu open as bottom
+sheets on the document body; their scrims close on click so the dismissing tap
+cannot reach the row beneath, and the actions sheet ignores the scroll and
+resize events iOS fires as its toolbars move. Screens at most 640px wide show
+settings as a category list; choosing one shows that panel, titled with its
+name, and Back or Escape returns to the list (`AccountScreen.onBack`). Short
+touch screens hide the welcome mark and greeting while a draft is open, and
+always in landscape.
 
 Stop goes through the shared queue's `stop(threadId)` action. It publishes intent
 before contacting the runtime, pauses older queued messages, and keeps that

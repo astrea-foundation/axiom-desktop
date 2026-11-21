@@ -204,10 +204,10 @@ pub(crate) fn installed_config(relay: &url::Url) -> Result<Option<DirectConfig>>
         match macos_dev_image_config(std::path::Path::new("/Applications/Axiom.app"), relay) {
             Ok(Some(config)) => return Ok(Some(config)),
             Ok(None) => {
-                tracing::warn!("No AstreaAI image runtime found in /Applications/Axiom.app")
+                tracing::warn!("No AstreaAI image runtime found in /Applications/Axiom.app");
             }
             Err(error) => {
-                tracing::warn!(%error, "Could not use the installed AstreaAI image runtime")
+                tracing::warn!(%error, "Could not use the installed AstreaAI image runtime");
             }
         }
     }
@@ -849,6 +849,11 @@ impl DirectProvider {
                 request_id,
                 model_id: MODEL.into(),
                 provider_id: ID.into(),
+                billing_model: Some(Box::new(axiom_inference::RequestBillingModel {
+                    provider_id: ID.into(),
+                    model_id: "direct:image-generation".into(),
+                    model_name: "Image generation".into(),
+                })),
                 state: axiom_inference::InvocationState::Completed,
                 completeness: axiom_inference::UsageCompleteness::Final,
                 image_pixels: Some(receipt.usage.image_pixels.to_string()),

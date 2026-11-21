@@ -129,7 +129,10 @@ replays all saved image bytes before loading its timeline.
 ## Balance and payments
 
 Open the account menu and choose **Billing** to view weekly and purchased credits,
-manage a subscription, or add credits with Card or Crypto. Capabilities depend on
+manage a subscription, or add credits with Card or Crypto. The menu's Billing row
+shows the server-reported dollar balance (free trial plus purchased credit); with
+a weekly plan it shows the remaining weekly credits first. Trial credit is never
+counted as weekly credits there. Capabilities depend on
 the selected account/server. See [credits and subscriptions](billing.md) for plan,
 auto top-up and reset behavior. Direct Zcash remains available within Crypto;
 its reusable address and confirmation-time valuation are retained.
@@ -190,7 +193,7 @@ change. It is never a chat message or saved draft. A failed/uncertain request ca
 be retried with the same code without duplicate credit; a code already redeemed
 by this account reports that result and refreshes the balance.
 
-Gift credit is part of **Other credit**. Trial credit is normally spent first.
+Gift credit is part of **Added credit**. Trial credit is normally spent first.
 A shared $15 rolling-24-hour trial admission threshold can pause new trial-funded
 requests with a retry time. Already running responses finish normally. Paid credit
 remains usable and is spent first while trial capacity is full. Gift
@@ -597,6 +600,10 @@ zero spending; failed loads show an error with retry. Arrow keys, Home and End
 switch the period tabs. Account/period changes discard stale responses, and a
 backend or sidecar that returns a different period fails without showing mislabeled
 totals. Inconsistent model attribution remains an explicit error.
+Accounts with weekly plan credits, or with weekly credits used in the selected
+period, see the credit view. Every other account sees dollar spending by model,
+including accounts that are not on the credit ledger. Under the total, the panel
+states how long ago the report was fetched.
 
 Settings → API keys lists, creates and revokes named automation keys and shows
 usage attribution. Creation can require recent sign-in; the newly created key
@@ -629,6 +636,13 @@ To keep streamed replies responsive, blocks over 50,000 characters (10,000 for
 automatic language detection), or beyond a 100,000-character per-message highlighting
 budget, remain plain text without truncation. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
+**Settings → Appearance → Interface size** scales text, icons and spacing together
+by zooming the window: 100%, 110%, 125% or 150%. Windows and Linux start at 110%
+and macOS at 100%. `Ctrl` (`⌘` on macOS) with `+`, `-` and `0` steps through the
+same sizes and returns to the platform default. The choice is stored per desktop
+profile in `interface-size.json`, applies to every window, and is set before a
+window first appears. At 150% the smallest window grows from 960×640 to 1080×720 so
+Settings keeps its desktop layout.
 Enabled Web and Agent controls, Agent selection indicators, and the composer's
 Send/Stop button use Axiom signal orange (`#FF7653`) in light mode. Dark mode uses
 neutral white/gray selections and buttons. Filled controls use dark labels and

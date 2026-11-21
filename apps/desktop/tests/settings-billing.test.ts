@@ -23,12 +23,12 @@ function render(signedIn = true) {
 
 test("balance distinguishes revocable trial credit from other credit and ZEC", () => {
   const html = render();
-  assert.match(html, /Credit breakdown/);
+  assert.match(html, /Balance breakdown/);
   assert.match(html, /Free trial credit/);
   assert.match(html, /\$1\.00/);
-  assert.match(html, /Other credit/);
+  assert.match(html, /Added credit/);
   assert.match(html, /\$2\.00/);
-  assert.match(html, /Trial credit is used first/);
+  assert.match(html, /Free trial credit is used first/);
   assert.doesNotMatch(render(false), /Free trial credit/);
 });
 

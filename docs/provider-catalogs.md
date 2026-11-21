@@ -116,9 +116,10 @@ and label. Tag filters combine with AND; the image and file toggles sit beside
 them and appear only when some, but not all, models accept that input. Search
 matches model names, upstream names and tag labels, never providers. Filters
 that would leave no models are disabled, and filters reset each time the picker
-opens. Rows show up to three tags and the price of the provider the row would
-use; the upstream model name moves to the row tooltip. The picker
-measures the window and every ancestor that clips or scrolls, then limits its size
+opens. Rows initially show up to three tags and the price of the provider the
+row would use. Select the `+N` button to reveal additional tags in place while
+keeping the picker open. The upstream model name appears in the row tooltip.
+The picker measures the window and every ancestor that clips or scrolls, then limits its size
 and slides from its anchor above the model control so it is never cut off in
 Desktop or a browser host; when very little height is left, the whole picker
 scrolls. Opening the picker focuses its search field while preserving the host's

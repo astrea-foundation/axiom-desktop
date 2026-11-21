@@ -277,8 +277,17 @@ resume neither adds nor displays the legacy workspace-change summary warning.
 
 Plans are revisioned local artifacts with comments, revision requests, proposal,
 approval and abandonment. Plan approval records review; it does not execute the
-plan. Background process tasks are bounded to four concurrent children. Subagents
-are not implemented.
+plan. The command tools use the app's executable search path. The shell tool
+runs non-login `/bin/sh` on Unix and non-interactive PowerShell with profiles
+disabled on Windows. A shell lookup can produce useful output and still return
+a nonzero exit code.
+
+`start_background` returns a task ID when the job is scheduled. Up to four jobs
+can run concurrently. The execution timeout defaults to 120 seconds and can be
+set up to 3,600 seconds at launch. `background_status` reads the job's state and
+captured output. `background_wait` waits for the same task ID and has its own
+wait timeout. A nonzero process exit records a failed job and retains the exit
+code and output. Subagents are not implemented.
 
 Command authority: [main.rs](../apps/axiomcli/src/main.rs),
 [slash.rs](../apps/axiomcli/src/slash.rs),

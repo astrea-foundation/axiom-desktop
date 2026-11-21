@@ -58,6 +58,14 @@ export function formatSpend(value: bigint): string {
   return `$${dollars}.${fraction}`;
 }
 
+/** Age of the displayed report, from the time its fetch completed. */
+export function usageFreshness(fetchedAt: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - fetchedAt) / 60_000);
+  if (minutes < 1) return "Updated just now.";
+  if (minutes < 60) return `Updated ${minutes} min ago.`;
+  return `Updated at ${new Date(fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
+}
+
 export function shareLabel(model: ModelSpending): string {
   return model.share < 0.001 ? "<0.1%" : `${(model.share * 100).toFixed(1).replace(/\.0$/, "")}%`;
 }

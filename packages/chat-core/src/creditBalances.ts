@@ -9,6 +9,12 @@ export interface CreditBalanceSummary {
     cancel_at_period_end: boolean; pending_plan_key: string | null } | null;
   paid_fallback: boolean; payment_review_required: boolean;
 }
+/** The wire summary may omit an absent reset time instead of sending null. */
+export interface WeeklyAllowanceView { allowance: { limit_units: string; resets_at?: string | null } }
+/** Only a current plan opens a weekly window. Trial and added funds are dollars, never credits. */
+export function hasWeeklyAllowance(summary: WeeklyAllowanceView): boolean {
+  return summary.allowance.resets_at != null || BigInt(summary.allowance.limit_units) > 0n;
+}
 // Validate the source amount before forming display-only totals across periods.
 export function creditAmount(value: string, exact = false, periods = 1n): string {
   if (typeof value !== "string" || value === "-0" || !/^-?(0|[1-9]\d{0,15})$/.test(value)) throw new Error("Invalid credit amount");

@@ -18,6 +18,7 @@ import { explicitReasoningEfforts, reconcileReasoningEffort } from "@axiom/chat-
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { ModelPicker } from "./ModelPicker";
+import { COARSE_POINTER_QUERY, useMediaQuery } from "./useMediaQuery";
 import { TeeVerificationBadge } from "./TeeVerificationBadge";
 import { DraftAttachments, type AttachmentControl } from "./Attachments";
 import { AgentModeControl, type AgentControlOptions } from "./AgentModeControl";
@@ -119,6 +120,8 @@ export function ChatComposer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
+  // Touch keyboards have no Shift+Return, so Return adds a line there.
+  const coarsePointer = useMediaQuery(COARSE_POINTER_QUERY);
   const selectedModel = models.find((model) => model.id === selectedModelId) ?? (selectedModelId ? undefined : models[0]);
   const supportedReasoningEfforts = explicitReasoningEfforts(selectedModel?.supportedReasoningEfforts ?? []);
   const showThinkingSelector = supportedReasoningEfforts.length > 0;
@@ -155,7 +158,9 @@ export function ChatComposer({
     // Agent owns its top-layer modal, including dismissal and focus.
     if (!openMenu || openMenu === "agent") return;
     const closeMenu = (event: MouseEvent) => {
-      if (!controlsRef.current?.contains(event.target as Node)) setOpenMenu(null);
+      const target = event.target as Element;
+      // Phone sheets render outside the controls and close themselves.
+      if (!controlsRef.current?.contains(target) && !target.closest?.("[data-composer-popover]")) setOpenMenu(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenMenu(null);
@@ -174,36 +179,39 @@ export function ChatComposer({
   };
 
   return (
-    <div ref={composerRoot} className="group relative w-full">
+    <div ref={composerRoot} className="composer-root group relative w-full">
       <fieldset disabled={preparing} aria-busy={preparing || undefined} className="composer-shell relative flex min-w-0 flex-col rounded-[22px] pl-4 pr-2.5 pb-2 pt-3 backdrop-blur">
         {attachments ? <><DraftAttachments control={attachments} /><input ref={fileInput} type="file" accept={attachmentAccept(selectedModel)} multiple hidden aria-label="Choose attachments" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; attachments.onAddFiles(files); }} /></> : null}
         {imageMismatch ? <p role="alert" className="mb-2 text-xs text-[var(--color-warning)]">Choose a model that supports these image or file uploads.</p> : null}
-        <div className="flex items-start gap-3">
-          <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
-          <textarea
-            ref={ref}
-            data-chat-input
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            onPaste={(event) => { if (attachments && event.clipboardData.files.length) { event.preventDefault(); if (canAttach) attachments.onAddFiles(Array.from(event.clipboardData.files)); } }}
-            onKeyDown={(event) => {
-              // Enter can commit an IME candidate instead of submitting a message.
-              // Keep the legacy 229 check for confirmation after compositionend.
-              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-            rows={1}
-            placeholder={placeholder}
-            className="w-full resize-none bg-transparent p-0 text-[14.5px] leading-6 text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
-          />
-        </div>
+        <div className="composer-layout">
+          <div className="composer-input flex items-start gap-3">
+            <Lock size={13} aria-hidden="true" className="mt-[5.5px] shrink-0 text-[var(--color-text-muted)]" />
+            <textarea
+              ref={ref}
+              data-chat-input
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              onPaste={(event) => { if (attachments && event.clipboardData.files.length) { event.preventDefault(); if (canAttach) attachments.onAddFiles(Array.from(event.clipboardData.files)); } }}
+              onKeyDown={(event) => {
+                // Enter can commit an IME candidate instead of submitting a message.
+                // Keep the legacy 229 check for confirmation after compositionend.
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                if (event.key === "Enter" && !event.shiftKey) {
+                  // A touch keyboard's Return adds a line; a hardware keyboard can still send with Cmd/Ctrl+Return.
+                  if (coarsePointer && !event.metaKey && !event.ctrlKey) return;
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+              enterKeyHint={coarsePointer ? "enter" : "send"}
+              rows={1}
+              placeholder={placeholder}
+              className="w-full resize-none bg-transparent p-0 text-[14.5px] leading-6 text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+            />
+          </div>
 
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <div ref={controlsRef} className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <div className="relative shrink-0">
+          <div ref={controlsRef} className="composer-controls flex min-w-0 flex-wrap items-center gap-1.5">
+            <div className="composer-model relative shrink-0">
               <button
                 type="button"
                 disabled={modelSelectionLocked || (models.length === 0 && !requiresSignIn)}
@@ -215,7 +223,7 @@ export function ChatComposer({
                   }
                   setOpenMenu((open) => (open === "model" ? null : "model"));
                 }}
-                className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
+                className="composer-model-button flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-[var(--wash-chip)] disabled:hover:text-[var(--color-text-secondary)]"
                 aria-haspopup="menu"
                 aria-expanded={openMenu === "model" && !modelSelectionLocked}
                 title={!accountReady && !requiresSignIn ? "Available once your account is ready." : modelSelectionLocked ? "Model is fixed for the current response" : requiresSignIn ? "Sign in to choose a model" : models.length === 0 ? modelStatusLabel : "Select model"}
@@ -225,10 +233,10 @@ export function ChatComposer({
                 ) : (
                   <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-cherry)]" />
                 )}
-                <span className="max-w-[9rem] truncate sm:max-w-none">
+                <span className="composer-model-label max-w-[9rem] truncate sm:max-w-none">
                   {selectedModel?.shortLabel ?? modelStatusLabel}
                 </span>
-                <ChevronDown size={12} className="opacity-70" />
+                <ChevronDown size={12} className="shrink-0 opacity-70" />
               </button>
               {openMenu === "model" && !modelSelectionLocked ? (
                 <ModelPicker
@@ -240,6 +248,7 @@ export function ChatComposer({
                     onModelChange(modelId);
                     setOpenMenu(null);
                   }}
+                  onClose={() => setOpenMenu(null)}
                 />
               ) : null}
             </div>
@@ -251,7 +260,7 @@ export function ChatComposer({
                   onClick={() =>
                     setOpenMenu((open) => (open === "thinking" ? null : "thinking"))
                   }
-                  className="flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"
+                  className="composer-thinking flex h-7 items-center gap-1.5 rounded-[7px] bg-[var(--wash-chip)] px-2.5 text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === "thinking"}
                   title="Thinking level"
@@ -260,10 +269,10 @@ export function ChatComposer({
                     size={13}
                     className="text-[var(--color-cherry)]"
                   />
-                  <span className="hidden sm:inline">
+                  <span className="composer-thinking-label hidden sm:inline">
                     {reasoningEffortLabel(selectedThinking)}
                   </span>
-                  <ChevronDown size={12} className="opacity-70" />
+                  <ChevronDown size={12} className="composer-thinking-chevron opacity-70" />
                 </button>
                 {openMenu === "thinking" ? (
                   <div
@@ -295,7 +304,7 @@ export function ChatComposer({
                 ) : null}
               </div>
             ) : null}
-            {attachments ? <button type="button" disabled={attachments.busy || !canAttach} aria-label="Attach files" title={attachmentHint} className="rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] disabled:opacity-50" onClick={() => fileInput.current?.click()}><Paperclip size={16} /></button> : null}
+            {attachments ? <button type="button" disabled={attachments.busy || !canAttach} aria-label="Attach files" title={attachmentHint} className="composer-attach rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] disabled:opacity-50" onClick={() => fileInput.current?.click()}><Paperclip size={16} /></button> : null}
             <button
               type="button"
               data-web-toggle
@@ -304,16 +313,16 @@ export function ChatComposer({
               disabled={responseActive || webDisabled || !onWebToggle}
               onClick={() => { setOpenMenu(null); onWebToggle?.(); }}
               title={responseActive ? "Web access is fixed for the current response" : webEnabled ? "Turn off Web" : "Turn on Web"}
-              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-brand text-on-brand enabled:hover:bg-brand-hover dark:bg-[var(--color-cherry)] dark:text-on-accent dark:enabled:hover:bg-[var(--color-cherry)]" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
+              className={`composer-web flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webEnabled ? "bg-brand text-on-brand enabled:hover:bg-brand-hover dark:bg-[var(--color-cherry)] dark:text-on-accent dark:enabled:hover:bg-[var(--color-cherry)]" : "text-[var(--color-text-tertiary)] hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)]"}`}
             >
               <Globe2 size={13} aria-hidden="true" />
-              Web
-              {webEnabled ? <Check size={12} aria-hidden="true" /> : null}
+              <span className="composer-web-label">Web</span>
+              {webEnabled ? <Check size={12} aria-hidden="true" className="composer-web-check" /> : null}
             </button>
             {agentControl ? <AgentModeControl key={agentControl.scope} options={agentControl} open={openMenu === "agent"} onOpenChange={(open) => setOpenMenu(open ? "agent" : null)} /> : null}
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="composer-actions flex shrink-0 items-center gap-2">
             {security !== undefined && onVerifySecurity ? (
               <TeeVerificationBadge key={JSON.stringify([securityScope, security.sessionId, selectedModelId])}
                 session={security} model={models.find((model) => model.id === selectedModelId)} modelId={selectedModelId}
@@ -328,13 +337,15 @@ export function ChatComposer({
               contextWindowTokens={selectedModel?.contextWindowTokens}
               autoCompactThresholdTokens={selectedModel?.autoCompactThresholdTokens}
             />
+          </div>
+          <div className="composer-submit flex shrink-0 items-center gap-2">
             {responseActive ? (
               <button
                 type="button"
                 onClick={onStop}
                 disabled={isStopping}
                 aria-busy={isStopping || undefined}
-                className={`flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] enabled:hover:bg-brand-hover dark:enabled:hover:bg-[var(--color-cherry-bright)] enabled:active:scale-[0.94] disabled:cursor-wait ${isStopping ? "text-[12px] font-medium sm:w-auto sm:gap-1.5 sm:px-3" : ""}`}
+                className={`composer-send flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] enabled:hover:bg-brand-hover dark:enabled:hover:bg-[var(--color-cherry-bright)] enabled:active:scale-[0.94] disabled:cursor-wait ${isStopping ? "text-[12px] font-medium sm:w-auto sm:gap-1.5 sm:px-3" : ""}`}
                 aria-label={isStopping ? "Stopping response" : "Stop generating"}
               >
                 {isStopping ? <><LoaderCircle size={14} aria-hidden="true" className="animate-spin motion-reduce:animate-none" /><span className="hidden sm:inline">Stopping…</span></> : <Square size={12} aria-hidden="true" fill="currentColor" strokeWidth={2.5} />}
@@ -346,7 +357,7 @@ export function ChatComposer({
                 onClick={submit}
                 disabled={!canSend}
                 title={!accountReady && !requiresSignIn ? "Available once your account is ready." : !selectedModel && !requiresSignIn ? modelStatusLabel : undefined}
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand dark:disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
+                className="composer-send flex h-[34px] w-[34px] items-center justify-center rounded-full bg-brand text-on-brand dark:bg-[var(--color-cherry)] dark:text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-brand-hover dark:hover:bg-[var(--color-cherry-bright)] active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-brand dark:disabled:hover:bg-[var(--color-cherry)] disabled:active:scale-100"
                 aria-label={requiresSignIn ? "Sign in to send" : responseActive ? "Queue message" : "Send"}
               >
                 <ArrowUp size={15} strokeWidth={2.5} />

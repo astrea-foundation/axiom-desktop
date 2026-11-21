@@ -19,6 +19,15 @@ function page(revision: number, text = "", kind: "assistant_message" | "reasonin
   };
 }
 
+test("a saved background process exposes the failure reason retained in its state", () => {
+  const store = new AxiomStateStore();
+  const durable = page(2);
+  const reason = "failed: tool error: process timed out after 120 seconds";
+  durable.items[0] = { ...durable.items[0]!, kind: "tool_call", status: "failed", metadata: { name: "background_process", state: reason } };
+  store.replaceTimeline([durable]);
+  assert.deepEqual(store.snapshot().sessions.thread!.timeline[0]!.tool!.content, [{ type: "text", text: reason }]);
+});
+
 function delta(revision: number, text: string, kind = "assistant", turn = "turn") {
   return {
     sessionId: "thread",
@@ -463,4 +472,25 @@ test("tool-call drafting shows only for the running turn and the validated call 
   drafting(4, "turn");
   store.setRunning("thread", false);
   assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null, "an ended turn cannot leave a draft row");
+});
+
+test("a turn that ends updates the listed thread, so the sidebar stops showing it as running", () => {
+  const store = new AxiomStateStore();
+  const running = page(1, "partial");
+  store.replaceTimeline([running]);
+  // Renaming or deleting any thread reloads the list, here in the middle of a turn.
+  store.setCatalog([{ ...running.thread }]);
+  assert.equal(store.snapshot().catalog[0]!.lifecycle, "running");
+  store.setRunning("thread", false);
+  const finished = page(2, "The answer");
+  finished.thread.lifecycle = "ready";
+  store.replaceTimeline([finished]);
+  const state = store.snapshot();
+  assert.equal(state.sessions.thread!.running, false);
+  assert.equal(state.catalog[0]!.lifecycle, "ready");
+  assert.equal(state.catalog[0]!.revision, 2);
+  // A list that answers late with the older summary cannot restart the session.
+  store.setCatalog([{ ...running.thread }]);
+  assert.equal(store.snapshot().sessions.thread!.running, false);
+  assert.equal(store.snapshot().sessions.thread!.threadRevision, 2);
 });

@@ -11,7 +11,9 @@ mod accounting;
 mod attachments;
 mod runtime_policy;
 mod security;
-pub use accounting::{InvocationPurpose, InvocationState, RequestUsage, UsageCompleteness};
+pub use accounting::{
+    InvocationPurpose, InvocationState, RequestBillingModel, RequestUsage, UsageCompleteness,
+};
 pub use attachments::{
     FILE_MIME_TYPES, FileContent, ImageContent, ImageDimensions, MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_GENERATED_IMAGE_BYTES, MAX_GENERATED_IMAGE_PIXELS,

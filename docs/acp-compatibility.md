@@ -228,6 +228,10 @@ request, with input/output tokens, model, time and optional pinned capacity/
 compaction threshold. It is persisted atomically with thread revision. It does
 not estimate unsent drafts, sum billing, or get overwritten by compaction/title
 work. Request-accounting reconciliation never marks partial output verified.
+Request usage can include an optional `billingModel` with `providerId`,
+`modelId`, and `modelName` for image generation. The enclosing `providerId`
+and `modelId` identify the worker model for matching during recovery. Records
+from older clients and servers can omit the billing model.
 
 `imageResources@1` replaces generated image bytes in live updates and saved
 Desktop timeline pages with conversation-owned descriptors. `_axiom/image/read`
@@ -475,6 +479,19 @@ their denomination and exclude weekly allowance. Updated SDK state carries the
 credit summary separately and discards stale account/runtime replies. Native
 requests use account token leases; renderers cannot select URLs, headers or an
 arbitrary principal. See [billing controls](billing.md#integration).
+
+`billing@8` lets clients request `allowance_only` for credit usage and
+`includeMinimums` for crypto funding options. The first option reports plan
+allowance by model and keeps purchased USD separate. The second returns the
+current provider-quoted USD floor for each network when available. Requests
+from older clients omit both options and retain the previous response shapes.
+
+`billing@9` adds balance plan options, purchases and renewal controls. The
+purchase requires an operation UUID, plan key, catalog version, UTC first
+renewal date and explicit consent to the advertised recurring charge terms.
+The receipt confirms the price and coverage dates. Cancel or resume future
+renewals with the owned subscription UUID. Both the SDK and native sidecar
+gate these actions on version 9. Version 7 and 8 billing actions stay available.
 
 Billing status can include shared `trial_capacity` metadata. Trial admission
 errors are typed `TRIAL_CAPACITY` with a retry timestamp; AxiomCLI reports them

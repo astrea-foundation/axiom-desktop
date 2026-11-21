@@ -2,6 +2,7 @@
 import { Pencil, Trash2 } from "lucide-react";
 import { useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
+import { TOUCH_SHEET_QUERY, useMediaQuery } from "./useMediaQuery";
 
 export interface SidebarMenuTarget {
   kind: "thread" | "folder";
@@ -42,6 +43,8 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
   onDelete: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Phones get a bottom sheet. It ignores scroll and resize, which iOS fires as its toolbars move.
+  const sheet = useMediaQuery(TOUCH_SHEET_QUERY);
   const dismiss = (restoreFocus: boolean) => {
     if (restoreFocus && target.trigger.isConnected) target.trigger.focus({ preventScroll: true });
     onClose();
@@ -49,6 +52,11 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
 
   useLayoutEffect(() => {
     const menu = ref.current!;
+    if (sheet) {
+      menu.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+      // The scrim closes on click, so the closing tap can't reach the row beneath it.
+      return;
+    }
     const rect = menu.getBoundingClientRect();
     const left = target.fromMenuButton ? target.x - rect.width : target.x;
     menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - rect.width - 8))}px`;
@@ -59,42 +67,68 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
       if (event.type === "pointerdown" && target.fromMenuButton && target.trigger.contains(event.target as Node)) return;
       if (!menu.contains(event.target as Node)) onClose();
     };
+    const rowScrolled = (event: Event) => {
+      // Incoming deltas scroll the transcript, not the row this menu belongs to.
+      if (event.target instanceof Node && event.target.contains(target.trigger)) onClose();
+    };
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("contextmenu", outside, true);
-    document.addEventListener("scroll", outside, true);
+    document.addEventListener("scroll", rowScrolled, true);
     window.addEventListener("resize", onClose);
     window.addEventListener("blur", onClose);
     return () => {
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("contextmenu", outside, true);
-      document.removeEventListener("scroll", outside, true);
+      document.removeEventListener("scroll", rowScrolled, true);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("blur", onClose);
     };
-  }, [target, onClose]);
+  }, [target, onClose, sheet]);
+
+  const keys = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss(true);
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const items = Array.from(ref.current!.querySelectorAll<HTMLButtonElement>("button"));
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[index]?.focus();
+    }
+  };
+  const label = `${target.kind === "thread" ? "Thread" : "Folder"} actions`;
+
+  if (sheet) return createPortal(
+    <div className="sheet-root">
+      <div className="sheet-scrim" aria-hidden="true" onClick={() => dismiss(false)} />
+      <div ref={ref} role="menu" aria-label={label} className="action-sheet shadow-glass-pop" onKeyDown={keys}
+        onContextMenu={(event) => event.preventDefault()}>
+        <div className="px-4 pb-1 pt-2 text-[12px] font-medium text-[var(--color-text-tertiary)]">{label}</div>
+        <button type="button" role="menuitem" onClick={() => { dismiss(true); onRename(); }} className="action-sheet-item text-[var(--color-text-primary)]">
+          <Pencil size={17} aria-hidden="true" />Rename
+        </button>
+        <button type="button" role="menuitem" onClick={() => { dismiss(true); onDelete(); }} className="action-sheet-item text-[var(--color-danger-strong)]">
+          <Trash2 size={17} aria-hidden="true" />Delete
+        </button>
+        <button type="button" role="menuitem" onClick={() => dismiss(true)} className="action-sheet-item action-sheet-cancel text-[var(--color-text-secondary)]">
+          Cancel
+        </button>
+      </div>
+    </div>, document.body,
+  );
 
   return createPortal(
     <div
       ref={ref}
       role="menu"
-      aria-label={`${target.kind === "thread" ? "Thread" : "Folder"} actions`}
+      aria-label={label}
       style={{ left: target.x, top: target.y }}
       className="no-drag glass-panel-solid shadow-glass-pop fixed z-[100] w-40 rounded-[10px] p-1"
       onContextMenu={(event) => event.preventDefault()}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" || event.key === "Tab") {
-          event.preventDefault();
-          event.stopPropagation();
-          dismiss(true);
-        } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-          event.preventDefault();
-          const items = Array.from(ref.current!.querySelectorAll<HTMLButtonElement>("button"));
-          const current = items.indexOf(document.activeElement as HTMLButtonElement);
-          const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
-            : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-          items[index]?.focus();
-        }
-      }}
+      onKeyDown={keys}
     >
       <button type="button" role="menuitem" onClick={() => { dismiss(true); onRename(); }}
         className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-[var(--color-text-primary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:outline-none">

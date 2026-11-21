@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareThreadMessages, newestMessageAt, orderFoldersByMessages } from "../src/renderer/src/threadOrdering";
+import { compareThreadMessages, newestMessageAt, orderFoldersByMessages, threadIsWorking } from "../src/renderer/src/threadOrdering";
 import type { Folder, Thread } from "../src/renderer/src/types";
 
 const old = "2026-01-01T00:00:00.000Z";
@@ -57,4 +57,20 @@ test("interleaved streams preserve order; a new user submission moves the thread
   }
   threads[0]!.lastUserMessageAt = latest;
   assert.deepEqual([...threads].sort(compareThreadMessages).map((t) => t.id), ["first", "second"]);
+});
+
+test("a finished session clears a listing that still says running", () => {
+  // The thread list was fetched mid-turn; the open session has since ended the turn.
+  assert.equal(threadIsWorking({ lifecycle: "running", revision: 4 }, { running: false, threadRevision: 6 }), false);
+  assert.equal(threadIsWorking({ lifecycle: "running", revision: 6 }, { running: false, threadRevision: 6 }), false);
+  assert.equal(threadIsWorking({ lifecycle: "ready", revision: 4 }, { running: true, threadRevision: 6 }), true);
+});
+
+test("a listing newer than the session, or with no session, still reports activity", () => {
+  assert.equal(threadIsWorking({ lifecycle: "running", revision: 7 }, { running: false, threadRevision: 6 }), true);
+  assert.equal(threadIsWorking({ lifecycle: "waiting_for_approval", revision: 2 }), true);
+  assert.equal(threadIsWorking({ lifecycle: "running", revision: 3 }, { running: false, threadRevision: 0 }), true);
+  assert.equal(threadIsWorking({ lifecycle: "ready", revision: 2 }), false);
+  assert.equal(threadIsWorking({ lifecycle: "closed", revision: 2 }, null), false);
+  assert.equal(threadIsWorking({}), false);
 });

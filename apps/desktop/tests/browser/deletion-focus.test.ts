@@ -2805,7 +2805,8 @@ test("balance shows debt and a reusable deposit address without displaying a res
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(-230_534));
     await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
-    await panel.getByText("-$0.23", { exact: true }).waitFor();
+    // The headline and its always-visible breakdown both show the debt.
+    await panel.getByText("-$0.23", { exact: true }).first().waitFor();
     await panel.getByText("Top up to send another message.", { exact: true }).waitFor();
     await page.getByLabel("Mainnet deposit address", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Copy address", exact: true }).isEnabled(), true);
@@ -3961,7 +3962,7 @@ test("model picker filters by neutral catalog tags, capabilities and tag search"
     await page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true }).click();
     const picker = page.getByRole("dialog", { name: "Choose a model" });
     const tags = picker.getByRole("group", { name: "Filter by tag" });
-    const rows = picker.getByRole("group", { name: "Models" }).getByRole("button");
+    const rows = picker.getByRole("group", { name: "Models" }).locator(".model-row");
     const status = picker.locator('[aria-live="polite"]');
     assert.deepEqual(await tags.getByRole("button").allInnerTexts(), ["Uncensored", "Cheap", "Fast", "Intelligent", "New"]);
     assert.equal(await rows.count(), 4);
@@ -3986,6 +3987,63 @@ test("model picker filters by neutral catalog tags, capabilities and tag search"
     await picker.getByRole("textbox", { name: "Search models" }).fill("new");
     assert.equal(await rows.count(), 1);
     assert.match(await rows.first().innerText(), /^MiniMax M3/);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("model picker reveals extra tags by pointer or keyboard without choosing a model", async () => {
+  const tags = [
+    { id: "cheap", label: "Cheap", tone: "green", position: 10 },
+    { id: "intelligent", label: "Intelligent", tone: "violet", position: 20 },
+    { id: "fast", label: "Fast", tone: "blue", position: 30 },
+    { id: "coding", label: "Coding", tone: "amber", position: 40 },
+  ];
+  const catalog = { models: [{
+    id: "tinfoil-deepseek-v4-1-flash", label: "DeepSeek V4.1 Flash", shortLabel: "DeepSeek V4.1 Flash",
+    providerId: "tinfoil", providerLabel: "Tinfoil", upstreamModel: "deepseek-v4-1-flash",
+    thinkingLevels: [], contextWindowTokens: 32768, maxOutputTokens: 8192, autoCompactThresholdTokens: 27853,
+    supportsImages: true, fileMimeTypes: ["application/pdf"],
+    inputPriceMicrousdPerMillionTokens: 600000, outputPriceMicrousdPerMillionTokens: 1450000, tags,
+  }] } as ListModelsResponse;
+  const { page, errors } = await openApp("linux", false, [], "provider_default", false, true, catalog, "auto");
+  try {
+    const control = page.getByRole("button", { name: "DeepSeek V4.1 Flash", exact: true });
+    await control.click();
+    const picker = page.getByRole("dialog", { name: "Choose a model" });
+    const row = picker.locator(".model-row");
+    const select = row.getByRole("button", { name: /^DeepSeek V4.1 Flash/ });
+    const disclosure = row.locator("button[aria-expanded]");
+    const coding = row.getByText("Coding", { exact: true });
+    assert.equal(await disclosure.innerText(), "+1");
+    assert.equal(await disclosure.getAttribute("aria-expanded"), "false");
+    assert.equal(await coding.isVisible(), false);
+    assert.equal(await row.locator("button button").count(), 0);
+
+    await disclosure.click();
+    assert.equal(await disclosure.getAttribute("aria-expanded"), "true");
+    assert.equal(await coding.isVisible(), true);
+    assert.equal(await select.getAttribute("aria-current"), "true");
+    assert.equal(await picker.isVisible(), true);
+    if (process.env.AXIOM_MODEL_TAG_SCREENSHOT) {
+      await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+      await picker.screenshot({ path: process.env.AXIOM_MODEL_TAG_SCREENSHOT, animations: "disabled" });
+    }
+
+    await disclosure.press("Enter");
+    assert.equal(await coding.isVisible(), false);
+    await disclosure.press("Space");
+    assert.equal(await coding.isVisible(), true);
+    await select.click();
+    await picker.waitFor({ state: "detached" });
+
+    const touch = await page.context().newCDPSession(page);
+    await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await page.setViewportSize({ width: 375, height: 740 });
+    await control.press("Enter");
+    await page.locator(".model-sheet").waitFor();
+    await disclosure.click();
+    assert.equal(await coding.isVisible(), true);
+    assert.equal(await row.evaluate((element) => element.scrollWidth <= element.clientWidth), true);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
@@ -4065,7 +4123,7 @@ test("one row per model starts new threads on the best provider and keeps each t
     const picker = page.getByRole("dialog", { name: "Choose a model" });
     const rows = picker.getByRole("group", { name: "Models" }).getByRole("button");
     assert.equal(await rows.count(), 2, "both providers of DeepSeek share one row");
-    assert.match(await rows.first().innerText(), /^DeepSeek V4.1 Flash[\s\S]*\$0\.28 in, \$1\.1 out/, "the row shows the price of the provider it will use");
+    assert.match(await picker.locator(".model-row").first().innerText(), /^DeepSeek V4.1 Flash[\s\S]*\$0\.28 in, \$1\.1 out/, "the row shows the price of the provider it will use");
     assert.match(await picker.locator('[aria-live="polite"]').innerText(), /^2 models$/);
     await page.keyboard.press("Escape");
 
@@ -4084,7 +4142,7 @@ test("one row per model starts new threads on the best provider and keeps each t
     const before = await page.evaluate(() => (window as any).__deletionTest.settingsCalls.length);
     await control.click();
     const selectedRow = picker.getByRole("group", { name: "Models" }).locator('[aria-current="true"]');
-    await page.waitForFunction(() => document.querySelector('[role="dialog"] [aria-current="true"]')?.textContent?.includes("$0.28 in"));
+    await page.waitForFunction(() => document.querySelector('[role="dialog"] [aria-current="true"]')?.closest(".model-row")?.textContent?.includes("$0.28 in"));
     assert.match(await selectedRow.innerText(), /^DeepSeek V4.1 Flash/);
     await selectedRow.click();
     await page.waitForTimeout(100);
@@ -4121,7 +4179,7 @@ test("model picker greys out the models of a temporarily unavailable provider", 
     const rows = picker.getByRole("group", { name: "Models" }).getByRole("button", { includeHidden: true });
     assert.equal(await rows.count(), 4);
     assert.deepEqual(await rows.evaluateAll(buttons => buttons.map(button => (button as HTMLButtonElement).disabled)), [false, false, true, true]);
-    assert.match(await rows.nth(2).innerText(), /^MiniMax M3[\s\S]*Temporarily unavailable/);
+    assert.match(await picker.locator(".model-row").nth(2).innerText(), /^MiniMax M3[\s\S]*Temporarily unavailable/);
     assert.doesNotMatch(await picker.innerText(), /NEAR AI|Tinfoil/);
     assert.equal(await rows.nth(2).getAttribute("title"), "Temporarily unavailable");
     assert.match(await picker.locator('[aria-live="polite"]').innerText(), /^2 models, 2 temporarily unavailable$/);
@@ -5193,7 +5251,7 @@ test("usage period tabs update totals and charts, discard stale replies, and sup
     assert.equal(await total.count(), 0);
     assert.equal(await tabs.isVisible(), true);
     await tabs.getByRole("tab", { name: "This month" }).click();
-    await page.getByText("Spending this month", { exact: true }).waitFor();
+    await page.getByText("Spent this month", { exact: true }).waitFor();
     assert.equal(await total.innerText(), "$3.00");
     assert.equal(await page.getByRole("img", { name: /Spending by model/ }).locator("path").count(), 2);
     assert.equal(await page.getByRole("button", { name: /Month B.*66.7%/ }).count(), 1);
@@ -5211,9 +5269,9 @@ test("usage period tabs update totals and charts, discard stale replies, and sup
     await page.getByRole("heading", { name: "No spending this week" }).waitFor();
     assert.equal(await total.innerText(), "$0.00");
     await tabs.getByRole("tab", { name: "This week" }).press("ArrowRight");
-    await page.getByText("Spending this month", { exact: true }).waitFor();
+    await page.getByText("Spent this month", { exact: true }).waitFor();
     await tabs.getByRole("tab", { name: "This month" }).press("End");
-    await page.getByText("All-time spending", { exact: true }).waitFor();
+    await page.getByText("Spent all time", { exact: true }).waitFor();
     assert.equal(await total.innerText(), "$9.00");
     const requests = await page.evaluate(() => (window as any).__periodRequests);
     assert.equal(requests[0]?.period, "all_time");

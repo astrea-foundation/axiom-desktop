@@ -113,7 +113,7 @@ export function ContextUsageIndicator(props: ContextUsageIndicatorProps) {
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={() => setOpen(true)}
-        className="relative flex h-8 w-8 cursor-default items-center justify-center rounded-full text-[var(--color-text-tertiary)] outline-none transition-colors hover:bg-[var(--wash-chip-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-text-muted)]"
+        className="context-usage-button relative flex h-8 w-8 cursor-default items-center justify-center rounded-full text-[var(--color-text-tertiary)] outline-none transition-colors hover:bg-[var(--wash-chip-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-text-muted)]"
       >
         <span data-context-usage role={view.percentage === null ? "img" : "meter"} aria-label="Usage"
           aria-valuemin={view.percentage === null ? undefined : 0}

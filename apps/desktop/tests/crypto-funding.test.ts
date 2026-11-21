@@ -17,6 +17,8 @@ test("credit input uses whole cents and bounds without rounding", () => {
   assert.equal(creditAmount("25.01"), 25_010_000);
   assert.equal(creditAmount("5"), 5_000_000);
   assert.equal(creditAmount("1000"), 1_000_000_000);
+  assert.equal(creditAmount("6.43", 6_440_000), null);
+  assert.equal(creditAmount("6.44", 6_440_000), 6_440_000);
   for (const value of ["4.99", "1000.01", "25.001", "1e2", "-25", "NaN", "25.", ""]) assert.equal(creditAmount(value), null);
 });
 

@@ -1,8 +1,10 @@
 /** @jsxRuntime automatic */
-import { Check, FileText, Image, Search } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Check, FileText, Image, Search, X } from "lucide-react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ProviderModel } from "./types";
 import { ModelBrandIcon } from "./ModelBrandIcon";
+import { COARSE_POINTER_QUERY, TOUCH_SHEET_QUERY, useMediaQuery } from "./useMediaQuery";
 import { formatModelPricing } from "./modelPricing";
 import { compareModelGroups, groupModels, modelGroupKey } from "./modelGroups";
 import {
@@ -27,6 +29,8 @@ interface ModelPickerProps {
    * other row offers its preferred provider (see `compareOfferings`).
    */
   onSelect: (modelId: string) => void;
+  /** Closes the phone sheet from its scrim or Close button. */
+  onClose?: () => void;
 }
 
 const MAX_ROW_TAGS = 3;
@@ -83,6 +87,7 @@ const CAPABILITIES: Record<ModelCapability, { label: string; summary: string; Ic
 const chipBase = "flex shrink-0 items-center transition-colors disabled:cursor-default disabled:opacity-40";
 const chipActive = "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile";
 const chipIdle = "text-[var(--color-text-tertiary)] enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-secondary)] shadow-[inset_0_0_0_1px_var(--color-border)]";
+const rowTag = "model-tag-pill max-w-full truncate rounded-full px-1.5 text-[9.5px] leading-[15px] font-medium";
 
 function ModelRow({ model, selected, unavailable, onSelect }: {
   model: ProviderModel;
@@ -90,21 +95,19 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
   unavailable: boolean;
   onSelect: (modelId: string) => void;
 }) {
+  const rowId = useId();
+  const [tagsExpanded, setTagsExpanded] = useState(false);
   const pricing = formatModelPricing(model);
   const tags = model.tags ?? [];
-  const hiddenTags = tags.length - MAX_ROW_TAGS;
+  const extraTags = tags.slice(MAX_ROW_TAGS);
+  const extraTagsId = `${rowId}-extra-tags`;
+  const priceId = `${rowId}-price`;
   const dimmed = unavailable ? "opacity-45 grayscale" : "";
   return (
-    <button
-      type="button"
-      title={unavailable ? "Temporarily unavailable" : model.model}
-      aria-current={selected ? "true" : undefined}
-      disabled={unavailable}
-      data-model-unavailable={unavailable ? "true" : undefined}
-      onClick={() => onSelect(model.id)}
-      className="group/model flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)]/70 disabled:cursor-not-allowed"
+    <div
+      className={`model-row group/model relative isolate flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 transition-colors ${unavailable ? "" : "hover:bg-[var(--color-bg-surface-hover)]/70"}`}
     >
-      <span className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors group-enabled/model:group-hover/model:border-[var(--color-border-strong)] ${dimmed}`}>
+      <span aria-hidden="true" className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors ${unavailable ? dimmed : "group-hover/model:border-[var(--color-border-strong)]"}`}>
         <ModelBrandIcon model={model} className="h-[14px] w-[14px]" />
         {selected ? (
           <span className="absolute -bottom-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-brand text-white ring-2 ring-[var(--surface-tile)]">
@@ -112,33 +115,55 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
           </span>
         ) : null}
       </span>
-      <span className={`min-w-0 flex-1 ${dimmed}`}>
-        <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
-          {model.label}
-          <span className="ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
-            {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
-            {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
+      <span className="min-w-0 flex-1">
+        <button
+          type="button"
+          title={unavailable ? "Temporarily unavailable" : model.model}
+          aria-current={selected ? "true" : undefined}
+          aria-describedby={priceId}
+          disabled={unavailable}
+          data-model-unavailable={unavailable ? "true" : undefined}
+          onClick={() => onSelect(model.id)}
+          className="model-row-select block max-w-full text-left disabled:cursor-not-allowed"
+        >
+          <span className={`block truncate text-[12.5px] font-medium text-[var(--color-text-primary)] ${dimmed}`}>
+            {model.label}
+            <span className="relative z-[1] ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
+              {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
+              {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
+            </span>
           </span>
-        </span>
+        </button>
         {tags.length ? (
-          <span className="mt-0.5 flex min-w-0 gap-[3px] overflow-hidden whitespace-nowrap">
-            {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
-              <span key={tag.id} className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-medium">
-                {tag.label}
-              </span>
-            ))}
-            {hiddenTags > 0 ? (
-              <span
-                title={tags.slice(MAX_ROW_TAGS).map((tag) => tag.label).join(", ")}
-                className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-medium"
-              >
-                +{hiddenTags}
+          <>
+            <span className="mt-0.5 flex flex-wrap items-center gap-[3px]">
+              {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
+                <span key={tag.id} className={`${rowTag} ${dimmed}`}>{tag.label}</span>
+              ))}
+              {extraTags.length ? (
+                <button
+                  type="button"
+                  aria-expanded={tagsExpanded}
+                  aria-controls={extraTagsId}
+                  aria-label={`${tagsExpanded ? "Hide" : "Show"} ${extraTags.length} extra ${extraTags.length === 1 ? "tag" : "tags"} for ${model.label}`}
+                  onClick={() => setTagsExpanded((expanded) => !expanded)}
+                  className={`${rowTag} model-tag-overflow relative z-[1] min-w-6`}
+                >
+                  {tagsExpanded ? "−" : "+"}{extraTags.length}
+                </button>
+              ) : null}
+            </span>
+            {extraTags.length ? (
+              <span id={extraTagsId} className={tagsExpanded ? "mt-[3px] flex flex-wrap gap-[3px]" : "hidden"}>
+                {extraTags.map((tag) => (
+                  <span key={tag.id} className={`${rowTag} ${dimmed}`}>{tag.label}</span>
+                ))}
               </span>
             ) : null}
-          </span>
+          </>
         ) : null}
       </span>
-      <span className="w-[8.25rem] shrink-0 text-right">
+      <span id={priceId} className="w-[8.25rem] max-w-[42%] shrink-0 text-right">
         {unavailable ? (
           <span className="block text-[10px] text-[var(--color-text-muted)]">
             Temporarily unavailable
@@ -158,12 +183,15 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
           </span>
         )}
       </span>
-    </button>
+    </div>
   );
 }
 
-export function ModelPicker({ models, unavailableModels, selectedModelId, onSelect }: ModelPickerProps) {
+export function ModelPicker({ models, unavailableModels, selectedModelId, onSelect, onClose }: ModelPickerProps) {
   const pickerRef = useRef<HTMLDivElement>(null);
+  // Phones get a bottom sheet; focusing its search would raise the keyboard over the list.
+  const sheet = useMediaQuery(TOUCH_SHEET_QUERY);
+  const touch = useMediaQuery(COARSE_POINTER_QUERY);
   const searchRef = useRef<HTMLInputElement>(null);
   const [placement, setPlacement] = useState<Placement>(UNPLACED);
   const [search, setSearch] = useState("");
@@ -217,6 +245,7 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
   useLayoutEffect(() => {
     const picker = pickerRef.current;
     if (!picker) return;
+    if (sheet) { picker.focus({ preventScroll: true }); return; }
     let frame = 0;
     const measure = () => {
       const bounds = visibleBounds(picker);
@@ -247,7 +276,8 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
     for (let node = picker.parentElement; node; node = node.parentElement) observer.observe(node);
     window.addEventListener("resize", queueMeasurement);
     window.addEventListener("scroll", queueMeasurement, true);
-    searchRef.current?.focus({ preventScroll: true });
+    if (touch) picker.focus({ preventScroll: true });
+    else searchRef.current?.focus({ preventScroll: true });
     measure();
     return () => {
       window.cancelAnimationFrame(frame);
@@ -255,23 +285,13 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
       window.removeEventListener("resize", queueMeasurement);
       window.removeEventListener("scroll", queueMeasurement, true);
     };
-  }, []);
+  }, [sheet, touch]);
 
   // Too short for a fixed header above a scrolling list: scroll the whole picker instead.
   const cramped = placement.maxHeight !== null && placement.maxHeight < CRAMPED_HEIGHT;
 
-  return (
-    <div
-      ref={pickerRef}
-      role="dialog"
-      aria-label="Choose a model"
-      style={{
-        translate: `${placement.right}px ${placement.down}px`,
-        ...(placement.maxHeight === null ? {} : { maxHeight: placement.maxHeight }),
-        ...(placement.maxWidth === null ? {} : { maxWidth: placement.maxWidth }),
-      }}
-      className={`glass-panel-solid shadow-glass-pop animate-pop-in absolute bottom-10 left-0 z-40 flex max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col rounded-[10px] ${cramped ? "overflow-y-auto" : "overflow-hidden"}`}
-    >
+  const body = (
+    <>
       <div className="shrink-0 border-b border-[var(--color-border)] px-3 pb-2 pt-3">
         <label className="flex h-8 items-center gap-2 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-bg-input)] px-2.5 transition-colors hover:border-[var(--border-hover)] focus-within:border-[var(--color-border-accent)]">
           <Search size={14} className="shrink-0 text-[var(--color-text-tertiary)]" />
@@ -380,6 +400,39 @@ export function ModelPicker({ models, unavailableModels, selectedModelId, onSele
           </div>
         )}
       </div>
+    </>
+  );
+
+  if (sheet) return createPortal(
+    <div data-composer-popover className="model-sheet-root">
+      <div className="model-sheet-scrim" aria-hidden="true" onClick={onClose} />
+      <div ref={pickerRef} role="dialog" aria-label="Choose a model" tabIndex={-1}
+        className="model-sheet shadow-glass-pop flex flex-col overflow-hidden outline-none">
+        <div className="flex shrink-0 items-center justify-between pl-4 pr-1.5 pt-1.5">
+          <h2 className="text-[15px] font-medium text-[var(--color-text-primary)]">Choose a model</h2>
+          {onClose ? <button type="button" aria-label="Close model list" onClick={onClose}
+            className="flex h-11 w-11 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"><X size={18} aria-hidden="true" /></button> : null}
+        </div>
+        {body}
+      </div>
+    </div>,
+    document.body,
+  );
+
+  return (
+    <div
+      ref={pickerRef}
+      role="dialog"
+      aria-label="Choose a model"
+      tabIndex={-1}
+      style={{
+        translate: `${placement.right}px ${placement.down}px`,
+        ...(placement.maxHeight === null ? {} : { maxHeight: placement.maxHeight }),
+        ...(placement.maxWidth === null ? {} : { maxWidth: placement.maxWidth }),
+      }}
+      className={`glass-panel-solid shadow-glass-pop animate-pop-in absolute bottom-10 left-0 z-40 flex outline-none max-h-[min(520px,calc(100vh-4rem))] w-[min(30rem,calc(100vw-3rem))] origin-bottom-left flex-col rounded-[10px] ${cramped ? "overflow-y-auto" : "overflow-hidden"}`}
+    >
+      {body}
     </div>
   );
 }

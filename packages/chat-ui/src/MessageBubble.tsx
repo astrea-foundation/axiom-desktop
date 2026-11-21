@@ -6,7 +6,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { CopyButton } from "./CopyButton";
 import { DismissibleNotice } from "./DismissibleNotice";
 
-const actionClass = "rounded-md p-1.5 text-[var(--color-text-secondary)] transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-35";
+const actionClass = "message-action rounded-md p-1.5 text-[var(--color-text-secondary)] transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-35";
 
 function thoughtLabel(durationMs?: number): string {
   if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return "Thought";
