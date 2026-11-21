@@ -5,8 +5,10 @@ credit in USD, card funding, crypto funding and explicit automatic card top-up. 
 server advertises each available capability; this source does not establish a
 live subscription offering.
 
-Open **Account menu → Billing**. Weekly credits show their next reset and expire
-without rollover. Purchased credit carries forward and shows a dollar amount.
+Open **Account menu → Billing**. The **Balance** at the top is in dollars: free
+trial credit plus **Added credit** (purchases and gift codes), with the time it
+was last updated. Weekly credits show their next reset and expire without
+rollover.
 Weekly balances display whole credits while usage retains fractions; a positive
 remainder below one displays as **Less than 1**. Money uses fixed precision of
 100,000,000 units per dollar; a positive balance below one cent displays as
@@ -49,7 +51,7 @@ service until its end. A failed renewal does not grant unpaid allowance.
 After a subscription is canceled or expires, choose Subscribe to start a fresh
 Checkout. Pending subscriptions retain their original operation for resumption.
 
-Purchased credit spends at actual reference API cost: $10 covers $10 of API usage,
+Added credit spends at actual reference API cost: $10 covers $10 of API usage,
 independent of model multipliers or changes to subscription-credit value.
 Subscription credits default to $0.01 of reference API usage at a 1× multiplier.
 Trial grants retain their recorded conversion when subscription pricing changes.
@@ -76,7 +78,7 @@ already submitted payments still reconcile. An authentication-required attempt
 can be cancelled before replacing its card/authorization.
 
 The Usage screen separates allowance credits from purchased dollars, with exact model totals.
-Legacy monetary usage remains available for older accounts. API key reference
+Accounts without weekly plan credits see dollar spending instead. API key reference
 cost is separate from credits consumed or cash payments. Week/month reporting
 uses the local timezone and calendar boundaries; allowance resets use the
 subscription's seven-day schedule.

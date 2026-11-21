@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { createPortal } from "react-dom";
 import type { BillingStatus } from "@axiom/chat-core/viewTypes";
 import type { AccountPresentation } from "@axiom/chat-core/account";
-import { creditAmount, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
+import { creditAmount, hasWeeklyAllowance } from "@axiom/chat-core/creditBalances";
 import { usdFromMicrousd } from "./currency";
 import { accountAvatar } from "./accountAvatar";
 
@@ -18,6 +18,16 @@ export interface AccountMenuProps {
   onLogout: () => void;
   onOpenSettings: (trigger: HTMLElement) => void;
   onOpenBalance: (trigger: HTMLElement) => void;
+}
+
+/**
+ * Credits are weekly plan allowance only. Free trial and added funds are the
+ * server's dollar total; trial credit is never converted or counted as credits here.
+ */
+export function balanceLabel(billing: BillingStatus): string {
+  const dollars = usdFromMicrousd(billing.availableMicrousd, 2);
+  return billing.credits && hasWeeklyAllowance(billing.credits)
+    ? `${creditAmount(billing.credits.allowance.remaining_units)} credits · ${dollars}` : dollars;
 }
 
 export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onLogout, onOpenSettings, onOpenBalance }: AccountMenuProps) {
@@ -73,9 +83,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
   }, [open, dismiss]);
 
   const balance = account.kind === "starting" ? "Getting ready…" : account.kind === "unavailable" ? "Unavailable" : account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
-    : billing?.credits ? `${creditAmount((BigInt(billing.credits.allowance.remaining_units)
-        + BigInt(billing.credits.trial.posted_units) - BigInt(billing.credits.trial.held_units)).toString())} credits · ${purchasedCreditAmount(billing.credits.purchased.available_units)}`
-    : billing ? usdFromMicrousd(billing.availableMicrousd, 2) : refresh === "loading" ? "Loading…" : "Unavailable";
+    : billing ? balanceLabel(billing) : refresh === "loading" ? "Loading…" : "Unavailable";
   const itemClass = "flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2.5 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:text-[var(--color-text-primary)] focus:outline-none";
   return <>
     <button ref={trigger} type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}

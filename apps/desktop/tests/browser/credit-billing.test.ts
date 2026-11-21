@@ -77,7 +77,7 @@ async function alignedPlanCards(page: import("playwright").Page) {
 test("native credit controls separate balances and require explicit saved-card charge consent", async () => {
   const {page,errors}=await open();
   try {
-    assert.match(await page.locator("body").innerText(),/Weekly credits.*482.*Purchased credit.*\$8\.00/s);
+    assert.match(await page.locator("body").innerText(),/Weekly credits.*482.*Added credit.*\$8\.00/s);
     assert.match(await page.locator("body").innerText(),/1,250 credits \/ week/);
     for (const total of ["5,000", "20,000", "50,000", "200,000"]) await page.getByText(`${total} credits/month`, {exact:true}).waitFor();
     await alignedPlanCards(page);
@@ -155,7 +155,7 @@ test("a late native card result cannot update the next account's billing screen"
     await page.getByRole("button",{name:"Enable automatic top-up",exact:true}).waitFor();
     await page.evaluate(()=>(window as any).__billingTest.release());
     await page.waitForTimeout(100);
-    assert.match(await page.locator("body").innerText(),/Purchased credit\s+\$1\.00/);
+    assert.match(await page.locator("body").innerText(),/Added credit\s+\$1\.00/);
     assert.doesNotMatch(await page.locator("body").innerText(),/Complete your payment in the browser/);
     const charges=await page.evaluate(()=>(window as any).__billingTest.calls.filter((c:any)=>c.action.kind==="create_card_payment"));
     assert.equal(charges.length,1); assert.equal(charges[0].account,"account-a");

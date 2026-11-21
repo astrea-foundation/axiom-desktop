@@ -2805,7 +2805,8 @@ test("balance shows debt and a reusable deposit address without displaying a res
     await page.evaluate((billing) => (window as any).__deletionTest.setBilling(billing), depositBilling(-230_534));
     await openAccountScreen(page, "Billing");
     const panel = page.getByRole("region", { name: "Balance and payments", exact: true });
-    await panel.getByText("-$0.23", { exact: true }).waitFor();
+    // The headline and its always-visible breakdown both show the debt.
+    await panel.getByText("-$0.23", { exact: true }).first().waitFor();
     await panel.getByText("Top up to send another message.", { exact: true }).waitFor();
     await page.getByLabel("Mainnet deposit address", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Copy address", exact: true }).isEnabled(), true);
@@ -5193,7 +5194,7 @@ test("usage period tabs update totals and charts, discard stale replies, and sup
     assert.equal(await total.count(), 0);
     assert.equal(await tabs.isVisible(), true);
     await tabs.getByRole("tab", { name: "This month" }).click();
-    await page.getByText("Spending this month", { exact: true }).waitFor();
+    await page.getByText("Spent this month", { exact: true }).waitFor();
     assert.equal(await total.innerText(), "$3.00");
     assert.equal(await page.getByRole("img", { name: /Spending by model/ }).locator("path").count(), 2);
     assert.equal(await page.getByRole("button", { name: /Month B.*66.7%/ }).count(), 1);
@@ -5211,9 +5212,9 @@ test("usage period tabs update totals and charts, discard stale replies, and sup
     await page.getByRole("heading", { name: "No spending this week" }).waitFor();
     assert.equal(await total.innerText(), "$0.00");
     await tabs.getByRole("tab", { name: "This week" }).press("ArrowRight");
-    await page.getByText("Spending this month", { exact: true }).waitFor();
+    await page.getByText("Spent this month", { exact: true }).waitFor();
     await tabs.getByRole("tab", { name: "This month" }).press("End");
-    await page.getByText("All-time spending", { exact: true }).waitFor();
+    await page.getByText("Spent all time", { exact: true }).waitFor();
     assert.equal(await total.innerText(), "$9.00");
     const requests = await page.evaluate(() => (window as any).__periodRequests);
     assert.equal(requests[0]?.period, "all_time");

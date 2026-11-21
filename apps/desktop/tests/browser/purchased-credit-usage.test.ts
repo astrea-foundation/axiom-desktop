@@ -49,13 +49,13 @@ test("purchased-dollar usage stays separate and selected across period changes a
         await page.goto(origin + "purchased-usage-test");
         const total = page.locator("[data-usage-total]");
         await total.getByText("1.5 credits", {exact: true}).waitFor();
-        await page.getByRole("button", {name: "Purchased credit", exact: true}).click();
+        await page.getByRole("button", {name: "Added credit", exact: true}).click();
         await total.getByText("$1.25", {exact: true}).waitFor();
         await page.getByRole("tab", {name: "This month", exact: true}).click();
         await total.getByText("$1.25", {exact: true}).waitFor();
         await page.getByRole("button", {name: "Refresh usage", exact: true}).click();
         await total.getByText("$1.25", {exact: true}).waitFor();
-        assert.equal(await page.getByRole("button", {name: "Purchased credit", exact: true}).getAttribute("aria-pressed"), "true");
+        assert.equal(await page.getByRole("button", {name: "Added credit", exact: true}).getAttribute("aria-pressed"), "true");
         await page.getByRole("button", {name: "Allowance credits", exact: true}).click();
         await total.getByText("1.5 credits", {exact: true}).waitFor();
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);

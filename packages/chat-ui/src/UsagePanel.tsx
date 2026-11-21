@@ -5,18 +5,18 @@ import { useEffect, useId, useState } from "react";
 import type { UsageSummary } from "@axiom/chat-core/viewTypes";
 import { creditAmount, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
 import { creditUsageBreakdown, purchasedUsageBreakdown, type CreditUsageSummary } from "@axiom/chat-core/creditUsage";
-import { formatSpend, pieSlice, shareLabel, spendingBreakdown, type UsagePeriod } from "@axiom/chat-core/usageSpend";
+import { formatSpend, pieSlice, shareLabel, spendingBreakdown, usageFreshness, type UsagePeriod } from "@axiom/chat-core/usageSpend";
 
 const COLORS = ["#ff7653", "#9295c9", "#73a79c", "#d7ad68", "#77a5c6", "#c58eaa", "#ada687", "#7e8fa6"];
 const buttonClass = "inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--surface-button-secondary)] px-3 py-2 text-[12.5px] text-[var(--color-text-secondary)] hover:bg-[var(--surface-button-secondary-hover)] disabled:opacity-50";
 
 const PERIODS: { id: UsagePeriod; label: string; totalLabel: string }[] = [
-  { id: "week", label: "This week", totalLabel: "Spending this week" },
-  { id: "month", label: "This month", totalLabel: "Spending this month" },
-  { id: "all_time", label: "All time", totalLabel: "All-time spending" },
+  { id: "week", label: "This week", totalLabel: "Spent this week" },
+  { id: "month", label: "This month", totalLabel: "Spent this month" },
+  { id: "all_time", label: "All time", totalLabel: "Spent all time" },
 ];
 type UsageData = {denomination: "usd"; summary: UsageSummary} | {denomination: "credits"; summary: CreditUsageSummary};
-type UsageState = { requestKey: string } & ({ kind: "loading" } | { kind: "error" } | { kind: "ready"; data: UsageData });
+type UsageState = { requestKey: string } & ({ kind: "loading" } | { kind: "error" } | { kind: "ready"; data: UsageData; fetchedAt: number });
 
 export function UsagePanel({ accountId, connected, onLogin }: {
   accountId: string | null;
@@ -42,13 +42,13 @@ export function UsagePanel({ accountId, connected, onLogin }: {
         if (credits) {
           creditUsageBreakdown(credits, period);
           purchasedUsageBreakdown(credits, period);
-          if (!cancelled) setState({kind: "ready", data: {denomination: "credits", summary: credits}, requestKey});
+          if (!cancelled) setState({kind: "ready", data: {denomination: "credits", summary: credits}, fetchedAt: Date.now(), requestKey});
           return;
         }
         if (!api?.usageSummary) throw new Error("Usage is unavailable");
         const { summary } = await api.usageSummary(accountId, { period, timezone });
         spendingBreakdown(summary, period);
-        if (!cancelled) setState({ kind: "ready", data: {denomination: "usd", summary}, requestKey });
+        if (!cancelled) setState({ kind: "ready", data: {denomination: "usd", summary}, fetchedAt: Date.now(), requestKey });
       } catch {
         if (!cancelled) setState({ kind: "error", requestKey });
       }
@@ -86,20 +86,26 @@ export function UsagePanel({ accountId, connected, onLogin }: {
           <p className="mb-4 text-[13px] text-[var(--color-text-secondary)]">Couldn’t load your usage.</p>
           <button type="button" onClick={() => setRefresh(value => value + 1)} className={buttonClass}><RefreshCw size={14} />Try again</button>
         </div>
-        : <UsageBreakdown key={requestKey} data={current.data} period={period} bucket={bucket} onBucket={setBucket} onRefresh={() => setRefresh(value => value + 1)} />}
+        : <UsageBreakdown key={requestKey} data={current.data} fetchedAt={current.fetchedAt} period={period} bucket={bucket} onBucket={setBucket} onRefresh={() => setRefresh(value => value + 1)} />}
     </div>
     <p className="mt-4 text-[11px] text-[var(--color-text-tertiary)]">Weeks start Monday. Dates use your local timezone ({timezone.replaceAll("_", " ")}).</p>
   </div>;
 }
 
-function UsageBreakdown({ data, period, bucket, onBucket, onRefresh }: { data: UsageData; period: UsagePeriod;
+function UsageBreakdown({ data, fetchedAt, period, bucket, onBucket, onRefresh }: { data: UsageData; fetchedAt: number; period: UsagePeriod;
   bucket: "credits" | "purchased"; onBucket(value: "credits" | "purchased"): void; onRefresh: () => void }) {
   const [activeModel, setActiveModel] = useState<string | null>(null);
+  // The age shown is measured, so "just now" stops being claimed once it is no longer true.
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
   const chartId = useId();
   const paid = data.denomination === "credits" && bucket === "purchased";
   const { total, models } = data.denomination === "credits" ? paid ? purchasedUsageBreakdown(data.summary, period) : creditUsageBreakdown(data.summary, period) : spendingBreakdown(data.summary, period);
   const format = data.denomination === "credits" ? paid ? (value: bigint) => purchasedCreditAmount(value.toString(), true) : (value: bigint) => `${creditAmount(value.toString(), true)} credits` : formatSpend;
-  const modelLabel = data.denomination === "credits" ? paid ? "Purchased credit by model" : "Credits by model" : "Spending by model";
+  const modelLabel = data.denomination === "credits" ? paid ? "Added credit by model" : "Credits by model" : "Spending by model";
   let start = 0;
   let cumulative = 0n;
   const slices = models.map((model, index) => {
@@ -113,19 +119,20 @@ function UsageBreakdown({ data, period, bucket, onBucket, onRefresh }: { data: U
   return <div>
     {data.denomination === "credits" && <div role="group" aria-label="Usage balance" className="mb-5 flex gap-2">
       <button type="button" className={`${buttonClass} aria-pressed:border-[var(--color-text-primary)]`} aria-pressed={bucket === "credits"} onClick={() => onBucket("credits")}>Allowance credits</button>
-      <button type="button" className={`${buttonClass} aria-pressed:border-[var(--color-text-primary)]`} aria-pressed={bucket === "purchased"} onClick={() => onBucket("purchased")}>Purchased credit</button>
+      <button type="button" className={`${buttonClass} aria-pressed:border-[var(--color-text-primary)]`} aria-pressed={bucket === "purchased"} onClick={() => onBucket("purchased")}>Added credit</button>
     </div>}
     <div className="flex items-start justify-between gap-4">
       <div>
-        <p className="text-[12px] text-[var(--color-text-tertiary)]">{data.denomination === "credits" ? paid ? "Purchased credit spent" : "Credits consumed" : PERIODS.find(item => item.id === period)!.totalLabel}</p>
+        <p className="text-[12px] text-[var(--color-text-tertiary)]">{data.denomination === "credits" ? paid ? "Added credit spent" : "Credits consumed" : PERIODS.find(item => item.id === period)!.totalLabel}</p>
         <p data-usage-total className="mt-2 break-all text-[36px] font-medium leading-tight tracking-[-0.04em] text-[var(--color-text-primary)] tabular-nums">{format(total)}</p>
       </div>
       <button type="button" onClick={onRefresh} aria-label="Refresh usage" className={`${buttonClass} !p-2`}><RefreshCw size={15} /></button>
     </div>
+    <p data-usage-freshness className="mt-2 text-[12px] leading-5 text-[var(--color-text-tertiary)]">{usageFreshness(fetchedAt, now)} Replies are counted as soon as they finish.</p>
     {models.length === 0 ? <div className="mt-7 flex flex-col items-center rounded-[16px] border border-[var(--color-border)] bg-[var(--wash-row)] px-5 py-12 text-center">
       <ChartPie size={32} strokeWidth={1.2} className="mb-4 text-[var(--color-text-muted)]" />
       <h3 className="text-[15px] font-medium text-[var(--color-text-primary)]">{period === "all_time" ? "No spending yet" : `No spending this ${period}`}</h3>
-      <p className="mt-1 text-[12.5px] text-[var(--color-text-tertiary)]">{period === "all_time" ? "Your model breakdown will appear here after your first charge." : "Charges for this period will appear here."}</p>
+      <p className="mt-1 text-[12.5px] text-[var(--color-text-tertiary)]">Replies appear here as soon as they finish.</p>
     </div> : <div className="mt-7 rounded-[16px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4 sm:p-5">
       <h3 className="text-[13px] font-medium text-[var(--color-text-primary)]">{modelLabel}</h3>
       <div className="mt-3 flex flex-wrap items-center justify-center gap-4">

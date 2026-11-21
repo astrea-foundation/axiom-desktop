@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, CreditCard, ExternalLink, Wallet } from "lucide-react";
 import type { AutomaticTopup, BillingOperation, CardFundingOptions, CardFundingPayment, CreditBillingAction, CreditBillingResult, CreditSummary, CreditUsage, SavedBillingCard, SubscriptionPlan } from "@axiom/axiom-acp-client";
-import { creditAmount, inputPurchasedCredit, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
+import { creditAmount, hasWeeklyAllowance, inputPurchasedCredit, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
 import { desktopErrorMessage } from "../signInFlow";
 import { creditAmount as paymentAmount } from "./FundingPanel";
 import { usdFromMicrousd } from "../lib/currency";
@@ -33,9 +33,11 @@ function retireIntent(account: string, id: string) {
 }
 
 /** Credentials and Stripe redirects are handled by the native account client. */
-export function CreditBillingPanel({ accountId, connected, cryptoContent, onSummary, onRefreshBilling }: {
+export function CreditBillingPanel({ accountId, connected, cryptoContent, onSummary, onRefreshBilling, dollarBalanceShown = false }: {
   accountId: string; connected: boolean; cryptoContent: ReactNode;
   onSummary: (active: boolean) => void; onRefreshBilling: () => Promise<void>;
+  /** The screen above already shows trial and added credit in dollars. */
+  dollarBalanceShown?: boolean;
 }) {
   const [summary, setSummary] = useState<CreditSummary | null>(null);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
@@ -170,9 +172,9 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   const pendingSubscription = currentSubscription && ["creating", "pending"].includes(currentSubscription.state);
   return <div className="space-y-7 text-[13px] text-[var(--color-text-primary)]">
     {summary ? <>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className={`grid gap-3 ${dollarBalanceShown ? "" : "sm:grid-cols-2"}`}>
         <div className="rounded-2xl bg-[var(--wash-row)] p-4"><h2 className="text-[12px] text-[var(--color-text-secondary)]">Weekly credits</h2>
-          <p className="mt-1 text-[30px] font-semibold tabular-nums" title={creditAmount(summary.allowance.remaining_units, true)}>{creditAmount(summary.allowance.remaining_units)}</p>
+          {hasWeeklyAllowance(summary) ? <p className="mt-1 text-[30px] font-semibold tabular-nums" title={creditAmount(summary.allowance.remaining_units, true)}>{creditAmount(summary.allowance.remaining_units)}</p> : null}
           {summary.allowance.resets_at ? (() => {
             const pct = Math.min(100, Math.max(0, Number(BigInt(summary.allowance.remaining_units) * 100n / (BigInt(summary.allowance.limit_units) || 1n))));
             return <>
@@ -183,13 +185,13 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
           })() : <p className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Choose a plan to receive credits every 7 days.</p>}
           {summary.allowance.held_units !== "0" ? <p className="mt-2 text-[11px] text-[var(--color-text-secondary)]">{creditAmount(summary.allowance.held_units, true)} reserved for requests in progress</p> : null}
         </div>
-        <div className="rounded-2xl bg-[var(--wash-row)] p-4"><h2 className="text-[12px] text-[var(--color-text-secondary)]">Purchased credit</h2>
+        {/* Only when the dollar balance above could not load, so added funds are never hidden. */}
+        {dollarBalanceShown ? null : <div className="rounded-2xl bg-[var(--wash-row)] p-4"><h2 className="text-[12px] text-[var(--color-text-secondary)]">Added credit</h2>
           <p className="mt-1 text-[30px] font-semibold tabular-nums" title={purchasedCreditAmount(summary.purchased.available_units, true)}>{purchasedCreditAmount(summary.purchased.available_units)}</p>
           <p className="mt-2 text-[12px] text-[var(--color-text-secondary)]">At API cost.</p>
           {summary.purchased.held_units !== "0" ? <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">{purchasedCreditAmount(summary.purchased.held_units, true)} reserved for requests in progress</p> : null}
-        </div>
+        </div>}
       </div>
-      {BigInt(summary.trial.posted_units) > 0n ? <p>Trial credits: {creditAmount((BigInt(summary.trial.posted_units) - BigInt(summary.trial.held_units)).toString(), true)}. Used after your weekly allowance.</p> : null}
       {summary.payment_review_required ? <p role="alert" className="text-[var(--color-warning-strong)]">Spending is paused while a payment is reviewed.</p> : null}
       {plans.length ? <section aria-label="Subscription plans"><h3 className="mb-1 font-medium">Choose your plan</h3>
         <p className="mb-3 text-[12px] text-[var(--color-text-secondary)]">Billed monthly. Credits refresh every 7 days.</p>
@@ -217,7 +219,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
         <button className={button} disabled={busy || !connected} onClick={() => void perform(() => call({kind: "portal"}, "portal"))}><ExternalLink size={13} />Manage payment method or cancel</button>
         {pendingSubscription ? <button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "operation", id: summary.subscription!.id}, "operation"))}>Resume subscription checkout</button> : null}
       </div> : null}
-      <label className="flex items-start gap-2"><input type="checkbox" checked={summary.paid_fallback} disabled={busy || !connected} onChange={e => void perform(() => call({kind: "fallback", enabled: e.target.checked}, "summary"))} /><span>Use purchased credit when weekly and trial credits run out.</span></label>
+      <label className="flex items-start gap-2"><input type="checkbox" checked={summary.paid_fallback} disabled={busy || !connected} onChange={e => void perform(() => call({kind: "fallback", enabled: e.target.checked}, "summary"))} /><span>Use added credit when weekly credits and free trial credit run out.</span></label>
     </> : null}
 
     <section aria-label="Add credit"><h3 className="mb-3 font-medium">Add credit</h3>
@@ -227,7 +229,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
           const value = paymentAmount(amount); if (!value) throw new Error("Enter an amount between $5 and $1,000 with at most two decimal places.");
           if (value < options.min_amount_microusd || value > options.max_amount_microusd) throw new Error("This amount is outside the available card payment range.");
           await call({kind: "create_card_payment", id: intent(accountId, `card.${value}`), amount_microusd: value}, "card_payment");
-        }, "Complete your payment in the browser. Purchased credit appears after payment is confirmed."); }}>
+        }, "Complete your payment in the browser. Added credit appears after payment is confirmed."); }}>
           <label className="min-w-36 flex-1">Amount (USD)<input className={`${field} mt-1`} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /></label><button className={button} disabled={busy || !connected}>Continue with card <ExternalLink size={13} /></button>
         </form>
         {payments.length ? <details className="mt-3"><summary className="cursor-pointer py-2">Card payments</summary><ul className="space-y-3">{payments.map(p => <li key={p.id} className="flex flex-wrap items-center gap-2"><span>{usdFromMicrousd(p.amount_microusd, 2)} · {p.status}</span>
@@ -242,7 +244,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
     {auto && (auto.available || auto.enabled) ? <details aria-label="Automatic top-up" className="auto-topup group border-t border-[var(--color-border)] pt-5">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-[14px] font-medium">Automatic top-up <span className="text-[11px] font-normal text-[var(--color-text-tertiary)]">{auto.enabled ? "Enabled" : "Off"}</span><ChevronDown size={14} aria-hidden="true" className="ml-auto text-[var(--color-text-tertiary)] transition-transform group-open:rotate-180" /></summary>
       <div className="mt-3 space-y-3">
-      <p className="text-[12px] text-[var(--color-text-secondary)]">Refill when your weekly allowance runs out and purchased credit falls below your balance threshold. Saving a card or subscribing leaves this off.</p>
+      <p className="text-[12px] text-[var(--color-text-secondary)]">Refill when your weekly allowance runs out and added credit falls below your balance threshold. Saving a card or subscribing leaves this off.</p>
       <p>{auto.enabled ? "Enabled" : "Off"}{auto.paused_reason ? auto.paused_reason === "authorization_mismatch" ? " · Confirm your dollar-balance settings to resume" : ` · Paused: ${auto.paused_reason.replaceAll("_", " ")}` : ""}. {money(auto.used_cents)} of {money(auto.monthly_cap_cents)} used in {auto.cap_month} (UTC).</p>
       <button className={button} disabled={busy || !auto.available} onClick={() => void perform(() => call({kind: "setup_card", id: intent(accountId, `setup.${cards.length}`)}, "operation"), "Save a card in the browser, then return here.")}>Save a card <ExternalLink size={13} /></button>
       <div className="grid gap-3 sm:grid-cols-2"><label>Balance threshold (USD)<input className={`${field} mt-1`} value={threshold} inputMode="decimal" onChange={e => { edit(); setThreshold(e.target.value); }} /></label>
