@@ -361,6 +361,55 @@ fn request_accounting_recovery_is_idempotent_account_scoped_and_never_verifies()
 }
 
 #[test]
+fn image_accounting_recovery_preserves_worker_identity_and_exposes_billing_model() {
+    use axiom_inference::{RequestBillingModel, RequestUsage};
+
+    let store = SessionStore::in_memory().unwrap();
+    let id = SessionId::new();
+    create(&store, &id);
+    let mut payload = serde_json::json!({
+        "requestId": "a".repeat(32),
+        "providerId": "axiom-direct",
+        "modelId": "direct:qwen3.8-27b",
+        "state": "failed",
+    });
+    let local: RequestUsage = serde_json::from_value(payload.clone()).unwrap();
+    assert!(local.billing_model.is_none());
+    store.record_request_usage(&id, &local).unwrap();
+
+    payload["billingModel"] = serde_json::json!({
+        "providerId": "axiom-direct",
+        "modelId": "direct:image-generation",
+        "modelName": "Image generation",
+    });
+    payload["costMicrousd"] = serde_json::json!("1049");
+    payload["settled"] = serde_json::json!(true);
+    let remote: RequestUsage = serde_json::from_value(payload).unwrap();
+    let mismatched = RequestUsage {
+        model_id: "direct:image-generation".into(),
+        ..remote.clone()
+    };
+    assert!(store.reconcile_request_usage(&id, &[mismatched]).is_err());
+    store.reconcile_request_usage(&id, &[remote]).unwrap();
+
+    let snapshot = store.thread_snapshot(&id, None, 100).unwrap();
+    let recovered = &snapshot.request_usage[0];
+    assert_eq!(recovered.model_id, local.model_id);
+    assert_eq!(recovered.provider_id, local.provider_id);
+    assert_eq!(
+        recovered.billing_model,
+        Some(RequestBillingModel {
+            provider_id: "axiom-direct".into(),
+            model_id: "direct:image-generation".into(),
+            model_name: "Image generation".into(),
+        })
+    );
+    assert_eq!(recovered.cost_microusd.as_deref(), Some("1049"));
+    assert!(recovered.settled);
+    assert!(!recovered.response_verified);
+}
+
+#[test]
 fn message_revision_is_idle_account_scoped_and_preserves_request_accounting() {
     let (_root, store) = routed_store();
     store.activate_account("a").unwrap();

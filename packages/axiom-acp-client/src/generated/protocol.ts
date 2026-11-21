@@ -810,6 +810,7 @@ export interface RequestUsage {
   requestId: string;
   modelId: string;
   providerId: string;
+  billingModel?: RequestBillingModel | null;
   contextWindowTokens?: number | null;
   autoCompactThresholdTokens?: number | null;
   turnId?: string | null;
@@ -830,6 +831,15 @@ export interface RequestUsage {
   finishedAtMs?: string | null;
   errorCode?: string | null;
   finishReason?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * The model used for billing attribution when it differs from the worker model.
+ */
+export interface RequestBillingModel {
+  providerId: string;
+  modelId: string;
+  modelName: string;
   [k: string]: unknown;
 }
 export interface TimelineItem {

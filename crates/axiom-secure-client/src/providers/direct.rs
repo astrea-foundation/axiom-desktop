@@ -849,6 +849,11 @@ impl DirectProvider {
                 request_id,
                 model_id: MODEL.into(),
                 provider_id: ID.into(),
+                billing_model: Some(axiom_inference::RequestBillingModel {
+                    provider_id: ID.into(),
+                    model_id: "direct:image-generation".into(),
+                    model_name: "Image generation".into(),
+                }),
                 state: axiom_inference::InvocationState::Completed,
                 completeness: axiom_inference::UsageCompleteness::Final,
                 image_pixels: Some(receipt.usage.image_pixels.to_string()),

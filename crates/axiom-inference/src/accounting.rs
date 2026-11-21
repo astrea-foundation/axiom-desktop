@@ -31,6 +31,15 @@ pub enum InvocationPurpose {
     Compaction,
 }
 
+/// The model used for billing attribution when it differs from the worker model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestBillingModel {
+    pub provider_id: String,
+    pub model_id: String,
+    pub model_name: String,
+}
+
 /// Decimal strings remain exact in JavaScript, on disk, and over ACP.
 /// A settled charge does not imply an authenticated/complete model response.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -39,6 +48,8 @@ pub struct RequestUsage {
     pub request_id: String,
     pub model_id: String,
     pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_model: Option<RequestBillingModel>,
     #[serde(default)]
     pub context_window_tokens: Option<u32>,
     #[serde(default)]
