@@ -14,6 +14,19 @@ export function newestMessageAt(...values: (string | null | undefined)[]): strin
   return newest;
 }
 
+/**
+ * Whether a sidebar row shows activity. The listed summary can be older than an
+ * open session (a list fetched mid-turn, or one that answers after the turn
+ * ended), so a session at least as new as the listing decides alone.
+ */
+export function threadIsWorking(
+  listed: { lifecycle?: string | null; revision?: number | null },
+  session?: { running: boolean; threadRevision: number } | null,
+): boolean {
+  if (session && session.threadRevision >= (listed.revision ?? 0)) return session.running;
+  return (session?.running ?? false) || !["ready", "closed"].includes(listed.lifecycle ?? "ready");
+}
+
 export function compareThreadMessages(a: Thread, b: Thread): number {
   const aTime = messageTime(a.lastUserMessageAt);
   const bTime = messageTime(b.lastUserMessageAt);

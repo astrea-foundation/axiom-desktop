@@ -10,7 +10,7 @@ import { DEFAULT_AGENT_SELECTION, type AgentControlOptions, type AgentSelection 
 import { MessageQueue as MessageQueueController } from "./messageQueue";
 import { desktopErrorMessage } from "./signInFlow";
 import { ThreadLoadTracker } from "./threadLoading";
-import { compareThreadMessages, newestMessageAt, orderFoldersByMessages } from "./threadOrdering";
+import { compareThreadMessages, newestMessageAt, orderFoldersByMessages, threadIsWorking } from "./threadOrdering";
 import type { PendingUserMessage, Thread } from "./types";
 import { useAttachmentDraft } from "./useAttachmentDraft";
 import { useAccountDraft } from "./useAccountDraft";
@@ -121,8 +121,7 @@ export function useConversations(agentState: ClientState, connection: ReturnType
       if (!seen.has(summary.threadId) || (surface === "thread" && summary.threadId === activeThreadId)) {
         seen.set(summary.threadId, Math.max(seen.get(summary.threadId) ?? 0, messageTime));
       }
-      const working = (session?.running ?? false)
-        || !["ready", "closed"].includes(summary.lifecycle ?? "ready");
+      const working = threadIsWorking(summary, session);
       // Renames, settings, and other metadata changes are not unread messages.
       const unread = !working && messageTime > (seen.get(summary.threadId) ?? messageTime);
       return {
