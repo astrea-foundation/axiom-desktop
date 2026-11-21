@@ -49,7 +49,7 @@ pub struct RequestUsage {
     pub model_id: String,
     pub provider_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub billing_model: Option<RequestBillingModel>,
+    pub billing_model: Option<Box<RequestBillingModel>>,
     #[serde(default)]
     pub context_window_tokens: Option<u32>,
     #[serde(default)]

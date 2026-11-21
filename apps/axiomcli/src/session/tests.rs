@@ -397,8 +397,8 @@ fn image_accounting_recovery_preserves_worker_identity_and_exposes_billing_model
     assert_eq!(recovered.model_id, local.model_id);
     assert_eq!(recovered.provider_id, local.provider_id);
     assert_eq!(
-        recovered.billing_model,
-        Some(RequestBillingModel {
+        recovered.billing_model.as_deref(),
+        Some(&RequestBillingModel {
             provider_id: "axiom-direct".into(),
             model_id: "direct:image-generation".into(),
             model_name: "Image generation".into(),
