@@ -97,7 +97,7 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now(), sent 
         <button type="button" onClick={() => void copy(payment.payin_extra_id!, "memo")} className="ax-pill ax-pill-button mt-2">{copied === "memo" ? "Copied" : "Copy memo"}</button></div> : null}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] leading-5 text-[var(--color-text-secondary)]">
         <p>Use {cryptoNetwork(coin!)}.</p>
-        <p className="inline-flex items-center gap-1.5"><Clock3 size={13} aria-hidden="true" />Send within <span role="timer" aria-label="Time left to send for this rate" aria-live="off" className="font-medium tabular-nums">{timeLeft}</span> for this rate.</p>
+        <p className="inline-flex items-center gap-1.5"><Clock3 size={13} aria-hidden="true" /><span>Send within <span role="timer" aria-label="Time left to send for this rate" aria-live="off" className="font-medium tabular-nums">{timeLeft}</span> for this rate.</span></p>
       </div>
     </> : null}
     <div className="flex justify-between gap-3 border-t border-[var(--color-border)] pt-4"><span className="text-[var(--color-text-secondary)]">Payment value</span><span className="font-medium tabular-nums">{usdFromMicrousd(payment.amount_microusd, 2)}</span></div>
@@ -303,17 +303,15 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
       {open ? <CryptoDepositDialog onClose={() => setOpen(false)}>
         {payments.some(value => value.active !== undefined) && <p className="mb-4 text-[12px] text-[var(--color-text-secondary)]">{activeCount} of 5 active invoices. Cancel an invoice to make room.</p>}
         {selected ? <><CryptoPaymentDetails payment={selected} options={options} now={now} sent={sent} refreshing={refreshing} rateUpdated={rateUpdatedId === selected.id} />
-          {selected.active === true && <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "cancel")}>Cancel invoice</button>}
-          {selected.quote_id && <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "check")}>Check payment status</button>}
-          {selected.status === "cancelled" && <p className="text-[12px] text-[var(--color-text-secondary)]">This invoice is cancelled. Any transfer already sent will still be processed.</p>}
-
-          {rateExpired && !sent && !refreshing ? <div className="mt-4 space-y-3">
-            {renewal?.failed ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">Couldn’t refresh the rate.</p> : null}
-            <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected} onClick={() => void renewQuote()}>Retry quote</button>
-          </div> : null}
-          <div className="mt-5 flex gap-2">
-            {awaitingQuote(selected) && !sent ? <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" onClick={markSent}>I’ve sent it</button> : null}
-            <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" disabled={busy} onClick={() => { checkoutRevision.current++; setSelected(null); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(false); }}>New payment</button>
+          {selected.status === "cancelled" ? <p className="mt-3 text-[12px] leading-5 text-[var(--color-text-secondary)]">This invoice is cancelled. Any transfer already sent will still be processed.</p> : null}
+          {rateExpired && !sent && !refreshing && renewal?.failed ? <p role="alert" className="mt-3 text-[12px] leading-5 text-[var(--color-danger-strong)]">Couldn’t refresh the rate.</p> : null}
+          {/* One evenly spaced action grid: buttons pair up two per row and a lone last button spans the row. */}
+          <div className="mt-5 flex flex-wrap gap-2">
+            {rateExpired && !sent && !refreshing ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_100%] justify-center" disabled={!connected} onClick={() => void renewQuote()}>Retry quote</button> : null}
+            {selected.active === true ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "cancel")}>Cancel invoice</button> : null}
+            {selected.quote_id ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "check")}>Check payment status</button> : null}
+            {awaitingQuote(selected) && !sent ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" onClick={markSent}>I’ve sent it</button> : null}
+            <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" disabled={busy} onClick={() => { checkoutRevision.current++; setSelected(null); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(false); }}>New payment</button>
           </div></> :
           <form ref={form} className="space-y-5" onSubmit={(e) => { e.preventDefault(); void create(); }}>
             {depositClosed ? <p role="status" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Deposit closed. Funds already sent will still be processed.</p> : null}
