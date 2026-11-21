@@ -1681,7 +1681,11 @@ impl ProcessManager {
             let mut snapshot = state.lock().await;
             match outcome {
                 Ok(outcome) => {
-                    snapshot.state = "completed".into();
+                    snapshot.state = match outcome.exit_code {
+                        Some(0) => "completed".into(),
+                        Some(code) => format!("failed: process exited with code {code}"),
+                        None => "failed: process ended without an exit code".into(),
+                    };
                     snapshot.stdout.clone_from(&outcome.stdout);
                     snapshot.stderr.clone_from(&outcome.stderr);
                     snapshot.truncated = outcome.truncated;
@@ -3135,6 +3139,35 @@ mod tests {
             env: BTreeMap::new(),
             timeout_secs: 5,
         }
+    }
+
+    #[tokio::test]
+    async fn background_nonzero_exit_preserves_the_failure_and_output() {
+        let root = tempdir().unwrap();
+        let workspace = Workspace::new(root.path()).unwrap();
+        let manager = ProcessManager::new(4096);
+        let script = if cfg!(windows) {
+            "Write-Output 'found'; [Console]::Error.WriteLine('missing'); exit 7"
+        } else {
+            "echo found; echo missing >&2; exit 7"
+        };
+        let (program, args) = crate::process_env::native_shell(script.into());
+        let mut request = process_request(&program, &[]);
+        request.args = args;
+        let id = manager
+            .start(
+                workspace,
+                request,
+                CancellationToken::new(),
+                "full_access".into(),
+            )
+            .await
+            .unwrap();
+        let snapshot = manager.wait(&id, 10).await.unwrap();
+        assert_eq!(snapshot.state, "failed: process exited with code 7");
+        assert_eq!(snapshot.outcome.unwrap().exit_code, Some(7));
+        assert_eq!(snapshot.stdout.trim(), "found");
+        assert_eq!(snapshot.stderr.trim(), "missing");
     }
 
     #[cfg(target_os = "linux")]

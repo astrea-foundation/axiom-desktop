@@ -1585,20 +1585,22 @@ fn default_timeout() -> u64 {
 }
 
 fn command_schema() -> Value {
-    schema(
+    process_schema(
         json!({
-            "program": {"type": "string", "minLength": 1},
-            "args": {"type": "array", "items": {"type": "string"}},
-            "cwd": {"type": "string", "description": "Workspace-relative working directory; defaults to the workspace root."},
-            "env": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "Explicit allowlisted child settings (CI, RUST_BACKTRACE, RUST_LOG, NODE_ENV, CARGO_TERM_COLOR, NO_COLOR)."
-            },
-            "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}
+            "program": {"type": "string", "minLength": 1, "description": "Executable name or path, for example git."},
+            "args": {"type": "array", "items": {"type": "string"}, "description": "One literal argument per entry, for example [\"status\", \"--short\"]."}
         }),
-        &["program"],
+        "program",
     )
+}
+
+fn process_schema(mut properties: Value, required: &str) -> Value {
+    properties["cwd"] = json!({"type": "string", "description": "Working directory inside the workspace. Defaults to the workspace root."});
+    properties["env"] = json!({"type": "object", "additionalProperties": {"type": "string"},
+        "description": "Optional child settings. Allowed keys are CI, RUST_BACKTRACE, RUST_LOG, NODE_ENV, CARGO_TERM_COLOR and NO_COLOR."});
+    properties["timeout_secs"] = json!({"type": "integer", "minimum": 1, "maximum": 3600,
+        "default": default_timeout(), "description": "Execution limit in seconds. The runtime stops the process group when it expires."});
+    schema(properties, &[required])
 }
 
 fn command_effects(context: &ToolContext, args: &CommandArgs, shell: bool) -> Result<Vec<Effect>> {
@@ -1694,7 +1696,7 @@ impl Tool for RunCommand {
         "run_command"
     }
     fn description(&self) -> &'static str {
-        "Run a structured program (no shell interpolation) in the workspace with a timeout and bounded output."
+        "Run an executable with literal arguments in the workspace using the app's PATH. Use run_shell for pipes, redirects or shell builtins. Read exit_code, stdout and stderr for the result."
     }
     fn parameters(&self) -> Value {
         command_schema()
@@ -1762,20 +1764,15 @@ impl Tool for RunShell {
     }
     fn description(&self) -> &'static str {
         if cfg!(windows) {
-            "Run an explicitly higher-risk Windows PowerShell script in the workspace. Shell execution always requires approval."
+            "Run non-interactive Windows PowerShell with no profile. For optional lookups use Get-Command with -ErrorAction SilentlyContinue and handle an empty result. A runtime installed through a user's profile may be absent here. Inspect exit_code, stdout and stderr."
         } else {
-            "Run an explicitly higher-risk /bin/sh script in the workspace. Shell execution always requires approval."
+            "Run a non-login /bin/sh script using the app's PATH. Use an if/else around command -v for optional lookups. A program missing from this PATH may be installed elsewhere. A nonzero script exit marks the call failed even when earlier commands produced output. Inspect stdout and stderr."
         }
     }
     fn parameters(&self) -> Value {
-        schema(
-            json!({
-                "command": {"type": "string", "minLength": 1},
-                "cwd": {"type": "string"},
-                "env": {"type": "object", "additionalProperties": {"type": "string"}},
-                "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}
-            }),
-            &["command"],
+        process_schema(
+            json!({"command": {"type": "string", "minLength": 1, "description": "Complete script for the host shell."}}),
+            "command",
         )
     }
     fn effects(&self, context: &ToolContext, arguments: &Value) -> Result<Vec<Effect>> {
@@ -1837,7 +1834,7 @@ impl Tool for StartBackground {
         "start_background"
     }
     fn description(&self) -> &'static str {
-        "Start a bounded structured program in the background and return its task ID."
+        "Schedule an executable with literal arguments and return task_id immediately. Use background_status to inspect its state and output, or background_wait with the same ID to get the final outcome. Set timeout_secs here for long jobs."
     }
     fn parameters(&self) -> Value {
         command_schema()
@@ -1890,7 +1887,10 @@ struct TaskArgs {
 }
 
 fn task_schema() -> Value {
-    schema(json!({"task_id": {"type": "string"}}), &["task_id"])
+    schema(
+        json!({"task_id": {"type": "string", "description": "The task_id returned by start_background."}}),
+        &["task_id"],
+    )
 }
 
 #[derive(Deserialize)]
@@ -1945,7 +1945,7 @@ impl Tool for BackgroundStatus {
         ToolAccess::Read
     }
     fn description(&self) -> &'static str {
-        "Inspect a background task and its bounded output."
+        "Read the task's current state, stdout and stderr. A successful lookup can report a failed task. Check state and outcome.exit_code before reporting success."
     }
     fn parameters(&self) -> Value {
         task_schema()
@@ -2000,13 +2000,13 @@ impl Tool for WaitBackground {
         ToolAccess::Read
     }
     fn description(&self) -> &'static str {
-        "Wait for a background task to finish, subject to a bounded wait timeout."
+        "Wait for the task_id returned by start_background and read its final state and output. A wait timeout ends this wait. The task keeps its original execution deadline and can be checked again."
     }
     fn parameters(&self) -> Value {
         schema(
             json!({
-                "task_id": {"type": "string"},
-                "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600}
+                "task_id": {"type": "string", "description": "The task_id returned by start_background."},
+                "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 3600, "default": default_timeout(), "description": "Maximum time to wait in this call, in seconds."}
             }),
             &["task_id"],
         )

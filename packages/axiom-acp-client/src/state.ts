@@ -239,11 +239,11 @@ function mergeTool(
 function durableTool(item: DurableTimelineItem): ToolActivity {
   const metadata = object(item.metadata) ?? {};
   const content = Array.isArray(metadata.content) ? [...metadata.content] : [];
-  if (
-    item.content
-    && !content.some((entry) => textFromContent(entry) === item.content)
-  ) {
-    content.push({ type: "text", text: item.content });
+  // Background lifecycle rows store their failure reason in state, including in older threads.
+  const text = item.content || (item.status === "failed" && metadata.name === "background_process"
+    && typeof metadata.state === "string" ? metadata.state : "");
+  if (text && !content.some((entry) => textFromContent(entry) === text)) {
+    content.push({ type: "text", text });
   }
   const locations = Array.isArray(metadata.locations)
     ? metadata.locations

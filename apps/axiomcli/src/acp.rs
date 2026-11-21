@@ -262,7 +262,7 @@ fn tool_kind(name: &str) -> protocol::ToolKind {
         "apply_patch" | "replace_text" | "plan_create" | "plan_revise" => protocol::ToolKind::Edit,
         "search_text" | "web_search" | "fetch_url" => protocol::ToolKind::Search,
         "run_command" | "run_shell" | "start_background" | "background_wait"
-        | "background_list" | "background_status" | "stop_background" => {
+        | "background_list" | "background_status" | "stop_background" | "background_process" => {
             protocol::ToolKind::Execute
         }
         "update_progress" | "plan_propose" | "ask_user_questions" => protocol::ToolKind::Think,

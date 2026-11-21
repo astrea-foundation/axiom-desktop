@@ -163,6 +163,28 @@ test("tool failure summaries distinguish cancellation, consent, and account/sear
   assert.equal(toolFailureReason({ ...fetch, content: [{ text: "Unknown error: Bearer confidential-value" }] }), "Couldn’t fetch page");
 });
 
+test("failed commands show their exit status and keep diagnostics behind the disclosure", () => {
+  const command = { ...search, name: "run_shell", kind: "execute", status: "failed",
+    title: "Command failed: `lookup --token [REDACTED]`", input: { command: "lookup --token private-input" } };
+  const result = JSON.stringify({ exit_code: 1, stdout: "other tool available", stderr: "HTTP 503 in fixture", truncated: false });
+  for (const content of [[{ type: "text", text: result }], [{ type: "content", content: { type: "text", text: result } }]]) {
+    const tool = { ...command, content };
+    assert.equal(toolLabel(tool), "Command exited with code 1 · lookup --token [REDACTED]");
+    const html = renderToStaticMarkup(createElement(ToolCallCard, { tool }));
+    assert.match(html, /aria-expanded="false"/);
+    assert.doesNotMatch(html, /private-input|other tool available|HTTP 503/);
+  }
+});
+
+test("background failures distinguish a process timeout, a wait timeout and a nonzero exit", () => {
+  const tool = { ...search, name: "background_process", title: "Failed to use background process", status: "failed" };
+  const failure = (text: string) => ({ ...tool, content: [{ type: "text", text }] });
+  assert.equal(toolLabel(failure("failed: tool error: process timed out after 120 seconds")), "Background task timed out after 120 seconds");
+  assert.equal(toolLabel(failure("failed: process exited with code 7")), "Background task exited with code 7");
+  assert.equal(toolLabel({ ...failure("tool error: background wait timed out after 5 seconds"), name: "background_wait" }), "Wait timed out after 5 seconds");
+  assert.equal(toolLabel({ ...failure(JSON.stringify({state: "completed", outcome: { exit_code: 3 }})), name: "background_wait" }), "Background task exited with code 3");
+});
+
 test("fetch rows and failed tools are plain summaries without expandable raw payloads", () => {
   for (const tool of [
     { ...fetch, status: "completed", content: [{ text: "RAW_PAGE_HTML_AND_SCRIPT" }] },

@@ -7,6 +7,9 @@ settings presentation. Desktop consumes these components through preserved
 renderer re-exports. Hosted applications consume the same committed artifact.
 Image tool cards show a reason when the host identifies a gateway or verification
 failure. Older generic gateway failures retain a neutral completion message.
+Failed local command cards show the exit code or a recorded timeout. Expanding
+a card reveals the bounded diagnostic and captured standard error and output.
+Saved background task rows recover their failure reason from the recorded state.
 The transcript opens the **Thinking** panel during live reasoning and collapses
 it when the reply moves on to text or a tool call, or the turn ends. Hosts can
 supply `ClientTimelineItem.reasoningDurationMs` for the collapsed

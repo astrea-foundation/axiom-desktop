@@ -84,6 +84,13 @@ pub(crate) fn describe_tool(
         "run_command" => describe_command(arguments, phase, cwd, CommandKind::Foreground),
         "run_shell" => describe_command(arguments, phase, cwd, CommandKind::Shell),
         "start_background" => describe_command(arguments, phase, cwd, CommandKind::Background),
+        "background_process" => phased(
+            phase,
+            "Background task running",
+            "Background task finished",
+            "Background task failed",
+        )
+        .into(),
         "background_list" => phased(
             phase,
             "Checking background tasks",

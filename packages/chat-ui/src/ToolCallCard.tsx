@@ -2,7 +2,7 @@
 import { ChevronDown, Globe2, Image as ImageIcon, LoaderCircle, RotateCcw, Search, Wrench, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ToolActivity } from "@axiom/chat-core/viewTypes";
-import { imageRequestSummary, isFetchTool, isImageGenerationTool, redactToolText, toolFailed, toolImageProgress, toolLabel, toolName, toolSearchSources, viewedImageId } from "./toolPresentation";
+import { imageRequestSummary, isFetchTool, isImageGenerationTool, isLocalProcessTool, localProcessOutput, redactToolText, toolFailed, toolImageProgress, toolLabel, toolName, toolSearchSources, viewedImageId } from "./toolPresentation";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import { LoadProgressBar } from "./LoadProgressBar";
 import { ImageRequestDetails, ViewedImageDetails } from "./ImageToolDetails";
@@ -131,8 +131,29 @@ function safeDetail(value: unknown): string {
     },
     2,
   ) ?? String(value);
-  const text = redactToolText(serialized);
+  return boundedDetail(serialized);
+}
+
+function boundedDetail(value: string): string {
+  const text = redactToolText(value);
   return text.length > MAX_DETAIL_CHARS ? `${text.slice(0, MAX_DETAIL_CHARS)}\n… truncated` : text;
+}
+
+function processFailureDetail(tool: ToolActivity): string {
+  const output = localProcessOutput(tool);
+  const sections: string[] = [];
+  if (typeof output === "string") {
+    if (output) sections.push(output);
+  } else {
+    if (typeof output.state === "string") sections.push(output.state);
+    else if (typeof output.exit_code === "number") sections.push(`Exit code ${output.exit_code}`);
+    else if (output.exit_code === null) sections.push("Process ended without an exit code.");
+    // Background snapshots carry live stdout/stderr even if the process never returned an outcome.
+    if (typeof output.stderr === "string" && output.stderr) sections.push(`Standard error\n${output.stderr}`);
+    if (typeof output.stdout === "string" && output.stdout) sections.push(`Standard output\n${output.stdout}`);
+    if (output.truncated === true) sections.push("Process output was truncated.");
+  }
+  return boundedDetail(sections.join("\n\n"));
 }
 
 function toolIcon(tool: ToolActivity) {
@@ -148,7 +169,7 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
   const host = useChatHost();
   const [open, setOpen] = useState(false);
   const detailsId = useId();
-  const label = toolLabel(tool);
+  const label = useMemo(() => toolLabel(tool), [tool]);
   const progress = toolImageProgress(tool);
   const sources = useMemo(() => toolSearchSources(tool), [tool]);
   const images = isImageGenerationTool(tool) && tool.status === "completed"
@@ -160,11 +181,17 @@ export function ToolCallCard({ tool, threadId, responseActive = false }: { tool:
   const viewedImage = toolFailed(tool) ? null : viewedImageId(tool);
   const imageDetails = imageRequest !== null || viewedImage !== null;
   const rawDetails = !isImageGenerationTool(tool) && toolName(tool) !== "view_image";
-  const hasDetails = imageDetails || (rawDetails && !isFetchTool(tool) && (!toolFailed(tool) || !!remoteHost)
-    && (tool.input != null || tool.content.length > 0 || tool.locations.length > 0));
+  const failedProcess = toolFailed(tool) && isLocalProcessTool(tool);
+  const hasDetails = imageDetails || (failedProcess && tool.content.length > 0)
+    || (rawDetails && !isFetchTool(tool) && (!toolFailed(tool) || !!remoteHost)
+      && (tool.input != null || tool.content.length > 0 || tool.locations.length > 0));
   const details = useMemo(
-    () => open && hasDetails && rawDetails && !sources ? safeDetail({ input: tool.input, output: tool.content.map(c=>imageBlock(c) ? {type:"image",mimeType:"image/png"} : c), locations: tool.locations }) : "",
-    [tool, open, hasDetails, rawDetails, sources],
+    () => {
+      if (!open || !hasDetails || !rawDetails || sources) return "";
+      if (failedProcess) return processFailureDetail(tool);
+      return safeDetail({ input: tool.input, output: tool.content.map(c=>imageBlock(c) ? {type:"image",mimeType:"image/png"} : c), locations: tool.locations });
+    },
+    [tool, open, hasDetails, rawDetails, sources, failedProcess],
   );
   const outputSize = images.find((image) => image.width && image.height);
   const rowClass = "flex min-h-8 max-w-full items-center gap-2 rounded-md px-1.5 py-1 text-left leading-5 text-[var(--color-text-secondary)]";
