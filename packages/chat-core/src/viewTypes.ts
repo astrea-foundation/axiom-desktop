@@ -150,6 +150,7 @@ export interface RequestUsage {
   requestId: string;
   modelId: string;
   providerId: string;
+  billingModel?: { providerId: string; modelId: string; modelName: string } | null;
   contextWindowTokens?: number | null;
   autoCompactThresholdTokens?: number | null;
   turnId?: string | null;

@@ -228,6 +228,10 @@ request, with input/output tokens, model, time and optional pinned capacity/
 compaction threshold. It is persisted atomically with thread revision. It does
 not estimate unsent drafts, sum billing, or get overwritten by compaction/title
 work. Request-accounting reconciliation never marks partial output verified.
+Request usage can include an optional `billingModel` with `providerId`,
+`modelId`, and `modelName` for image generation. The enclosing `providerId`
+and `modelId` identify the worker model for matching during recovery. Records
+from older clients and servers can omit the billing model.
 
 `imageResources@1` replaces generated image bytes in live updates and saved
 Desktop timeline pages with conversation-owned descriptors. `_axiom/image/read`

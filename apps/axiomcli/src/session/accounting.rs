@@ -82,6 +82,9 @@ impl SessionStore {
                 continue;
             }
             local.provider_id.clone_from(&snapshot.provider_id);
+            if snapshot.billing_model.is_some() {
+                local.billing_model.clone_from(&snapshot.billing_model);
+            }
             local.input_tokens.clone_from(&snapshot.input_tokens);
             local
                 .cached_input_tokens
