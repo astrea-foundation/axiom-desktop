@@ -301,10 +301,17 @@ impl AcpProcess {
 
     async fn close(mut self) {
         drop(self.stdin.take());
-        let status = tokio::time::timeout(Duration::from_secs(5), self.child.wait())
-            .await
-            .expect("ACP EOF shutdown timeout")
-            .expect("wait ACP");
+        // Keep reading notifications queued before EOF so the child can flush
+        // its bounded stdout pipe and exit.
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::try_join!(self.child.wait(), async {
+                while self.stdout.next_line().await?.is_some() {}
+                Ok(())
+            })
+        })
+        .await
+        .expect("ACP EOF shutdown timeout")
+        .expect("wait ACP and drain stdout");
         assert!(status.success());
     }
 }

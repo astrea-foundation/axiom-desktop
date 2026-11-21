@@ -152,6 +152,7 @@ pub async fn run(arguments: Arguments, auth: &AuthManager) -> Result<()> {
         BillingCommand::Usage { period, timezone } => Action::Usage {
             period: Some(period),
             timezone: Some(timezone),
+            allowance_only: None,
         },
         BillingCommand::Subscribe {
             id,

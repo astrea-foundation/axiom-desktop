@@ -36,6 +36,12 @@ pub enum AxiomError {
     Storage(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("The credit card processor is temporarily unavailable.")]
+    CardProcessorUnavailable,
+    #[error(
+        "The plan purchase could not be confirmed. Refresh billing and review your balance and plan details."
+    )]
+    BalancePlanConflict,
     #[error("operation cancelled")]
     Cancelled,
     #[error(transparent)]

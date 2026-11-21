@@ -9,11 +9,11 @@ import { CryptoIcon, cryptoName, cryptoNetwork, cryptoSymbol } from "./CryptoIco
 import { CryptoCurrencyPicker } from "./CryptoCurrencyPicker";
 import { CryptoDepositDialog } from "./CryptoDepositDialog";
 
-export function creditAmount(value: string): number | null {
+export function creditAmount(value: string, minimum = 5_000_000, maximum = 1_000_000_000): number | null {
   if (!/^\d{1,4}(?:\.\d{1,2})?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");
   const amount = Number(whole) * 1_000_000 + Number(fraction.padEnd(2, "0")) * 10_000;
-  return amount >= 5_000_000 && amount <= 1_000_000_000 ? amount : null;
+  return amount >= minimum && amount <= maximum ? amount : null;
 }
 
 export function cryptoStatus(payment: CryptoPayment, now: number): string {
@@ -97,7 +97,7 @@ export function CryptoPaymentDetails({ payment, options, now = Date.now(), sent 
         <button type="button" onClick={() => void copy(payment.payin_extra_id!, "memo")} className="ax-pill ax-pill-button mt-2">{copied === "memo" ? "Copied" : "Copy memo"}</button></div> : null}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] leading-5 text-[var(--color-text-secondary)]">
         <p>Use {cryptoNetwork(coin!)}.</p>
-        <p className="inline-flex items-center gap-1.5"><Clock3 size={13} aria-hidden="true" />Send within <span role="timer" aria-label="Time left to send for this rate" aria-live="off" className="font-medium tabular-nums">{timeLeft}</span> for this rate.</p>
+        <p className="inline-flex items-center gap-1.5"><Clock3 size={13} aria-hidden="true" /><span>Send within <span role="timer" aria-label="Time left to send for this rate" aria-live="off" className="font-medium tabular-nums">{timeLeft}</span> for this rate.</span></p>
       </div>
     </> : null}
     <div className="flex justify-between gap-3 border-t border-[var(--color-border)] pt-4"><span className="text-[var(--color-text-secondary)]">Payment value</span><span className="font-medium tabular-nums">{usdFromMicrousd(payment.amount_microusd, 2)}</span></div>
@@ -125,6 +125,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   const [now, setNow] = useState(Date.now);
   const form = useRef<HTMLFormElement>(null);
   const generation = useRef(0);
+  const optionsRequest = useRef(0);
   const intent = useRef<CreateCryptoPaymentRequest | null>(null);
   const pending = useRef(false);
   const credited = useRef(new Set<string>());
@@ -135,6 +136,21 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   const checkoutRevision = useRef(0);
   selectedRef.current = selected;
   sentRef.current = sentPayments;
+  const selectedCurrency = options?.currencies.find((currency) => currency.code === coin);
+  const networkMinimum = selectedCurrency?.min_amount_microusd ?? undefined;
+  const minimum = networkMinimum ?? options?.min_amount_microusd ?? 5_000_000;
+  const maximum = options?.max_amount_microusd ?? 1_000_000_000;
+  const amountValue = creditAmount(amount, minimum, maximum);
+  function refreshCryptoOptions() {
+    const current = generation.current;
+    const request = ++optionsRequest.current;
+    const api = window.axiomDesktop?.agent;
+    if (connected && api?.cryptoOptions) void api.cryptoOptions(accountId).then(({options: value}) => {
+      if (current !== generation.current || request !== optionsRequest.current) return;
+      setOptions(value);
+      setCoin((previous) => intent.current || value.currencies.some((c) => c.code === previous) ? previous : "");
+    }).catch(() => {});
+  }
   useEffect(() => {
     generation.current++;
     setOptions(null); setOpen(false); setPayments([]); setSelected(null); setError(null); setDepositClosed(false);
@@ -143,14 +159,10 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
     setSentPayments(sentPaymentIds(accountId)); setRenewal(null); setRateUpdatedId(null);
   }, [accountId]);
   useEffect(() => {
-    const current = ++generation.current;
+    generation.current++;
     setBusy(false); pending.current = false;
     setRenewal((previous) => previous?.busy ? {...previous, busy: false, failed: true} : previous);
-    const api = window.axiomDesktop?.agent;
-    if (connected && api?.cryptoOptions) void api.cryptoOptions(accountId).then(({options: value}) => {
-      if (current !== generation.current) return;
-      setOptions(value); setCoin((previous) => value.currencies.some((c) => c.code === previous) ? previous : "");
-    }).catch(() => {});
+    refreshCryptoOptions();
     return () => { generation.current++; };
   }, [accountId, connected]);
 
@@ -261,8 +273,8 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   };
   const create = async () => {
     const api = window.axiomDesktop?.agent;
-    const value = creditAmount(amount);
-    if (!api || !connected || !value || !coin || pending.current) return;
+    const value = intent.current?.amountMicrousd ?? amountValue;
+    if (!api || !connected || value === null || (!intent.current && !selectedCurrency) || pending.current) return;
     intent.current ??= {id: crypto.randomUUID(), amountMicrousd: value, payCurrency: coin};
     const current = generation.current;
     pending.current = true; setBusy(true); setError(null); setDepositClosed(false);
@@ -275,7 +287,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
       const message = desktopErrorMessage(failure, "Could not confirm payment. Retry safely.");
       if (message.includes("5 active invoices")) intent.current = null;
       setError(message);
-      if (message.includes("Increase the amount")) intent.current = null;
+      if (message.includes("Increase the amount")) { intent.current = null; refreshCryptoOptions(); }
     } }
     finally { if (generation.current === current) { pending.current = false; setBusy(false); } }
   };
@@ -292,7 +304,7 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
   return <>
     {!collapseDirect && payment ? <DepositPanel payment={payment} connected={connected} quote={quote} discountBps={options?.zcash_discount_bps ?? 0} /> : null}
     {options?.enabled && options.currencies.length ? <section className="mt-5 text-[13px]" aria-label="Crypto currencies">
-      <button type="button" aria-label="Choose a currency" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}
+      <button type="button" aria-label="Choose a currency" aria-haspopup="dialog" aria-expanded={open} onClick={() => { refreshCryptoOptions(); setOpen(true); }}
         className="group flex w-full items-center justify-between gap-4 rounded-2xl border border-[var(--color-border)] bg-[var(--surface-tile)] px-4 py-4 text-left transition-[border-color,background-color,transform] hover:border-[var(--color-border-strong)] hover:bg-[var(--surface-card-hover)] active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2">
         <span className="font-medium">Choose a currency</span>
         <span aria-hidden="true" className="flex items-center gap-3"><span className="flex -space-x-1.5">
@@ -303,34 +315,39 @@ export function FundingPanel({ accountId, connected, payment, quote, onRefreshBi
       {open ? <CryptoDepositDialog onClose={() => setOpen(false)}>
         {payments.some(value => value.active !== undefined) && <p className="mb-4 text-[12px] text-[var(--color-text-secondary)]">{activeCount} of 5 active invoices. Cancel an invoice to make room.</p>}
         {selected ? <><CryptoPaymentDetails payment={selected} options={options} now={now} sent={sent} refreshing={refreshing} rateUpdated={rateUpdatedId === selected.id} />
-          {selected.active === true && <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "cancel")}>Cancel invoice</button>}
-          {selected.quote_id && <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "check")}>Check payment status</button>}
-          {selected.status === "cancelled" && <p className="text-[12px] text-[var(--color-text-secondary)]">This invoice is cancelled. Any transfer already sent will still be processed.</p>}
-
-          {rateExpired && !sent && !refreshing ? <div className="mt-4 space-y-3">
-            {renewal?.failed ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">Couldn’t refresh the rate.</p> : null}
-            <button type="button" className="ax-pill ax-pill-button w-full justify-center" disabled={!connected} onClick={() => void renewQuote()}>Retry quote</button>
-          </div> : null}
-          <div className="mt-5 flex gap-2">
-            {awaitingQuote(selected) && !sent ? <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" onClick={markSent}>I’ve sent it</button> : null}
-            <button type="button" className="ax-pill ax-pill-button flex-1 justify-center" disabled={busy} onClick={() => { checkoutRevision.current++; setSelected(null); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(false); }}>New payment</button>
+          {selected.status === "cancelled" ? <p className="mt-3 text-[12px] leading-5 text-[var(--color-text-secondary)]">This invoice is cancelled. Any transfer already sent will still be processed.</p> : null}
+          {rateExpired && !sent && !refreshing && renewal?.failed ? <p role="alert" className="mt-3 text-[12px] leading-5 text-[var(--color-danger-strong)]">Couldn’t refresh the rate.</p> : null}
+          {/* One evenly spaced action grid: buttons pair up two per row and a lone last button spans the row. */}
+          <div className="mt-5 flex flex-wrap gap-2">
+            {rateExpired && !sent && !refreshing ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_100%] justify-center" disabled={!connected} onClick={() => void renewQuote()}>Retry quote</button> : null}
+            {selected.active === true ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "cancel")}>Cancel invoice</button> : null}
+            {selected.quote_id ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" disabled={!connected || busy} onClick={() => void invoiceAction(selected, "check")}>Check payment status</button> : null}
+            {awaitingQuote(selected) && !sent ? <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" onClick={markSent}>I’ve sent it</button> : null}
+            <button type="button" className="ax-pill ax-pill-button flex-[1_1_40%] justify-center" disabled={busy} onClick={() => { checkoutRevision.current++; setSelected(null); intent.current = null; setError(null); setRenewal(null); setRateUpdatedId(null); setDepositClosed(false); }}>New payment</button>
           </div></> :
           <form ref={form} className="space-y-5" onSubmit={(e) => { e.preventDefault(); void create(); }}>
             {depositClosed ? <p role="status" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Deposit closed. Funds already sent will still be processed.</p> : null}
             <div><CryptoCurrencyPicker currencies={options.currencies} value={coin} disabled={!connected || busy || !!intent.current}
               onChange={(value) => { intent.current = null; setCoin(value); setError(null); setDepositClosed(false); }} />
             </div>
-            <CryptoNetworkWarning coin={options.currencies.find((c) => c.code === coin)} currencies={options.currencies} />
+            <CryptoNetworkWarning coin={selectedCurrency} currencies={options.currencies} />
             <div><label htmlFor={`crypto-amount-${accountId}`} className="mb-2 block text-[12px] font-medium text-[var(--color-text-secondary)]">Amount (USD)</label>
               <div className="flex min-h-14 items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--wash-row)] px-3.5 transition-colors focus-within:border-[var(--color-border-accent)]">
                 <span aria-hidden="true" className="text-[16px] text-[var(--color-text-tertiary)]">$</span>
                 <input id={`crypto-amount-${accountId}`} className="min-w-0 flex-1 bg-transparent py-3 text-[18px] font-medium tabular-nums outline-none disabled:opacity-40" inputMode="decimal" value={amount} disabled={!connected || busy || !!intent.current} maxLength={7}
-                  aria-invalid={creditAmount(amount) === null} onChange={(e) => { intent.current = null; setAmount(e.target.value); setError(null); setDepositClosed(false); }} />
+                  aria-invalid={amountValue === null} aria-describedby={selectedCurrency ? `crypto-minimum-${accountId}` : undefined}
+                  onChange={(e) => { intent.current = null; setAmount(e.target.value); setError(null); setDepositClosed(false); }} />
                 <span aria-hidden="true" className="text-[11px] text-[var(--color-text-tertiary)]">USD</span>
               </div>
-              {creditAmount(amount) === null ? <p className="mt-2 text-[12px] text-[var(--color-danger-strong)]">Enter $5–$1,000.</p> : null}
+              {selectedCurrency && <p id={`crypto-minimum-${accountId}`} className="mt-2 text-[12px] text-[var(--color-text-secondary)]">
+                {minimum > maximum
+                  ? `The current network minimum exceeds ${usdFromMicrousd(maximum, 2)}. Choose another currency.`
+                  : networkMinimum === undefined
+                    ? `Axiom minimum ${usdFromMicrousd(minimum, 2)}. The network minimum is checked when you request payment details.`
+                    : `Current minimum ${usdFromMicrousd(networkMinimum, 2)}. Maximum ${usdFromMicrousd(maximum, 2)}.`}
+              </p>}
             </div>
-            <button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-cherry)] px-4 py-3 text-[13px] font-medium text-on-accent transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.98] disabled:opacity-35" disabled={!connected || busy || !coin || creditAmount(amount) === null || (!intent.current && activeCount >= 5)}>
+            <button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-cherry)] px-4 py-3 text-[13px] font-medium text-on-accent transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.98] disabled:opacity-35" disabled={!connected || busy || (!intent.current && (!selectedCurrency || amountValue === null || activeCount >= 5))}>
               {busy ? "Creating…" : intent.current ? "Retry" : "Create payment"}<ArrowRight size={15} aria-hidden="true" />
             </button>
           </form>}

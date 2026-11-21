@@ -91,11 +91,29 @@ export type CreditBillingAction =
       kind: "plans";
     }
   | {
+      kind: "balance_plan_options";
+    }
+  | {
+      id: string;
+      plan_key: string;
+      catalog_version: string;
+      coverage_end_on: string;
+      renewal_consent_version: string;
+      renewal_consent_accepted: boolean;
+      kind: "purchase_balance_plan";
+    }
+  | {
+      id: string;
+      enabled: boolean;
+      kind: "set_balance_plan_renewal";
+    }
+  | {
       kind: "prices";
     }
   | {
       period?: string | null;
       timezone?: string | null;
+      allowance_only?: boolean | null;
       kind: "usage";
     }
   | {
@@ -174,6 +192,21 @@ export type CreditBillingResult =
   | {
       kind: "plans";
       value: SubscriptionPlans;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "balance_plan_options";
+      value: BalancePlanOptions | null;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "balance_plan_purchase";
+      value: BalancePlanPurchase;
+      [k: string]: unknown;
+    }
+  | {
+      kind: "balance_plan_renewal";
+      value: BalancePlanRenewal;
       [k: string]: unknown;
     }
   | {
@@ -1229,6 +1262,28 @@ export interface SubscriptionPlan {
   weekly_units: string;
   version: string;
 }
+export interface BalancePlanOptions {
+  catalog: SubscriptionPlans;
+  balance_subscription_id?: string | null;
+  renewal_consent_version: string;
+  renewal_authorized: boolean;
+  renewal_failure?: string | null;
+  coverage_end_on?: string | null;
+  completion_reserved_units: string;
+}
+export interface BalancePlanPurchase {
+  id: string;
+  subscription_id: string;
+  plan_key: string;
+  amount_cents: number;
+  period_start: string;
+  period_end: string;
+}
+export interface BalancePlanRenewal {
+  id: string;
+  enabled: boolean;
+  paid_through_at: string;
+}
 export interface CreditPrices {
   scale: string;
   reference_microusd_per_credit: number;
@@ -1321,7 +1376,7 @@ export interface CardFundingPayment {
   cancel_requested: boolean;
 }
 export interface CryptoOptionsRequest {
-  [k: string]: unknown;
+  includeMinimums?: boolean | null;
 }
 export interface CryptoOptionsResponse {
   options: CryptoOptions;
@@ -1341,6 +1396,7 @@ export interface CryptoCurrency {
   code: string;
   name: string;
   network: string;
+  min_amount_microusd?: number | null;
 }
 export interface CreateCryptoPaymentRequest {
   id: string;

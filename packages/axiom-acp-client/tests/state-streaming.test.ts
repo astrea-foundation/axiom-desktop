@@ -473,3 +473,24 @@ test("tool-call drafting shows only for the running turn and the validated call 
   store.setRunning("thread", false);
   assert.equal(store.snapshot().sessions.thread!.toolCallDraftTurnId, null, "an ended turn cannot leave a draft row");
 });
+
+test("a turn that ends updates the listed thread, so the sidebar stops showing it as running", () => {
+  const store = new AxiomStateStore();
+  const running = page(1, "partial");
+  store.replaceTimeline([running]);
+  // Renaming or deleting any thread reloads the list, here in the middle of a turn.
+  store.setCatalog([{ ...running.thread }]);
+  assert.equal(store.snapshot().catalog[0]!.lifecycle, "running");
+  store.setRunning("thread", false);
+  const finished = page(2, "The answer");
+  finished.thread.lifecycle = "ready";
+  store.replaceTimeline([finished]);
+  const state = store.snapshot();
+  assert.equal(state.sessions.thread!.running, false);
+  assert.equal(state.catalog[0]!.lifecycle, "ready");
+  assert.equal(state.catalog[0]!.revision, 2);
+  // A list that answers late with the older summary cannot restart the session.
+  store.setCatalog([{ ...running.thread }]);
+  assert.equal(store.snapshot().sessions.thread!.running, false);
+  assert.equal(store.snapshot().sessions.thread!.threadRevision, 2);
+});

@@ -1,6 +1,6 @@
 /** @jsxRuntime automatic */
 import { Check, FileText, Image, Search, X } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ProviderModel } from "./types";
 import { ModelBrandIcon } from "./ModelBrandIcon";
@@ -87,6 +87,7 @@ const CAPABILITIES: Record<ModelCapability, { label: string; summary: string; Ic
 const chipBase = "flex shrink-0 items-center transition-colors disabled:cursor-default disabled:opacity-40";
 const chipActive = "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile";
 const chipIdle = "text-[var(--color-text-tertiary)] enabled:hover:bg-[var(--color-bg-surface-hover)] enabled:hover:text-[var(--color-text-secondary)] shadow-[inset_0_0_0_1px_var(--color-border)]";
+const rowTag = "model-tag-pill max-w-full truncate rounded-full px-1.5 text-[9.5px] leading-[15px] font-medium";
 
 function ModelRow({ model, selected, unavailable, onSelect }: {
   model: ProviderModel;
@@ -94,21 +95,19 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
   unavailable: boolean;
   onSelect: (modelId: string) => void;
 }) {
+  const rowId = useId();
+  const [tagsExpanded, setTagsExpanded] = useState(false);
   const pricing = formatModelPricing(model);
   const tags = model.tags ?? [];
-  const hiddenTags = tags.length - MAX_ROW_TAGS;
+  const extraTags = tags.slice(MAX_ROW_TAGS);
+  const extraTagsId = `${rowId}-extra-tags`;
+  const priceId = `${rowId}-price`;
   const dimmed = unavailable ? "opacity-45 grayscale" : "";
   return (
-    <button
-      type="button"
-      title={unavailable ? "Temporarily unavailable" : model.model}
-      aria-current={selected ? "true" : undefined}
-      disabled={unavailable}
-      data-model-unavailable={unavailable ? "true" : undefined}
-      onClick={() => onSelect(model.id)}
-      className="model-row group/model flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition-colors enabled:hover:bg-[var(--color-bg-surface-hover)]/70 disabled:cursor-not-allowed"
+    <div
+      className={`model-row group/model relative isolate flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 transition-colors ${unavailable ? "" : "hover:bg-[var(--color-bg-surface-hover)]/70"}`}
     >
-      <span className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors group-enabled/model:group-hover/model:border-[var(--color-border-strong)] ${dimmed}`}>
+      <span aria-hidden="true" className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] text-[var(--color-text-secondary)] transition-colors ${unavailable ? dimmed : "group-hover/model:border-[var(--color-border-strong)]"}`}>
         <ModelBrandIcon model={model} className="h-[14px] w-[14px]" />
         {selected ? (
           <span className="absolute -bottom-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-brand text-white ring-2 ring-[var(--surface-tile)]">
@@ -116,33 +115,55 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
           </span>
         ) : null}
       </span>
-      <span className={`min-w-0 flex-1 ${dimmed}`}>
-        <span className="block truncate text-[12.5px] font-medium text-[var(--color-text-primary)]">
-          {model.label}
-          <span className="ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
-            {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
-            {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
+      <span className="min-w-0 flex-1">
+        <button
+          type="button"
+          title={unavailable ? "Temporarily unavailable" : model.model}
+          aria-current={selected ? "true" : undefined}
+          aria-describedby={priceId}
+          disabled={unavailable}
+          data-model-unavailable={unavailable ? "true" : undefined}
+          onClick={() => onSelect(model.id)}
+          className="model-row-select block max-w-full text-left disabled:cursor-not-allowed"
+        >
+          <span className={`block truncate text-[12.5px] font-medium text-[var(--color-text-primary)] ${dimmed}`}>
+            {model.label}
+            <span className="relative z-[1] ml-1.5 inline-flex gap-1 align-middle text-[var(--color-text-tertiary)]">
+              {model.supportsImages ? <span role="img" aria-label="Image uploads" title="Image uploads"><Image size={13} aria-hidden="true" /></span> : null}
+              {model.fileMimeTypes?.length ? <span role="img" aria-label="File uploads" title="File uploads"><FileText size={13} aria-hidden="true" /></span> : null}
+            </span>
           </span>
-        </span>
+        </button>
         {tags.length ? (
-          <span className="mt-0.5 flex min-w-0 gap-[3px] overflow-hidden whitespace-nowrap">
-            {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
-              <span key={tag.id} className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-medium">
-                {tag.label}
-              </span>
-            ))}
-            {hiddenTags > 0 ? (
-              <span
-                title={tags.slice(MAX_ROW_TAGS).map((tag) => tag.label).join(", ")}
-                className="model-tag-pill inline-flex h-[15px] shrink-0 items-center rounded-full px-1.5 text-[9.5px] font-medium"
-              >
-                +{hiddenTags}
+          <>
+            <span className="mt-0.5 flex flex-wrap items-center gap-[3px]">
+              {tags.slice(0, MAX_ROW_TAGS).map((tag) => (
+                <span key={tag.id} className={`${rowTag} ${dimmed}`}>{tag.label}</span>
+              ))}
+              {extraTags.length ? (
+                <button
+                  type="button"
+                  aria-expanded={tagsExpanded}
+                  aria-controls={extraTagsId}
+                  aria-label={`${tagsExpanded ? "Hide" : "Show"} ${extraTags.length} extra ${extraTags.length === 1 ? "tag" : "tags"} for ${model.label}`}
+                  onClick={() => setTagsExpanded((expanded) => !expanded)}
+                  className={`${rowTag} model-tag-overflow relative z-[1] min-w-6`}
+                >
+                  {tagsExpanded ? "−" : "+"}{extraTags.length}
+                </button>
+              ) : null}
+            </span>
+            {extraTags.length ? (
+              <span id={extraTagsId} className={tagsExpanded ? "mt-[3px] flex flex-wrap gap-[3px]" : "hidden"}>
+                {extraTags.map((tag) => (
+                  <span key={tag.id} className={`${rowTag} ${dimmed}`}>{tag.label}</span>
+                ))}
               </span>
             ) : null}
-          </span>
+          </>
         ) : null}
       </span>
-      <span className="w-[8.25rem] shrink-0 text-right">
+      <span id={priceId} className="w-[8.25rem] max-w-[42%] shrink-0 text-right">
         {unavailable ? (
           <span className="block text-[10px] text-[var(--color-text-muted)]">
             Temporarily unavailable
@@ -162,7 +183,7 @@ function ModelRow({ model, selected, unavailable, onSelect }: {
           </span>
         )}
       </span>
-    </button>
+    </div>
   );
 }
 

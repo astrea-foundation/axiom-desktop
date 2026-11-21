@@ -67,15 +67,19 @@ export function SidebarContextMenu({ target, onClose, onRename, onDelete }: {
       if (event.type === "pointerdown" && target.fromMenuButton && target.trigger.contains(event.target as Node)) return;
       if (!menu.contains(event.target as Node)) onClose();
     };
+    const rowScrolled = (event: Event) => {
+      // Incoming deltas scroll the transcript, not the row this menu belongs to.
+      if (event.target instanceof Node && event.target.contains(target.trigger)) onClose();
+    };
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("contextmenu", outside, true);
-    document.addEventListener("scroll", outside, true);
+    document.addEventListener("scroll", rowScrolled, true);
     window.addEventListener("resize", onClose);
     window.addEventListener("blur", onClose);
     return () => {
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("contextmenu", outside, true);
-      document.removeEventListener("scroll", outside, true);
+      document.removeEventListener("scroll", rowScrolled, true);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("blur", onClose);
     };

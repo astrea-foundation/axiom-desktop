@@ -3,6 +3,7 @@ import { agentApi, type AgentApi } from "./agent-api";
 import { proxyApi } from "./proxy-api";
 import type { ProxyApi } from "../shared/proxy";
 import type { UpdatesApi } from "../shared/updates";
+import type { InterfaceSizeApi } from "../shared/interface-size";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
@@ -18,6 +19,7 @@ export type DesktopApi = {
   isFocused: () => Promise<boolean>;
   onActiveChange: (callback: (active: boolean) => void) => () => void;
   setTheme: (preference: "light" | "dark" | "system", resolved: "light" | "dark") => void;
+  interfaceSize: InterfaceSizeApi;
   astreaBanner: {
     claim: () => Promise<boolean>;
   };
@@ -79,6 +81,15 @@ const api: DesktopApi = {
   isFocused: () => ipcRenderer.invoke("window:isFocused"),
   setTheme: (preference, resolved) => {
     ipcRenderer.send("window:set-theme", preference, resolved);
+  },
+  interfaceSize: {
+    get: () => ipcRenderer.invoke("interface-size:get"),
+    set: (size) => ipcRenderer.invoke("interface-size:set", size),
+    onChange: (callback) => {
+      const listener = (_event: unknown, state: Parameters<typeof callback>[0]) => callback(state);
+      ipcRenderer.on("interface-size:changed", listener);
+      return () => ipcRenderer.removeListener("interface-size:changed", listener);
+    },
   },
   onActiveChange: (callback) => {
     const listener = (_event: unknown, active: boolean) => {

@@ -2,6 +2,9 @@ import { ArrowUpRight, LogIn, LogOut, RefreshCw, UserRound } from "lucide-react"
 import { useId, useState } from "react";
 import type { AccountStatus } from "@axiom/axiom-acp-client";
 import { useTheme, type ThemePreference } from "../lib/theme";
+import { useInterfaceSize } from "../lib/interfaceSize";
+import { isMac } from "../lib/window-chrome";
+import { INTERFACE_SIZES } from "../../../shared/interface-size";
 import { SettingsLayout } from "@axiom/chat-ui/SettingsLayout";
 import { SettingsPanel, type SettingsCategory } from "./SettingsPanel";
 import { UsagePanel } from "./UsagePanel";
@@ -50,6 +53,7 @@ export function SettingsSheet({
   const [category, setCategory] = useState<SettingsCategory>(initialCategory);
   const id = useId();
   const theme = useTheme();
+  const interfaceSize = useInterfaceSize();
   const signedIn = account?.state === "valid";
   const accountView = accountPresentation(connected, true, account);
   const preparingAccount = accountView.kind === "starting";
@@ -109,6 +113,52 @@ export function SettingsSheet({
                 ))}
               </div>
             </div>
+            {interfaceSize ? (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-4 rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4 text-[13px]">
+                <div>
+                  <h3 className="font-medium text-[var(--color-text-primary)]">Interface size</h3>
+                  <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">Scales text and controls together. Also {isMac ? "⌘" : "Ctrl"} + and {isMac ? "⌘" : "Ctrl"} −.</p>
+                </div>
+                <div
+                  className="flex gap-1 rounded-[8px] bg-[var(--surface-track)] p-0.5"
+                  role="radiogroup"
+                  aria-label="Interface size"
+                  onKeyDown={(event) => {
+                    const current = INTERFACE_SIZES.indexOf(interfaceSize.size);
+                    const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
+                      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+                    const target = event.key === "Home" ? 0
+                      : event.key === "End" ? INTERFACE_SIZES.length - 1
+                      : step ? (current + step + INTERFACE_SIZES.length) % INTERFACE_SIZES.length : -1;
+                    const next = target < 0 ? undefined : INTERFACE_SIZES[target];
+                    if (!next) return;
+                    event.preventDefault();
+                    interfaceSize.setSize(next);
+                    (event.currentTarget.children[target] as HTMLElement | undefined)?.focus();
+                  }}
+                >
+                  {INTERFACE_SIZES.map((size) => (
+                    <button
+                      key={size}
+                      type="button"
+                      role="radio"
+                      aria-checked={interfaceSize.size === size}
+                      aria-label={size === interfaceSize.defaultSize ? `${size}%, default` : `${size}%`}
+                      tabIndex={interfaceSize.size === size ? 0 : -1}
+                      onClick={() => interfaceSize.setSize(size)}
+                      className={[
+                        "rounded-[6px] px-2.5 py-1 text-[12.5px] tabular-nums transition-colors",
+                        interfaceSize.size === size
+                          ? "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile"
+                          : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+                      ].join(" ")}
+                    >
+                      {size}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </SettingsPanel>
 
           <SettingsPanel category="account" active={category} idPrefix={id}>

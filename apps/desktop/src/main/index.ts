@@ -15,6 +15,7 @@ import { desktopMcpRequest } from "./desktop-mcp-settings";
 import { agentRevision, desktopAgentRequest } from "./desktop-agent-settings";
 import { requirePaymentAccount, resolveServiceOrigins, STAGING_API_ORIGIN } from "./service-origins";
 import { platformWindowChrome } from "./window-chrome";
+import { InterfaceSizeController } from "./interface-size";
 import { installMacCli } from "./install-cli";
 import { APP_ID, APP_NAME, setLinuxDesktopIdentity } from "../../scripts/desktop-identity.mjs";
 import { UpdateService } from "./update-service";
@@ -536,6 +537,12 @@ function installApplicationMenu(): void {
   ]));
 }
 
+let interfaceSizeController: InterfaceSizeController | undefined;
+/** Created on first use, after the profile's userData path is final. */
+function interfaceSize(): InterfaceSizeController {
+  return interfaceSizeController ??= new InterfaceSizeController(app.getPath("userData"), PLATFORM_PREVIEW ?? process.platform);
+}
+
 function createWindow(): BrowserWindow {
   const iconPath = join(__dirname, "../../resources/icon.png");
   const icon = nativeImage.createFromPath(iconPath);
@@ -548,8 +555,8 @@ function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
-    minWidth: 960,
-    minHeight: 640,
+    minWidth: interfaceSize().minimumSize.width,
+    minHeight: interfaceSize().minimumSize.height,
     backgroundColor: nativeTheme.shouldUseDarkColors ? BACKGROUND_DARK : BACKGROUND,
     ...platformWindowChrome(process.platform),
     autoHideMenuBar: true,
@@ -561,11 +568,14 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Sizes the first paint; the controller keeps later documents in step.
+      zoomFactor: interfaceSize().zoomFactor,
       additionalArguments: PLATFORM_PREVIEW ? [`--axiom-platform-preview=${PLATFORM_PREVIEW}`] : [],
     },
   });
 
   window.setMenuBarVisibility(false);
+  interfaceSize().attach(window);
   window.on("close", event => {
     if (shutdownStarted || allowedCloses.has(window)) { allowedCloses.delete(window); return; }
     event.preventDefault();
@@ -749,6 +759,8 @@ if (primaryInstance) void app.whenReady().then(async () => {
   ipcMain.handle("window:isFocused", (event) => {
     return BrowserWindow.fromWebContents(event.sender)?.isFocused() ?? true;
   });
+  ipcMain.handle("interface-size:get", () => interfaceSize().state);
+  ipcMain.handle("interface-size:set", (_event, size: unknown) => interfaceSize().set(size));
   ipcMain.on("window:set-theme", (event, preference: unknown, resolved: unknown) => {
     if (preference === "light" || preference === "dark" || preference === "system") {
       nativeTheme.themeSource = preference;

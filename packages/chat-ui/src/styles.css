@@ -698,6 +698,7 @@ input {
   animation: sheet-in 260ms var(--ease-out-expo);
 }
 .model-sheet .model-row { min-height: 52px; }
+.model-sheet .model-tag-overflow { min-width: 28px; min-height: 28px; }
 .action-sheet {
   position: relative; margin: 8px; margin-bottom: calc(8px + env(safe-area-inset-bottom));
   display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 16px;
@@ -728,6 +729,24 @@ input {
 .model-tag-pill {
   background: var(--wash-chip);
   color: var(--color-text-tertiary);
+}
+/* The selection button covers the row. Disclosure is a sibling above that hit area. */
+.model-row-select::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+}
+.model-row-select:focus-visible { outline: none; }
+.model-row-select:focus-visible::after,
+.model-tag-overflow:focus-visible {
+  outline: 2px solid var(--color-border-accent);
+  outline-offset: -2px;
+}
+.model-tag-overflow:hover,
+.model-tag-overflow[aria-expanded="true"] {
+  background: var(--wash-chip-hover);
+  color: var(--color-text-primary);
 }
 :root[data-theme="dark"] .brand-mono {
   filter: brightness(0) invert(1);

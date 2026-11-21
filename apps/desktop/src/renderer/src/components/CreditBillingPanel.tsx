@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, CreditCard, ExternalLink, Wallet } from "lucide-react";
-import type { AutomaticTopup, BillingOperation, CardFundingOptions, CardFundingPayment, CreditBillingAction, CreditBillingResult, CreditSummary, CreditUsage, SavedBillingCard, SubscriptionPlan } from "@axiom/axiom-acp-client";
+import type { AutomaticTopup, BalancePlanOptions, BillingOperation, CardFundingOptions, CardFundingPayment, CreditBillingAction, CreditBillingResult, CreditSummary, CreditUsage, SavedBillingCard, SubscriptionPlan } from "@axiom/axiom-acp-client";
 import { creditAmount, hasWeeklyAllowance, inputPurchasedCredit, purchasedCreditAmount } from "@axiom/chat-core/creditBalances";
 import { desktopErrorMessage } from "../signInFlow";
 import { creditAmount as paymentAmount } from "./FundingPanel";
@@ -10,6 +10,8 @@ const button = "ax-pill ax-pill-button disabled:opacity-40";
 const field = "w-full rounded-lg border border-[var(--color-border)] bg-[var(--surface-card)] px-3 py-2 text-[13px]";
 type BillingValues = { [K in CreditBillingResult["kind"]]: Extract<CreditBillingResult, {kind: K}>["value"] };
 const money = (cents: number) => usdFromMicrousd(cents * 10_000, 2);
+const planDate = (value: string) => new Intl.DateTimeFormat(undefined, {dateStyle: "medium", timeZone: "UTC"})
+  .format(new Date(value));
 function capCents(value: string): number | null {
   if (!/^(0|[1-9]\d{0,4})(\.\d{1,2})?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");
@@ -41,12 +43,17 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
 }) {
   const [summary, setSummary] = useState<CreditSummary | null>(null);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [balanceOptions, setBalanceOptions] = useState<BalancePlanOptions | null>(null);
+  const [balanceQuote, setBalanceQuote] = useState<{plan: SubscriptionPlan; endOn: string} | null>(null);
+  const [renewalConsent, setRenewalConsent] = useState(false);
+  const [renewalConfirm, setRenewalConfirm] = useState<boolean | null>(null);
+  const [planPayment, setPlanPayment] = useState<"balance" | "card">("card");
   const [options, setOptions] = useState<CardFundingOptions | null>(null);
   const [payments, setPayments] = useState<CardFundingPayment[]>([]);
   const [auto, setAuto] = useState<AutomaticTopup | null>(null);
   const [cards, setCards] = useState<SavedBillingCard[]>([]);
   const [operations, setOperations] = useState<BillingOperation[]>([]);
-  const [usage, setUsage] = useState<CreditUsage | null>(null);
+  const [usage, setUsage] = useState<CreditUsage | "unavailable" | null>(null);
   const [tab, setTab] = useState<"card" | "crypto">("card");
   const [amount, setAmount] = useState("10");
   const [threshold, setThreshold] = useState("5");
@@ -57,7 +64,8 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   const [dirty, setDirty] = useState(false);
   const [chosen, setChosen] = useState<SubscriptionPlan | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const unsupportedRef = useRef(false);
@@ -80,19 +88,22 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
       if (current !== generation.current) return;
       setSummary(s); onSummary(!!s);
       if (s?.subscription && !["creating", "pending"].includes(s.subscription.state)) retireIntent(accountId, s.subscription.id);
-      const o = await call({kind: "card_options"}, "card_options");
+      const [usageRead, optionsRead, balanceRead] = await Promise.allSettled([
+        s ? call({kind: "usage"}, "usage") : null,
+        call({kind: "card_options"}, "card_options"),
+        s ? call({kind: "balance_plan_options"}, "balance_plan_options") : null,
+      ]);
       if (current !== generation.current) return;
+      setUsage(usageRead.status === "fulfilled" ? usageRead.value : "unavailable");
+      setBalanceOptions(balanceRead.status === "fulfilled" ? balanceRead.value : null);
+      if (optionsRead.status === "rejected") throw optionsRead.reason;
+      const o = optionsRead.value;
       setOptions(o);
       if (o.enabled) {
         const p = await call({kind: "card_payments"}, "card_payments");
         if (current !== generation.current) return;
         setPayments(p);
         for (const payment of p) if (!["creating", "open", "pending"].includes(payment.status)) retireIntent(accountId, payment.id);
-      }
-      if (s) {
-        const u = await call({kind: "usage"}, "usage");
-        if (current !== generation.current) return;
-        setUsage(u);
       }
       if (s?.capabilities.card) {
         const [p, a, c, history] = await Promise.all([
@@ -107,12 +118,12 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
           setRefill(String(a.amount_cents / 100)); setCap(String(a.monthly_cap_cents / 100)); setCard(a.payment_method_id ?? "");
         }
       }
-      if (current === generation.current) setError(null);
+      if (current === generation.current) setLoadError(null);
     } catch (e) {
       if (current === generation.current) {
         if (e instanceof Error && /Restart Axiom with the updated native app/.test(e.message)) {
           unsupportedRef.current = true; setUnsupported(true); onSummary(false);
-        } else setError(desktopErrorMessage(e, "Could not load billing."));
+        } else setLoadError(desktopErrorMessage(e, "Could not load billing."));
       }
     } finally { if (current === generation.current) reading.current = false; }
   }, [call, onSummary, accountId]);
@@ -121,7 +132,8 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
     pending.current = false; reading.current = false;
     unsupportedRef.current = false; setUnsupported(false);
     setSummary(null); setPlans([]); setOptions(null); setPayments([]); setAuto(null); setCards([]); setOperations([]);
-    setDirty(false); dirtyRef.current = false; setConsent(false); setBusy(false); setError(null); setNotice(null); setChosen(null); setUsage(null);
+    setBalanceOptions(null); setBalanceQuote(null); setPlanPayment("card");
+    setDirty(false); dirtyRef.current = false; setConsent(false); setBusy(false); setLoadError(null); setActionError(null); setNotice(null); setChosen(null); setUsage(null);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async (initial = false) => {
       if (!pending.current && (initial || document.visibilityState === "visible")) await load();
@@ -137,7 +149,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   }, [accountId, connected, load]);
   const perform = async (work: () => Promise<unknown>, message?: string) => {
     if (pending.current) return;
-    pending.current = true; setBusy(true); setError(null); setNotice(null);
+    pending.current = true; setBusy(true); setActionError(null); setNotice(null);
     const current = generation.current;
     try {
       await work();
@@ -146,7 +158,7 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
       await load();
       if (current === generation.current) await onRefreshBilling();
     } catch (e) {
-      if (current === generation.current) setError(desktopErrorMessage(e, "Billing could not be updated. Retry to check the same operation."));
+      if (current === generation.current) setActionError(desktopErrorMessage(e, "Billing could not be updated. Retry to check the same operation."));
     } finally { if (current === generation.current) { pending.current = false; setBusy(false); } }
   };
   const edit = () => { setDirty(true); setConsent(false); };
@@ -168,8 +180,60 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
   if (unsupported) return <><p className="mt-4 text-[12px] text-[var(--color-text-secondary)]">Restart with the updated Axiom app to manage cards and subscriptions.</p>{cryptoContent}</>;
   const subscription = summary?.subscription;
   const currentSubscription = subscription && !["canceled", "expired"].includes(subscription.state) ? subscription : null;
-  const canChangePlan = currentSubscription?.state === "active";
+  const fromBalance = Boolean(subscription && subscription.id === balanceOptions?.balance_subscription_id);
+  const canChangePlan = !fromBalance && currentSubscription?.state === "active";
   const pendingSubscription = currentSubscription && ["creating", "pending"].includes(currentSubscription.state);
+  const cardPlans = summary?.capabilities.card ? plans : [];
+  const balancePlans = balanceOptions?.catalog.enabled ? balanceOptions.catalog.plans : [];
+  const displayPlans = cardPlans.length ? cardPlans : balancePlans;
+  const balanceEndOn = balanceOptions?.coverage_end_on;
+  const available = BigInt(summary?.purchased.available_units ?? "0");
+  const spendable = available - BigInt(balanceOptions?.completion_reserved_units ?? "0");
+  const balanceCost = BigInt(balanceQuote?.plan.amount_cents ?? 0) * 1_000_000n;
+  const payingFromBalance = planPayment === "balance" && balanceQuote !== null;
+  const cardCanPay = !fromBalance && cardPlans.some(plan => plan.key === chosen?.key);
+  const renewalEnd = fromBalance && currentSubscription?.paid_through_at
+    ? `${planDate(currentSubscription.paid_through_at)} (UTC)` : null;
+  const nextRenewal = fromBalance && currentSubscription?.paid_through_at && !currentSubscription.cancel_at_period_end
+    ? Date.parse(currentSubscription.paid_through_at) - Date.now() : null;
+  const renewalShortfall = BigInt(currentSubscription?.amount_cents ?? 0) * 1_000_000n - (spendable > 0n ? spendable : 0n);
+  const renewalFailure = fromBalance && !currentSubscription ? balanceOptions?.renewal_failure : null;
+  const canPayNewPlanFromBalance = (!currentSubscription || pendingSubscription) && Boolean(balanceEndOn);
+  const error = actionError ?? loadError;
+
+  function choosePlan(plan: SubscriptionPlan) {
+    const balancePlan = canPayNewPlanFromBalance ? balancePlans.find(value => value.key === plan.key) : undefined;
+    setRenewalConsent(false);
+    setBalanceQuote(balancePlan && balanceEndOn ? {plan: balancePlan, endOn: balanceEndOn} : null);
+    const cardAvailable = !fromBalance && cardPlans.some(value => value.key === plan.key);
+    setPlanPayment(balancePlan && (!cardAvailable || spendable >= BigInt(balancePlan.amount_cents) * 1_000_000n) ? "balance" : "card");
+    setChosen(plan);
+  }
+
+  function purchaseFromBalance() {
+    if (!balanceQuote || !balanceOptions || !renewalConsent || spendable < balanceCost) return;
+    const {plan, endOn} = balanceQuote;
+    void perform(async () => {
+      const id = intent(accountId, `balance.${plan.key}.${plan.version}.${endOn}`);
+      const receipt = await call({kind: "purchase_balance_plan", id, plan_key: plan.key,
+        catalog_version: plan.version, coverage_end_on: endOn,
+        renewal_consent_version: balanceOptions.renewal_consent_version, renewal_consent_accepted: true}, "balance_plan_purchase");
+      if (receipt.amount_cents !== plan.amount_cents) throw new Error("The plan purchase amount could not be verified.");
+      retireIntent(accountId, receipt.id);
+      setChosen(null);
+      setBalanceQuote(null);
+    }, `${plan.name} is active. Your next renewal is ${planDate(endOn)} (UTC).`);
+  }
+  function changeBalanceRenewal() {
+    if (!currentSubscription || renewalConfirm === null) return;
+    void perform(async () => {
+      const result = await call({kind: "set_balance_plan_renewal", id: currentSubscription.id, enabled: renewalConfirm}, "balance_plan_renewal");
+      setSummary(value => value?.subscription?.id === result.id ? {...value, subscription: {
+        ...value.subscription, cancel_at_period_end: !result.enabled, paid_through_at: result.paid_through_at,
+      }} : value);
+      setRenewalConfirm(null);
+    }, renewalConfirm ? "Automatic balance renewal is on." : "Automatic balance renewal is off.");
+  }
   return <div className="space-y-7 text-[13px] text-[var(--color-text-primary)]">
     {summary ? <>
       <div className={`grid gap-3 ${dollarBalanceShown ? "" : "sm:grid-cols-2"}`}>
@@ -193,30 +257,82 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
         </div>}
       </div>
       {summary.payment_review_required ? <p role="alert" className="text-[var(--color-warning-strong)]">Spending is paused while a payment is reviewed.</p> : null}
-      {plans.length ? <section aria-label="Subscription plans"><h3 className="mb-1 font-medium">Choose your plan</h3>
-        <p className="mb-3 text-[12px] text-[var(--color-text-secondary)]">Billed monthly. Credits refresh every 7 days.</p>
-        <div className="subscription-plan-grid grid grid-cols-2 gap-x-2 gap-y-1 sm:grid-cols-4">{plans.map(plan => { const current = currentSubscription?.plan_key === plan.key; return <div key={plan.key} className={`row-span-5 grid grid-rows-subgrid rounded-xl border p-3 ${current ? "border-[var(--color-border-accent)] bg-[var(--wash-row)]" : "border-[var(--color-border)]"}`}>
+      {displayPlans.length ? <section aria-label="Subscription plans"><h3 className="mb-1 font-medium">Choose your plan</h3>
+        <p className="mb-3 text-[12px] text-[var(--color-text-secondary)]">{cardPlans.length
+          ? "Billed monthly. Credits refresh every 7 days."
+          : "Renews monthly from purchased credit. Credits refresh every 7 days."}</p>
+        <div className="subscription-plan-grid grid grid-cols-2 gap-x-2 gap-y-1 sm:grid-cols-4">{displayPlans.map(plan => {
+          const current = currentSubscription?.plan_key === plan.key;
+          const canBuy = canPayNewPlanFromBalance || (currentSubscription ? canChangePlan && !current : cardPlans.length > 0);
+          return <div key={plan.key} className={`row-span-5 grid grid-rows-subgrid rounded-xl border p-3 ${current ? "border-[var(--color-border-accent)] bg-[var(--wash-row)]" : "border-[var(--color-border)]"}`}>
           <p className="text-[12px] font-medium">{plan.name}</p>
           <p className="mt-2 text-[22px] font-semibold tabular-nums tracking-[-0.03em]">{money(plan.amount_cents)}<span className="text-[11px] font-normal text-[var(--color-text-tertiary)]">/mo</span></p>
           <p className="mt-1 text-[12px] text-[var(--color-text-secondary)]"><span className="font-semibold text-[var(--color-text-primary)]">{creditAmount(plan.weekly_units, true)}</span> credits / week</p>
           <p className="mt-1 mb-3 text-[11px] text-[var(--color-text-tertiary)]">{creditAmount(plan.weekly_units, true, 4n)} credits/month</p>
-          <button className={`${button} mt-auto w-full justify-center`} disabled={busy || !connected || current || !!currentSubscription?.pending_plan_key || (!!currentSubscription && !canChangePlan)} onClick={() => setChosen(plan)}>{current ? "Current plan" : currentSubscription ? "Change plan" : "Subscribe"}</button>
+          <button className={`${button} mt-auto w-full justify-center`} disabled={busy || !connected || !canBuy || !!currentSubscription?.pending_plan_key} onClick={() => choosePlan(plan)}>{canPayNewPlanFromBalance ? "Choose plan" : current ? "Current plan" : currentSubscription ? "Change plan" : "Subscribe"}</button>
         </div>; })}</div>
         <p className="mt-3 text-[11px] text-[var(--color-text-tertiary)]">Monthly totals show 4 weekly grants; a calendar month can include 5.</p>
         {chosen ? <div role="dialog" aria-label="Confirm subscription plan" className="mt-3 rounded-xl bg-[var(--wash-row)] p-4">
-          <p>{canChangePlan ? `Change to ${chosen.name} at your next monthly renewal for ${money(chosen.amount_cents)} per month.` : `Subscribe to ${chosen.name} for ${money(chosen.amount_cents)} per month with ${creditAmount(chosen.weekly_units, true)} credits each week.`}</p>
-          <p className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Monthly total: {creditAmount(chosen.weekly_units, true, 4n)} credits.</p>
-          <div className="mt-3 flex gap-2"><button className={button} disabled={busy} onClick={() => void perform(async () => {
+          {balanceQuote && cardCanPay && <fieldset className="mb-3 space-y-2">
+            <legend className="mb-1 font-medium">Pay with</legend>
+            <label className="flex gap-2"><input type="radio" name="plan-payment" checked={planPayment === "balance"} onChange={() => setPlanPayment("balance")} />Purchased credit · {purchasedCreditAmount(available.toString())}</label>
+            <label className="flex gap-2"><input type="radio" name="plan-payment" checked={planPayment === "card"} onChange={() => setPlanPayment("card")} />Card · Renews monthly</label>
+          </fieldset>}
+          {payingFromBalance && balanceQuote ? <>
+            <p>{balanceQuote.plan.name} · {money(balanceQuote.plan.amount_cents)}/month · {creditAmount(balanceQuote.plan.weekly_units, true)} credits each week</p>
+            <dl className="mt-2 space-y-1.5 tabular-nums">
+              <div className="flex justify-between gap-2"><dt>First renewal</dt><dd>{planDate(balanceQuote.endOn)} (UTC)</dd></div>
+              {spendable >= balanceCost && <div className="flex justify-between gap-2"><dt>Balance after purchase</dt><dd>{purchasedCreditAmount((available - balanceCost).toString())}</dd></div>}
+            </dl>
+            <p className="mt-2 text-[12px] text-[var(--color-text-secondary)]">{spendable < balanceCost
+              ? `Add ${purchasedCreditAmount((balanceCost - (spendable > 0n ? spendable : 0n)).toString(), true)} in available credit to subscribe.`
+              : "If you don’t have enough available credit to renew, your plan ends."}</p>
+            <label className="mt-3 flex items-start gap-2">
+              <input className="mt-1" type="checkbox" checked={renewalConsent} disabled={busy || spendable < balanceCost || !connected}
+                onChange={event => setRenewalConsent(event.target.checked)} />
+              <span>I authorize Axiom to charge {money(balanceQuote.plan.amount_cents)} from my purchased credit today and each month until I cancel.</span>
+            </label>
+          </> : <>
+            <p>{canChangePlan ? `Change to ${chosen.name} at your next monthly renewal for ${money(chosen.amount_cents)} per month.` : `Subscribe to ${chosen.name} for ${money(chosen.amount_cents)} per month with ${creditAmount(chosen.weekly_units, true)} credits each week.`}</p>
+            <p className="mt-2 text-[12px] text-[var(--color-text-secondary)]">Monthly total: {creditAmount(chosen.weekly_units, true, 4n)} credits.</p>
+          </>}
+          <div className="mt-3 flex flex-wrap gap-2">{payingFromBalance && balanceQuote
+            ? <button className={button} disabled={busy || !renewalConsent || !balanceOptions || spendable < balanceCost || summary.payment_review_required} onClick={purchaseFromBalance}>Pay {money(balanceQuote.plan.amount_cents)} and subscribe</button>
+            : <button className={button} disabled={busy || !cardCanPay} onClick={() => void perform(async () => {
             const operation = await call({kind: canChangePlan ? "change" : "checkout", id: intent(accountId, `plan.${chosen.key}.${chosen.version}.${currentSubscription?.id ?? "new"}`), plan_key: chosen.key, catalog_version: chosen.version}, "operation");
             if (["expired", "canceled", "failed", "succeeded"].includes(operation.state)) retireIntent(accountId, operation.id);
             setChosen(null);
-          }, canChangePlan ? "Plan change scheduled. Your current allowance remains available until the change takes effect." : "Complete your subscription in the browser, then return here.")}>Confirm</button>
-          <button className={button} disabled={busy} onClick={() => setChosen(null)}>Cancel</button></div>
+          }, canChangePlan ? "Plan change scheduled. Your current allowance remains available until the change takes effect." : "Complete your subscription in the browser, then return here.")}>{balanceQuote && !canChangePlan ? "Continue to Stripe" : "Confirm"}</button>}
+          <button className={button} disabled={busy} onClick={() => {setChosen(null); setBalanceQuote(null);}}>Cancel</button></div>
         </div> : null}
       </section> : null}
-      {summary.subscription ? <div className="space-y-2"><p>Subscription: {summary.subscription.state}{summary.subscription.cancel_at_period_end ? " · Cancels at the end of paid coverage" : ""}{summary.subscription.pending_plan_key ? ` · ${summary.subscription.pending_plan_key} at next renewal` : ""}</p>
+      {summary.subscription ? <div className="space-y-2"><p>{fromBalance && currentSubscription && renewalEnd
+        ? currentSubscription.cancel_at_period_end ? `Plan ends ${renewalEnd}. Automatic renewal is off.`
+          : nextRenewal !== null && nextRenewal <= 0 ? "Your renewal is being checked."
+          : `Renews on ${renewalEnd} for ${money(currentSubscription.amount_cents)} from purchased credit.`
+        : `Subscription: ${summary.subscription.state}${summary.subscription.cancel_at_period_end && !fromBalance ? " · Cancels at the end of paid coverage" : ""}${summary.subscription.pending_plan_key ? ` · ${summary.subscription.pending_plan_key} at next renewal` : ""}`}</p>
         {currentSubscription ? <p>Monthly total: {creditAmount(currentSubscription.weekly_units, true, 4n)} credits.</p> : null}
-        <button className={button} disabled={busy || !connected} onClick={() => void perform(() => call({kind: "portal"}, "portal"))}><ExternalLink size={13} />Manage payment method or cancel</button>
+        {renewalFailure && <p className="text-[var(--color-text-secondary)]">{renewalFailure === "insufficient_balance"
+          ? "Your plan ended because your purchased balance was too low to renew. Add credit and choose a plan to restart."
+          : renewalFailure === "payment_review" ? "Your plan ended while a payment was under review."
+          : "Your plan ended before renewal could complete. Choose a plan to restart."}</p>}
+        {nextRenewal !== null && nextRenewal > 0 && nextRenewal <= 3 * 86400000 && renewalShortfall > 0n && <p className="text-[var(--color-text-secondary)]">
+          Add {purchasedCreditAmount(renewalShortfall.toString(), true)} in available credit by {renewalEnd} to renew.
+        </p>}
+        {fromBalance && currentSubscription && balanceOptions?.renewal_authorized && <button className={button}
+          disabled={busy || !connected} onClick={() => setRenewalConfirm(currentSubscription.cancel_at_period_end)}>
+          {currentSubscription.cancel_at_period_end ? "Resume renewal" : "Cancel renewal"}
+        </button>}
+        {renewalConfirm !== null && currentSubscription && <div role="dialog"
+          aria-label={renewalConfirm ? "Resume balance renewal" : "Cancel balance renewal"} className="rounded-xl bg-[var(--wash-row)] p-4">
+          <p>{renewalConfirm ? `Your next renewal will use ${money(currentSubscription.amount_cents)} of purchased credit on ${renewalEnd}.`
+            : `Your plan stays active through ${renewalEnd}. Future balance renewals will stop.`}</p>
+          <div className="mt-3 flex gap-2">
+            <button className={button} disabled={busy} onClick={changeBalanceRenewal}>{renewalConfirm ? "Resume renewal" : "Turn off renewal"}</button>
+            <button className={button} disabled={busy} onClick={() => setRenewalConfirm(null)}>{renewalConfirm ? "Cancel" : "Keep plan"}</button>
+          </div>
+        </div>}
+        {!fromBalance && summary.capabilities.card && <button className={button} disabled={busy || !connected} onClick={() => void perform(() => call({kind: "portal"}, "portal"))}><ExternalLink size={13} />Manage payment method or cancel</button>}
         {pendingSubscription ? <button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "operation", id: summary.subscription!.id}, "operation"))}>Resume subscription checkout</button> : null}
       </div> : null}
       <label className="flex items-start gap-2"><input type="checkbox" checked={summary.paid_fallback} disabled={busy || !connected} onChange={e => void perform(() => call({kind: "fallback", enabled: e.target.checked}, "summary"))} /><span>Use added credit when weekly credits and free trial credit run out.</span></label>
@@ -261,12 +377,15 @@ export function CreditBillingPanel({ accountId, connected, cryptoContent, onSumm
         {["creating","pending","requires_action"].includes(o.state) ? <><button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "check", id: o.id}, "operation"))}>Check status</button><button className={button} disabled={busy} onClick={() => void perform(() => call({kind: "cancel_topup", id: o.id}, "operation"))}>Cancel attempt</button></> : null}</div>)}
       </div>
     </details> : null}
-    {usage ? <details><summary className="cursor-pointer py-2">Usage</summary><div className="mt-1 space-y-4">
-      <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Weekly &amp; trial credits · {creditAmount(usage.total_units, true)} total</p>
-        {usage.models.map(m => <div key={`c:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{creditAmount(m.units, true)} credits</span></div>)}</div>
-      {usage.purchased ? <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Purchased spend · {purchasedCreditAmount(usage.purchased.total_units, true)}</p>
-        {usage.purchased.models.map(m => <div key={`p:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{purchasedCreditAmount(m.units, true)}</span></div>)}</div> : null}
-    </div></details> : null}
+    {usage ? <details>
+      <summary className="cursor-pointer py-2">Usage</summary>
+      {usage === "unavailable" ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">Couldn’t refresh usage.</p> : <div className="mt-1 space-y-4">
+        <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Weekly &amp; trial credits used · {creditAmount(usage.total_units, true)}</p>
+          {usage.models.map(m => <div key={`c:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{creditAmount(m.units, true)} credits</span></div>)}</div>
+        {usage.purchased ? <div className="space-y-2"><p className="text-[12px] text-[var(--color-text-secondary)]">Purchased spend · {purchasedCreditAmount(usage.purchased.total_units, true)}</p>
+          {usage.purchased.models.map(m => <div key={`p:${m.provider}:${m.model_id}`} className="flex justify-between gap-3"><span>{m.model_id} <span className="text-[var(--color-text-tertiary)]">({m.provider})</span></span><span>{purchasedCreditAmount(m.units, true)}</span></div>)}</div> : null}
+      </div>}
+    </details> : null}
     {notice ? <p role="status" className="text-[12px] text-[var(--color-text-secondary)]">{notice}</p> : null}
     {error ? <p role="alert" className="text-[12px] text-[var(--color-danger-strong)]">{error}</p> : null}
   </div>;

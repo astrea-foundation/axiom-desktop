@@ -23,7 +23,12 @@ export async function desktopCreditUsage(
     if (error instanceof Error && /Restart Axiom with the updated native app/.test(error.message)) return null;
     throw error;
   }
-  const response = await api.creditBilling({kind: "usage", period: request.period ?? "all_time", timezone: request.timezone ?? "UTC"}, account);
+  const response = await api.creditBilling({
+    kind: "usage", period: request.period ?? "all_time", timezone: request.timezone ?? "UTC", allowance_only: true,
+  }, account);
   if (response.result.kind !== "usage") throw new Error("Invalid credit usage response");
-  return showsCreditUsage(balances, response.result.value) ? response.result.value : null;
+  const usage = response.result.value;
+  // Older servers can return the combined report even when asked for allowance only.
+  // Its model rows cannot be split accurately. The dollar report still works.
+  return usage.allocation.trial_units === "0" && showsCreditUsage(balances, usage) ? usage : null;
 }
