@@ -27,14 +27,17 @@ const code = `
     trial:{posted_units:'632000000',held_units:'0'},
     allowance:plan?{limit_units:'10000000000',remaining_units:'4200000000',held_units:'0',resets_at:'2026-11-23T00:00:00+00:00',effective_until:'2026-12-01T00:00:00+00:00',generation:'window'}
       :{limit_units:'0',remaining_units:'0',held_units:'0',resets_at:null,effective_until:null,generation:null}};
-  const creditUsage = period => plan ? {period,scale:'1000000',total_units:'1500000',allocation:{subscription_units:'1000000',trial_units:'500000'},
-      models:[{provider:'near',model_id:'first',units:'1000000'},{provider:'near',model_id:'second',units:'500000'}],
+  const creditUsage = (period, allowanceOnly) => plan ? {
+      period,scale:'1000000',total_units:allowanceOnly?'1500000':'2000000',
+      allocation:{subscription_units:'1500000',trial_units:allowanceOnly?'0':'500000'},
+      models:[{provider:'near',model_id:'first',units:'1500000'},
+        ...(allowanceOnly?[]:[{provider:'near',model_id:'second',units:'500000'}])],
       purchased:{currency:'usd',scale:'100000000',total_units:'0',models:[]}}
     : {period,scale:'1000000',total_units:'0',allocation:{subscription_units:'0',trial_units:'0'},models:[],
       purchased:{currency:'usd',scale:'100000000',total_units:'0',models:[]}};
   const requests = window.__usageRequests = [];
   const agent = {creditBilling: async action => { requests.push('credits:' + action.kind);
-    return {result: action.kind === 'summary' ? {kind:'summary',value:credits} : {kind:'usage',value:creditUsage(action.period)}}; }};
+    return {result: action.kind === 'summary' ? {kind:'summary',value:credits} : {kind:'usage',value:creditUsage(action.period,action.allowance_only)}}; }};
   const host = {
     creditUsageSummary: (account, request) => desktopCreditUsage(agent, account, request),
     usageSummary: async (_account, request) => { requests.push('dollars');
@@ -135,6 +138,7 @@ test("a plan holder keeps the credit view and sees weekly credits beside the dol
   try {
     const total = page.locator("[data-usage-total]");
     await total.getByText("1.5 credits", {exact: true}).waitFor();
+    assert.equal(await page.getByRole("list", {name: "Model spending"}).getByText("second", {exact: true}).count(), 0);
     await page.getByRole("button", {name: "Allowance credits", exact: true}).waitFor();
     await page.getByRole("button", {name: "Added credit", exact: true}).waitFor();
     assert.equal(await page.locator("[data-usage-freshness]").innerText(), "Updated just now. Replies are counted as soon as they finish.");

@@ -307,10 +307,16 @@ impl BillingClient {
 
     pub async fn crypto_options(
         &self,
+        include_minimums: bool,
         cancellation: &CancellationToken,
     ) -> Result<axiom_acp_extension::CryptoOptions> {
+        let path = if include_minimums {
+            "/api/v1/billing/crypto/options?include_minimums=true"
+        } else {
+            "/api/v1/billing/crypto/options"
+        };
         let options = self
-            .crypto_request("/api/v1/billing/crypto/options", None, cancellation)
+            .crypto_request(path, None, cancellation)
             .await?
             .unwrap_or(axiom_acp_extension::CryptoOptions {
                 enabled: false,
@@ -812,6 +818,11 @@ fn validate_crypto_options(options: &axiom_acp_extension::CryptoOptions) -> Resu
                 || c.code == "zec"
                 || !clean(&c.name)
                 || !clean(&c.network)
+                || c.min_amount_microusd.is_some_and(|value| {
+                    !(options.min_amount_microusd..=options.max_amount_microusd + 10_000)
+                        .contains(&value)
+                        || !value.is_multiple_of(10_000)
+                })
                 || !codes.insert(&c.code)
         })
     {
@@ -1987,9 +1998,15 @@ mod tests {
                 code: "btc".into(),
                 name: "Bitcoin".into(),
                 network: "Bitcoin".into(),
+                min_amount_microusd: None,
             }],
         };
         assert!(validate_crypto_options(&options).is_ok());
+        options.currencies[0].min_amount_microusd = Some(6_440_000);
+        assert!(validate_crypto_options(&options).is_ok());
+        options.currencies[0].min_amount_microusd = Some(6_431_000);
+        assert!(validate_crypto_options(&options).is_err());
+        options.currencies[0].min_amount_microusd = None;
         options.currencies.push(options.currencies[0].clone());
         assert!(validate_crypto_options(&options).is_err());
     }

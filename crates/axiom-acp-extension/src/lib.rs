@@ -115,7 +115,7 @@ impl FeatureVersions {
             profile_preferences: 1,
             collections: 1,
             account: 2,
-            billing: 7,
+            billing: 8,
             usage: 1,
             security_evidence: 4,
             web_consent: 1,
@@ -879,6 +879,8 @@ pub struct CryptoCurrency {
     pub code: String,
     pub name: String,
     pub network: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_amount_microusd: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1392,7 +1394,11 @@ pub struct BillingStatusRequest {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
 #[request(method = "_axiom/billing/crypto_options", response = CryptoOptionsResponse)]
-pub struct CryptoOptionsRequest {}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CryptoOptionsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_minimums: Option<bool>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, JsonRpcRequest)]
 #[request(method = "_axiom/billing/create_crypto_payment", response = CryptoPaymentResponse)]

@@ -171,7 +171,11 @@ impl BillingClient {
             Action::Summary => (reqwest::Method::GET, "/summary".into(), None),
             Action::Plans => (reqwest::Method::GET, "/plans".into(), None),
             Action::Prices => (reqwest::Method::GET, "/credits/prices".into(), None),
-            Action::Usage { period, timezone } => {
+            Action::Usage {
+                period,
+                timezone,
+                allowance_only,
+            } => {
                 let period = period.as_deref().unwrap_or("all_time");
                 let timezone = timezone.as_deref().unwrap_or("UTC");
                 if !["week", "month", "all_time"].contains(&period)
@@ -181,13 +185,16 @@ impl BillingClient {
                 {
                     return Err(invalid());
                 }
-                let query = url::form_urlencoded::Serializer::new(String::new())
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query
                     .append_pair("period", period)
-                    .append_pair("timezone", timezone)
-                    .finish();
+                    .append_pair("timezone", timezone);
+                if *allowance_only == Some(true) {
+                    query.append_pair("allowance_only", "true");
+                }
                 (
                     reqwest::Method::GET,
-                    format!("/credits/usage?{query}"),
+                    format!("/credits/usage?{}", query.finish()),
                     None,
                 )
             }

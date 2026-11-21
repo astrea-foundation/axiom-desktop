@@ -2,7 +2,7 @@ import type { CreditBillingAction } from "./generated/protocol.js";
 import { ProtocolError } from "./errors.js";
 
 const keys: Record<CreditBillingAction["kind"], readonly string[]> = {
-  summary: [], plans: [], prices: [], usage: ["period", "timezone"], checkout: ["id", "plan_key", "catalog_version"], change: ["id", "plan_key", "catalog_version"],
+  summary: [], plans: [], prices: [], usage: ["period", "timezone", "allowance_only"], checkout: ["id", "plan_key", "catalog_version"], change: ["id", "plan_key", "catalog_version"],
   portal: [], setup_card: ["id"], cards: [], auto_topup: [], configure_auto_topup: ["settings"],
   fallback: ["enabled"], operations: [], operation: ["id"], check: ["id"], cancel_topup: ["id"],
   card_options: [], create_card_payment: ["id", "amount_microusd"], card_payments: [],
@@ -17,7 +17,8 @@ export function validateCreditAction(value: unknown): CreditBillingAction {
   if (allowed.includes("catalog_version") && (typeof v.catalog_version !== "string" || !v.catalog_version || v.catalog_version.length>80 || /[\x00-\x1f]/.test(v.catalog_version))) throw new ProtocolError("Invalid plan pricing version");
   if (v.kind === "fallback" && typeof v.enabled !== "boolean") throw new ProtocolError("Invalid credit fallback setting");
   if (v.kind === "usage" && ((v.period != null && !["week", "month", "all_time"].includes(String(v.period)))
-      || (v.timezone != null && (typeof v.timezone !== "string" || !v.timezone || v.timezone.length > 128 || /[\x00-\x1f]/.test(v.timezone))))) throw new ProtocolError("Invalid credit usage period");
+      || (v.timezone != null && (typeof v.timezone !== "string" || !v.timezone || v.timezone.length > 128 || /[\x00-\x1f]/.test(v.timezone)))
+      || (v.allowance_only != null && typeof v.allowance_only !== "boolean"))) throw new ProtocolError("Invalid credit usage options");
   if (v.kind === "create_card_payment" && (!Number.isSafeInteger(v.amount_microusd) || Number(v.amount_microusd) < 5_000_000 || Number(v.amount_microusd) > 1_000_000_000 || Number(v.amount_microusd) % 10000)) throw new ProtocolError("Invalid card top-up amount");
   return value as CreditBillingAction;
 }

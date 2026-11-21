@@ -233,6 +233,8 @@ pub enum CreditBillingAction {
     Usage {
         period: Option<String>,
         timezone: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowance_only: Option<bool>,
     },
     Checkout {
         id: String,

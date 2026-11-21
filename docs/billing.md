@@ -86,7 +86,10 @@ regains focus, even if card history is unavailable. A failed usage refresh displ
 an error in the section.
 For accounts included in a credit denomination reset, totals start at that reset.
 
-The Usage screen separates allowance credits from purchased dollars, with exact model totals.
+The Usage screen separates weekly allowance usage from purchased dollars, with
+exact per-model totals. It excludes trial spending from the allowance chart.
+When an older API returns mixed trial and allowance rows, Desktop displays the
+dollar report until the API can supply the separate figures.
 Accounts without weekly plan credits see dollar spending instead. API key reference
 cost is separate from credits consumed or cash payments. Week/month reporting
 uses the local timezone and calendar boundaries; allowance resets use the

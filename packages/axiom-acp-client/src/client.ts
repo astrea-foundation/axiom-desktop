@@ -73,7 +73,7 @@ const EXTENSION_CAPABILITIES = {
     desktopMcp: 2,
     localPayload: 2,
     account: 2,
-    billing: 7,
+    billing: 8,
     usage: 1,
     securityEvidence: 4,
     webConsent: 1,
@@ -182,6 +182,7 @@ export class AxiomAcpClient extends EventEmitter {
   private supportsImageResolution = false;
   private supportsCryptoInvoices = false;
   private supportsCreditBilling = false;
+  private supportsBillingReportOptions = false;
   private supportsAttachments = false;
   private desktopBootstrap: DesktopBootstrapResponse | null = null;
   private closing = false;
@@ -273,6 +274,7 @@ export class AxiomAcpClient extends EventEmitter {
     this.state.setImageGenerationAvailable(this.supportsImageGeneration);
     this.supportsCryptoInvoices = (meta?.features?.billing ?? 0) >= 5;
     this.supportsCreditBilling = (meta?.features?.billing ?? 0) >= 7;
+    this.supportsBillingReportOptions = (meta?.features?.billing ?? 0) >= 8;
     this.supportsAttachments = (meta?.features?.attachments ?? 0) >= 2;
     this.initialized = true;
     this.state.setConnected(true);
@@ -857,7 +859,10 @@ export class AxiomAcpClient extends EventEmitter {
     const { validateCreditAction } = await import("./credit-billing.js");
     validateCreditAction(action);
     const context = this.state.accountContextToken();
-    const result = await this.process.request<import("./generated/protocol.js").CreditBillingResponse>("_axiom/billing/credits", {action});
+    const compatibleAction = action.kind === "usage" && !this.supportsBillingReportOptions
+      ? {kind: "usage", period: action.period, timezone: action.timezone}
+      : action;
+    const result = await this.process.request<import("./generated/protocol.js").CreditBillingResponse>("_axiom/billing/credits", {action: compatibleAction});
     this.assertAccountContext(context);
     if (result.result.kind === "summary") {
       const summary: unknown = result.result.value;
@@ -872,7 +877,7 @@ export class AxiomAcpClient extends EventEmitter {
 
   async cryptoOptions(): Promise<CryptoOptionsResponse> {
     const context = this.state.accountContextToken();
-    const result = await this.process.request<CryptoOptionsResponse>("_axiom/billing/crypto_options", {});
+    const result = await this.process.request<CryptoOptionsResponse>("_axiom/billing/crypto_options", this.supportsBillingReportOptions ? {includeMinimums: true} : {});
     this.assertAccountContext(context);
     return result;
   }

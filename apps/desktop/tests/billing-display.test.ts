@@ -77,9 +77,11 @@ test("the desktop host selects the dollar report unless weekly credits apply", a
   // An account outside the credit ledger: a preview summary and an all-zero credit report.
   assert.equal(await desktopCreditUsage(api(credits(null), usage("0")), "account", request), null);
   const calls: CreditBillingAction[] = [];
-  const weekly = usage("1500000", "500000", "125000000");
+  const weekly = usage("1500000", "0", "125000000");
   assert.deepEqual(await desktopCreditUsage(api(credits({ limit: "5000000000", remaining: "4000000000" }), weekly, calls), "account", request), weekly);
-  assert.deepEqual(calls, [{ kind: "summary" }, { kind: "usage", period: "week", timezone: "UTC" }]);
+  assert.deepEqual(calls, [{ kind: "summary" }, { kind: "usage", period: "week", timezone: "UTC", allowance_only: true }]);
+  const legacyCombined = usage("1500000", "500000", "125000000");
+  assert.equal(await desktopCreditUsage(api(credits({ limit: "5000000000", remaining: "4000000000" }), legacyCombined), "account", request), null);
   assert.equal(await desktopCreditUsage({ creditBilling: async () => { throw new Error("Restart Axiom with the updated native app to manage subscriptions and credits."); } }, "account", request), null);
   await assert.rejects(desktopCreditUsage({ creditBilling: async () => { throw new Error("offline"); } }, "account", request), /offline/);
   await assert.rejects(desktopCreditUsage({

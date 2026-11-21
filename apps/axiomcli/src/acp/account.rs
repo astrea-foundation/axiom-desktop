@@ -697,7 +697,18 @@ pub(super) fn credit_billing(
     responder: Responder<extension::CreditBillingResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
-    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling) {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CreditBilling)
+        || (matches!(
+            &request.action,
+            extension::CreditBillingAction::Usage {
+                allowance_only: Some(_),
+                ..
+            }
+        ) && !extension_enabled(
+            &context.extension_state,
+            ExtensionFeature::BillingReportOptions,
+        ))
+    {
         return responder.respond_with_error(extension_not_negotiated());
     }
     let client = context.billing.clone();
@@ -727,11 +738,17 @@ pub(super) fn credit_billing(
 
 pub(super) fn crypto_options(
     context: &ServerContext,
-    _request: extension::CryptoOptionsRequest,
+    request: extension::CryptoOptionsRequest,
     responder: Responder<extension::CryptoOptionsResponse>,
     connection: &ConnectionTo<Client>,
 ) -> agent_client_protocol::Result<()> {
-    if !extension_enabled(&context.extension_state, ExtensionFeature::CryptoPayments) {
+    if !extension_enabled(&context.extension_state, ExtensionFeature::CryptoPayments)
+        || (request.include_minimums.is_some()
+            && !extension_enabled(
+                &context.extension_state,
+                ExtensionFeature::BillingReportOptions,
+            ))
+    {
         return responder.respond_with_error(extension_not_negotiated());
     }
     let client = context.billing.clone();
@@ -746,7 +763,8 @@ pub(super) fn crypto_options(
     let request_cancellation = responder.cancellation();
     connection.spawn(async move {
         let _guard = guard;
-        let operation = client.crypto_options(&cancellation);
+        let operation =
+            client.crypto_options(request.include_minimums.unwrap_or(false), &cancellation);
         tokio::pin!(operation);
         let result = tokio::select! {
             biased;

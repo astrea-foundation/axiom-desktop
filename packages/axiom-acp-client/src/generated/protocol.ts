@@ -96,6 +96,7 @@ export type CreditBillingAction =
   | {
       period?: string | null;
       timezone?: string | null;
+      allowance_only?: boolean | null;
       kind: "usage";
     }
   | {
@@ -1321,7 +1322,7 @@ export interface CardFundingPayment {
   cancel_requested: boolean;
 }
 export interface CryptoOptionsRequest {
-  [k: string]: unknown;
+  includeMinimums?: boolean | null;
 }
 export interface CryptoOptionsResponse {
   options: CryptoOptions;
@@ -1341,6 +1342,7 @@ export interface CryptoCurrency {
   code: string;
   name: string;
   network: string;
+  min_amount_microusd?: number | null;
 }
 export interface CreateCryptoPaymentRequest {
   id: string;

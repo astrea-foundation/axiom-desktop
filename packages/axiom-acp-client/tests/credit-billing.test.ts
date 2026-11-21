@@ -103,3 +103,27 @@ test("credit results negotiated with billing v7 cannot cross an account switch",
   await rejection;
   assert.equal(client.getState().billing, null);
 });
+
+for (const version of [7, 8]) test(`billing v${version} sends only negotiated usage and crypto options`, async t => {
+  const client = new AxiomAcpClient({command: process.execPath, args: ["-e", "process.stdin.resume()"]});
+  t.after(() => client.close());
+  const calls: {method: string; params: unknown}[] = [];
+  t.mock.method(client.process, "request", async (method: string, params: unknown) => {
+    if (method === "initialize") return {protocolVersion: 1, agentCapabilities: {_meta: {axiom: {
+      protocolVersion: "0.2", runtimeInstanceId: "billing-options-test", features: {
+        desktopChat: 1, threadCatalog: 1, timeline: 2, modelCatalog: 1, profilePreferences: 1, collections: 1,
+        account: 2, billing: version, securityEvidence: 4, webConsent: 1,
+      },
+    }}}};
+    calls.push({method, params});
+    return {result: {kind: "usage"}};
+  });
+  await client.initialize();
+  const usage = {kind: "usage" as const, period: "week", timezone: "UTC"};
+  await client.creditBilling({...usage, allowance_only: true});
+  await client.cryptoOptions();
+  assert.deepEqual(calls, [
+    {method: "_axiom/billing/credits", params: {action: version === 8 ? {...usage, allowance_only: true} : usage}},
+    {method: "_axiom/billing/crypto_options", params: version === 8 ? {includeMinimums: true} : {}},
+  ]);
+});

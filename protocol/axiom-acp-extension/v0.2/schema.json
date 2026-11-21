@@ -3277,6 +3277,12 @@
                 "null"
               ]
             },
+            "allowance_only": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "usage"
@@ -4555,7 +4561,16 @@
       ]
     },
     "CryptoOptionsRequest": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "includeMinimums": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "CryptoOptionsResponse": {
       "type": "object",
@@ -4618,6 +4633,14 @@
         },
         "network": {
           "type": "string"
+        },
+        "min_amount_microusd": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false,

@@ -480,6 +480,12 @@ credit summary separately and discards stale account/runtime replies. Native
 requests use account token leases; renderers cannot select URLs, headers or an
 arbitrary principal. See [billing controls](billing.md#integration).
 
+`billing@8` lets clients request `allowance_only` for credit usage and
+`includeMinimums` for crypto funding options. The first option reports plan
+allowance by model and keeps purchased USD separate. The second returns the
+current provider-quoted USD floor for each network when available. Requests
+from older clients omit both options and retain the previous response shapes.
+
 Billing status can include shared `trial_capacity` metadata. Trial admission
 errors are typed `TRIAL_CAPACITY` with a retry timestamp; AxiomCLI reports them
 without an internal error prefix and formats the retry time in the local time zone.
