@@ -3,9 +3,11 @@ import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 /** Keep the screen mounted during exit; chat and its draft remain underneath. */
-export function AccountScreen({ title, onClose, wide = false, children }: {
+export function AccountScreen({ title, onClose, onBack, wide = false, children }: {
   title: string;
   onClose: () => void;
+  /** Replaces Back and Escape without closing, e.g. to return to a list. */
+  onBack?: () => void;
   wide?: boolean;
   children: ReactNode;
 }) {
@@ -14,6 +16,10 @@ export function AccountScreen({ title, onClose, wide = false, children }: {
   const finish = useRef(onClose);
   finish.current = onClose;
   const close = useCallback(() => setClosing(true), []);
+  const back = onBack ?? close;
+  // Read through a ref: re-running the key effect would restore focus behind the screen.
+  const backRef = useRef(back);
+  backRef.current = back;
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (event: KeyboardEvent) => {
@@ -24,7 +30,7 @@ export function AccountScreen({ title, onClose, wide = false, children }: {
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }
       // An open dialog owns Escape, even after its focused control is disabled.
-      if (event.key === "Escape" && !document.querySelector("dialog[open]")) { event.preventDefault(); close(); }
+      if (event.key === "Escape" && !document.querySelector("dialog[open]")) { event.preventDefault(); backRef.current(); }
     };
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("keydown", onKey); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
@@ -43,7 +49,7 @@ export function AccountScreen({ title, onClose, wide = false, children }: {
       <div className="drag-region absolute inset-x-0 top-0 h-11" aria-hidden="true" />
       <div className={`mx-auto flex min-h-0 w-full flex-1 flex-col ${wide ? "max-w-[1000px]" : "max-w-[720px]"}`}>
         <header className="mb-5 flex shrink-0 items-center gap-4 sm:mb-6">
-          <button type="button" onClick={close} className="ax-pill ax-pill-button no-drag"><ArrowLeft size={13} />Back</button>
+          <button type="button" onClick={back} className="ax-pill ax-pill-button no-drag"><ArrowLeft size={13} />Back</button>
           <h1 className="text-[22px] font-medium tracking-[-0.025em] text-[var(--color-text-primary)]">{title}</h1>
         </header>
         {children}

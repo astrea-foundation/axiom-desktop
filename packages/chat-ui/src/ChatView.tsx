@@ -97,7 +97,7 @@ export function ChatView({
         role="region"
         aria-label="Chat messages"
         tabIndex={0}
-        className="title-fade h-full overflow-y-auto px-6"
+        className="title-fade h-full overflow-y-auto px-4 sm:px-6"
         style={{ overflowAnchor: "none" }}
         {...autoScroll.handlers}
       >
@@ -120,7 +120,7 @@ export function ChatView({
       </> : null}
       </div>
 
-      <div className="shrink-0 px-6 pb-5 pt-2">
+      <div className="shrink-0 px-3 pb-3 pt-2 sm:px-6 sm:pb-5">
         <div className="mx-auto w-full max-w-[760px]">
           {!preparation && onAcceptOutdatedTee ? <OutdatedTeeNotice key={`${securityScope}:${session?.sessionId}:${selectedModelId}`} state={outdatedTeeState(session, selectedModelId)}
             disabled={isStreaming || isStopping || !!securityRefreshDisabledReason} onContinue={onAcceptOutdatedTee} /> : null}

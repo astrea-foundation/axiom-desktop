@@ -63,7 +63,7 @@ export function WelcomeView({
   useLayoutEffect(() => { if (preparing) prepared.current = true; }, [preparing]);
   const focusComposer = !prepared.current || document.activeElement === document.body || !!root.current?.contains(document.activeElement);
   return (
-    <div ref={root} className="relative flex h-full min-h-0 w-full items-start justify-center overflow-y-auto px-6 py-16">
+    <div ref={root} className="welcome-view relative flex h-full min-h-0 w-full items-start justify-center overflow-y-auto px-4 py-16 sm:px-6">
       {/* A fixed 2000×1400 composition pinned to the view's centre: the window
           reveals more or less of it instead of moving the blooms around. */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
@@ -85,8 +85,11 @@ export function WelcomeView({
 
       <div className="relative z-10 my-auto flex w-full max-w-[760px] flex-col items-center animate-fade-in">
         {isChatPreparation(account) ? <ChatPreparationScreen key={agentControl?.scope} account={account} onRetry={onRefreshAccount} onOpenSettings={onOpenSettings} /> : <>
-        <AxiomMark className="mb-7 h-10 w-auto" />
-        <GreetingHeadline />
+        {/* Short touch screens drop the intro while a draft is open. */}
+        <div className="welcome-intro contents">
+          <AxiomMark className="mb-7 h-10 w-auto" />
+          <GreetingHeadline />
+        </div>
         {!signInActive && account.kind !== "valid" ? (
           <div role={account.kind === "unavailable" ? "alert" : undefined} className="shadow-glass-card mb-3 flex w-full items-center gap-3 rounded-[14px] bg-[var(--surface-card)] px-4 py-3">
             <div

@@ -122,19 +122,19 @@ export function TeeVerificationBadge({ session, model, modelId, webEnabled, mcpS
   }, [modelId, idle, automaticReason, refreshing, currentProofState, session.securityEvidence, now, refresh, activityVersion]);
 
   return <>
-    <div className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">
+    <div className="tee-badge inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--surface-tile)] text-[11.5px] font-medium tracking-[-0.01em] text-[var(--color-text-secondary)] shadow-[0_0_0_1px_var(--ring-hairline),0_1px_2px_var(--shade-xs)]">
       <button type="button" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}
         aria-label={`${badge.label}. View privacy proof`} title={`Model inference: ${badge.label}. View privacy proof`}
-        className="inline-flex h-full items-center gap-1.5 rounded-l-full pl-2 pr-2 transition-colors hover:bg-[var(--wash-chip-hover)]">
+        className="tee-badge-open inline-flex h-full items-center gap-1.5 rounded-l-full pl-2 pr-2 transition-colors hover:bg-[var(--wash-chip-hover)]">
         <span className="relative flex h-4 w-4 items-center justify-center" aria-hidden="true">
           <Shield size={15} strokeWidth={0} fill={color} />
           {badge.tone === "success" && !session.running ? <Check size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : badge.tone === "danger" ? <X size={8} strokeWidth={3.5} className="absolute text-on-accent" /> : null}
         </span>
-        <span aria-live="polite">{badge.label}</span>
+        <span aria-live="polite" className="tee-badge-label">{badge.label}</span>
       </button>
-      <span aria-hidden="true" className="h-3 w-px bg-[var(--color-border)]" />
+      <span aria-hidden="true" className="tee-badge-separator h-3 w-px bg-[var(--color-border)]" />
       <button type="button" onClick={() => void refresh()} disabled={!!reason} aria-label="Refresh TEE verification" title={reason ?? "Refresh TEE verification"}
-        className="flex h-7 w-7 items-center justify-center rounded-r-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50">
+        className="tee-badge-refresh flex h-7 w-7 items-center justify-center rounded-r-full text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-chip-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-50">
         <RotateCcw size={12} aria-hidden="true" className={verifying ? "animate-spin motion-reduce:animate-none" : ""} />
       </button>
     </div>
