@@ -28,7 +28,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !key.startsWith("AXIOM") && key !== "ELECTRON_RUN_AS_NODE" && key !== "ELECTRON_RENDERER_URL"));
 Object.assign(env, {
   AXIOM_AUTH_URL: "http://127.0.0.1:9",
-  AXIOM_BASE_URL: "http://127.0.0.1:9",
+  AXIOM_BASE_URL: "https://127.0.0.1:9",
   AXIOMCLI_SIDECAR: sidecar,
   XDG_CONFIG_HOME: join(root, "config"),
   XDG_DATA_HOME: join(root, "data"),
