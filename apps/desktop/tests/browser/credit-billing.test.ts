@@ -162,8 +162,10 @@ test("automatic billing refresh stays below the read budget", async () => {
       await page.clock.runFor(30_001);
       await page.waitForFunction(expected=>(window as any).__billingTest.calls.filter((c:any)=>c.action.kind==="operations").length>=expected,n+2);
     }
-    const reads=await page.evaluate(()=>(window as any).__billingTest.calls.filter((c:any)=>["summary","card_options","card_payments","usage","plans","auto_topup","cards","operations"].includes(c.action.kind)).length);
-    assert(reads<=26,`expected at most 26 reads in a minute, got ${reads}`);
+    const reads=await page.evaluate(()=>(window as any).__billingTest.calls.filter((c:any)=>[
+      "summary","card_options","card_payments","usage","plans","auto_topup","cards","operations","balance_plan_options",
+    ].includes(c.action.kind)).length);
+    assert(reads<=30,`expected at most half of the 60-request billing budget, got ${reads}`);
   } finally {await page.close();}
 });
 

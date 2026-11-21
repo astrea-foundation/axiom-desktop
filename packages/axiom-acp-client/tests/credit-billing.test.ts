@@ -111,7 +111,7 @@ test("credit results negotiated with billing v7 cannot cross an account switch",
   assert.equal(client.getState().billing, null);
 });
 
-for (const version of [7, 8]) test(`billing v${version} sends only negotiated usage and crypto options`, async t => {
+for (const version of [7, 8, 9]) test(`billing v${version} sends only negotiated billing actions and options`, async t => {
   const client = new AxiomAcpClient({command: process.execPath, args: ["-e", "process.stdin.resume()"]});
   t.after(() => client.close());
   const calls: {method: string; params: unknown}[] = [];
@@ -129,8 +129,11 @@ for (const version of [7, 8]) test(`billing v${version} sends only negotiated us
   const usage = {kind: "usage" as const, period: "week", timezone: "UTC"};
   await client.creditBilling({...usage, allowance_only: true});
   await client.cryptoOptions();
+  const balancePlans = {kind: "balance_plan_options" as const};
+  await client.creditBilling(balancePlans);
   assert.deepEqual(calls, [
-    {method: "_axiom/billing/credits", params: {action: version === 8 ? {...usage, allowance_only: true} : usage}},
-    {method: "_axiom/billing/crypto_options", params: version === 8 ? {includeMinimums: true} : {}},
+    {method: "_axiom/billing/credits", params: {action: version >= 8 ? {...usage, allowance_only: true} : usage}},
+    {method: "_axiom/billing/crypto_options", params: version >= 8 ? {includeMinimums: true} : {}},
+    ...(version >= 9 ? [{method: "_axiom/billing/credits", params: {action: balancePlans}}] : []),
   ]);
 });
