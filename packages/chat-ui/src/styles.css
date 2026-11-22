@@ -900,6 +900,12 @@ input {
 .unmask-word {
   display: inline-block;
 }
+:root[lang="ja"] .welcome-intro h1 {
+  font-size: clamp(30px, 4.5vw, 48px);
+  line-height: 1.14;
+  line-break: strict;
+  text-wrap: balance;
+}
 .unmask-inner {
   display: block;
   transform: translateY(calc(100% + 0.6em));

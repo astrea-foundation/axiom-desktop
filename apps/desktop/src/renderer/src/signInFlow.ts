@@ -1,3 +1,5 @@
+import type { ChatLocale } from "@axiom/chat-ui";
+import { desktopMessages } from "./lib/desktopMessages";
 import type { AccountStatus, NativeLoginState } from "@axiom/axiom-acp-client";
 
 export type SignInState =
@@ -14,28 +16,30 @@ export function accountPresentation(
   connected: boolean,
   desktopReady: boolean,
   account: AccountStatus | null,
+  locale: ChatLocale = "en",
 ): AccountPresentation {
+  const copy = desktopMessages[locale];
   if (!connected || !desktopReady) {
     return {
       kind: "starting",
-      title: "Starting Axiom…",
-      detail: "Connecting to the local chat service.",
+      title: copy.starting,
+      detail: copy.connecting,
     };
   }
   if (account?.state === "valid" && account.account) {
     const title = account.account.displayName?.trim()
       || account.account.verifiedEmail?.trim()
-      || "Axiom account";
+      || copy.account;
     const detail = account.account.displayName?.trim() && account.account.verifiedEmail?.trim()
       ? account.account.verifiedEmail.trim()
-      : "Connected securely";
+      : copy.connected;
     return { kind: "valid", title, detail };
   }
   if (account?.state === "expired") {
     return {
       kind: "expired",
-      title: "Reconnect your Axiom account",
-      detail: account.detail?.trim() || "Your saved session expired or was revoked.",
+      title: copy.reconnect,
+      detail: account.detail?.trim() || copy.expired,
     };
   }
   if (account?.state === "unavailable") {
@@ -44,39 +48,39 @@ export function accountPresentation(
     return {
       kind: "unavailable",
       phase: account.preparationPhase ?? undefined,
-      title: storage ? "Couldn’t open your chats" : switching ? "Couldn’t update your account" : "Couldn’t check your sign-in",
+      title: storage ? copy.chatsUnavailable : switching ? copy.accountUnavailable : copy.signInUnavailable,
       detail: storage
-        ? "Axiom couldn’t unlock local chat storage. Try again."
-        : switching ? "Axiom couldn’t finish the local account change. Try again."
-          : "Axiom couldn’t restore or verify your saved session. Try again, or open Details for the reported reason.",
+        ? copy.storageError
+        : switching ? copy.switchError
+          : copy.signInError,
       technicalDetails: account.detail?.trim() || undefined,
     };
   }
   if (!account || account.state === "starting") {
     if (account?.preparationPhase === "switching_account") return {
       kind: "starting", phase: "switching_account",
-      title: "Updating your account…",
-      detail: "Finishing the local account change.",
+      title: copy.updatingAccount,
+      detail: copy.finishingSwitch,
     };
     if (account?.preparationPhase === "decrypting_chats") return {
       kind: "starting", phase: "decrypting_chats",
-      title: "Decrypting your chats",
-      detail: "Opening your saved conversations on this device.",
+      title: copy.decrypting,
+      detail: copy.openingSaved,
     };
     const storage = account?.preparationPhase === "opening_chats";
     return {
       kind: "starting",
       phase: storage ? "opening_chats" : "checking_sign_in",
-      title: storage ? "Unlocking your chats" : "Checking your sign-in…",
+      title: storage ? copy.unlocking : copy.checkingSignIn,
       detail: storage
-        ? "Getting the key for your encrypted chats on this device."
-        : "Restoring your saved session and confirming it’s still active.",
+        ? copy.gettingKey
+        : copy.restoringSession,
     };
   }
   return {
     kind: "signed-out",
-    title: "Sign in",
-    detail: "Continue in your browser.",
+    title: copy.signIn,
+    detail: copy.continueInBrowser,
   };
 }
 

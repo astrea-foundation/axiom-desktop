@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+import { useChatLocale } from "./ChatLocale";
 import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -11,6 +12,7 @@ export function AccountScreen({ title, onClose, onBack, wide = false, children }
   wide?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useChatLocale();
   const screen = useRef<HTMLDivElement>(null);
   const [closing, setClosing] = useState(false);
   const finish = useRef(onClose);
@@ -24,7 +26,7 @@ export function AccountScreen({ title, onClose, onBack, wide = false, children }
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Tab" && !document.querySelector('dialog[open]')) {
-        const buttons = Array.from(screen.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]') ?? []).filter(el => el.getClientRects().length && !el.closest('[hidden], [inert]'));
+        const buttons = Array.from(screen.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]') ?? []).filter(el => el.getClientRects().length && !el.closest('[hidden], [inert]'));
         const first = buttons[0], last = buttons[buttons.length - 1];
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -49,7 +51,7 @@ export function AccountScreen({ title, onClose, onBack, wide = false, children }
       <div className="drag-region absolute inset-x-0 top-0 h-11" aria-hidden="true" />
       <div className={`mx-auto flex min-h-0 w-full flex-1 flex-col ${wide ? "max-w-[1000px]" : "max-w-[720px]"}`}>
         <header className="mb-5 flex shrink-0 items-center gap-4 sm:mb-6">
-          <button type="button" onClick={back} className="ax-pill ax-pill-button no-drag"><ArrowLeft size={13} />Back</button>
+          <button type="button" onClick={back} className="ax-pill ax-pill-button no-drag"><ArrowLeft size={13} />{t("action.back")}</button>
           <h1 className="text-[22px] font-medium tracking-[-0.025em] text-[var(--color-text-primary)]">{title}</h1>
         </header>
         {children}

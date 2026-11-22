@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+import { useChatLocale } from "./ChatLocale";
 import {
   DndContext,
   DragOverlay,
@@ -74,6 +75,7 @@ function ThreadRow({
   onSelect: () => void;
   onOpenMenu: (target: SidebarMenuTarget | null) => void;
 }) {
+  const { t } = useChatLocale();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `thread:${thread.id}`,
     data: { type: "thread", threadId: thread.id },
@@ -98,7 +100,7 @@ function ThreadRow({
         {...listeners}
         {...attributes}
         data-thread-id={thread.id}
-        aria-label={`${thread.status === "working" ? "Replying" : thread.status === "unread" ? "Unread reply" : "Viewed"} ${thread.title}`}
+        aria-label={t(thread.status === "working" ? "sidebar.threadWorking" : thread.status === "unread" ? "sidebar.threadUnread" : "sidebar.threadViewed", { title: thread.title })}
         {...contextMenuTrigger("thread", thread.id, onOpenMenu)}
       >
         <OverflowTitle text={thread.title} className="flex-1" />
@@ -108,10 +110,10 @@ function ThreadRow({
       </button>
       <button
         type="button"
-        aria-label={`Actions for ${thread.title}`}
+        aria-label={t("sidebar.actionsFor", { title: thread.title })}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        title="Thread actions"
+        title={t("sidebar.threadActions")}
         className="thread-menu-trigger mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)] aria-expanded:bg-[var(--wash-hover)]"
         onClick={(event) => {
           const trigger = event.currentTarget;
@@ -142,6 +144,7 @@ function FolderBlock({
   onSelectThread: (id: string) => void;
   onOpenMenu: (target: SidebarMenuTarget | null) => void;
 }) {
+  const { t } = useChatLocale();
   const { setNodeRef, isOver } = useDroppable({
     id: `folder:${folder.id}`,
     data: { type: "folder", folderId: folder.id },
@@ -175,7 +178,7 @@ function FolderBlock({
         <div className="ml-3 pl-1 pb-1">
           {threads.length === 0 ? (
             <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-text-muted)]">
-              Drop threads here
+              {t("sidebar.emptyFolder")}
             </div>
           ) : (
             threads.map((thread) => (
@@ -368,6 +371,7 @@ function SidebarFrame({
   connected: boolean;
   aboveAccount?: ReactNode;
 }) {
+  const { t } = useChatLocale();
   const { setNodeRef: setLooseRef, isOver: looseOver } = useDroppable({
     id: "folder:loose",
     data: { type: "loose" },
@@ -398,7 +402,7 @@ function SidebarFrame({
               type="button"
               onClick={onCollapse}
               className="no-drag rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
-              aria-label="Collapse sidebar"
+              aria-label={t("sidebar.collapse")}
             >
               <PanelLeftClose size={16} />
             </button>
@@ -417,14 +421,14 @@ function SidebarFrame({
               <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border border-current">
                 <Plus size={9} strokeWidth={2.6} />
               </span>
-              <span>New thread</span>
+              <span>{t("sidebar.newThread")}</span>
             </button>
             {!isMac ? (
               <button
                 type="button"
                 onClick={onCollapse}
                 className="sidebar-icon-button shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-secondary)]"
-                aria-label="Collapse sidebar"
+                aria-label={t("sidebar.collapse")}
               >
                 <PanelLeftClose size={16} />
               </button>
@@ -443,7 +447,7 @@ function SidebarFrame({
             <span className="flex h-[15px] w-[15px] shrink-0 items-center justify-center">
               <Shield size={14} />
             </span>
-            <span>Proxy</span>
+            <span>{t("sidebar.proxy")}</span>
           </button> : null}
           </div>
 
@@ -453,7 +457,7 @@ function SidebarFrame({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search threads"
+                placeholder={t("sidebar.search")}
                 className="w-full bg-transparent text-[13px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
               />
             </div>
@@ -461,8 +465,8 @@ function SidebarFrame({
               type="button"
               onClick={onCreateFolder}
               className="sidebar-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--wash-hover)] hover:text-[var(--color-text-primary)]"
-              title="New folder"
-              aria-label="New folder"
+              title={t("sidebar.newFolder")}
+              aria-label={t("sidebar.newFolder")}
             >
               <FolderPlus size={15} />
             </button>
@@ -470,8 +474,8 @@ function SidebarFrame({
         </nav>
 
         <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-2 pt-3">
-          <div className="ax-label px-2 pb-2">Threads</div>
-          {account.kind === "starting" && filtered.length === 0 && !query ? <p className="px-2 py-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">Your chats will appear here once they’re open.</p> : null}
+          <div className="ax-label px-2 pb-2">{t("sidebar.threads")}</div>
+          {account.kind === "starting" && filtered.length === 0 && !query ? <p className="px-2 py-2 text-[12px] leading-5 text-[var(--color-text-secondary)]">{t("sidebar.waiting")}</p> : null}
           {folders.map((folder) => (
             <FolderBlock
               key={folder.id}

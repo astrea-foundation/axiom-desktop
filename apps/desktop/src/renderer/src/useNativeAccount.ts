@@ -1,3 +1,4 @@
+import { useChatLocale } from "@axiom/chat-ui/ChatLocale";
 import type { ClientState } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { accountPresentation, signInErrorMessage, type SignInState } from "./signInFlow";
@@ -5,12 +6,13 @@ import { accountPresentation, signInErrorMessage, type SignInState } from "./sig
 export function useNativeAccount(agentState: ClientState, desktopReady: boolean,
   refreshModels: () => void, clearModels: () => void,
   onOpenSignIn: () => void, setUiError: (error: string | null) => void) {
+  const { locale } = useChatLocale();
   const [signInState, setSignInState] = useState<SignInState>({ kind: "closed" });
   const signInGeneration = useRef(0);
   const signInPending = useRef(false);
   const activeLoginId = useRef<string | null>(null);
   const signInCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const accountView = accountPresentation(agentState.connected, desktopReady, agentState.account);
+  const accountView = accountPresentation(agentState.connected, desktopReady, agentState.account, locale);
   const requiresSignIn = accountView.kind === "signed-out" || accountView.kind === "expired";
   const refreshAccount = useCallback(async () => {
     const api = window.axiomDesktop?.agent;

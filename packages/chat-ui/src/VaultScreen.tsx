@@ -1,5 +1,6 @@
 /** @jsxRuntime automatic */
 import { useEffect, useRef, useState } from 'react';
+import { useChatLocale } from './ChatLocale';
 import { Check, Circle, Copy, Download, LockKeyhole, ShieldCheck } from 'lucide-react';
 
 type Mode = 'setup' | 'unlock' | 'recover' | 'change-password' | 'reset';
@@ -18,11 +19,13 @@ export interface VaultScreenProps {
   onDownloadUnsynced?(): Promise<void>;
   onUseSynced?(): Promise<void>;
 }
+const DELETE_PHRASE = 'DELETE ALL CHATS';
 const inputClass = 'w-full rounded-[10px] border border-[var(--color-border)] bg-[var(--wash-row)] px-3 py-2.5 text-[14px] outline-none focus:border-[var(--color-border-accent)]';
 const buttonClass = 'rounded-[10px] bg-[var(--color-cherry)] px-4 py-2.5 text-[13px] font-medium text-on-accent hover:bg-[var(--color-cherry-bright)] disabled:opacity-40';
 
 /** Secrets stay in transient form state; success, cancellation and navigation clear them. */
 export function VaultScreen(props: VaultScreenProps) {
+  const { t } = useChatLocale();
   const [mode, setMode] = useState<Mode>(props.initialMode);
   const [password, setPassword] = useState(''), [confirmation, setConfirmation] = useState('');
   const [recovery, setRecovery] = useState(''), [code, setCode] = useState('');
@@ -43,7 +46,7 @@ export function VaultScreen(props: VaultScreenProps) {
     const scope = lifetime.current;
     if (clearError) setError(''); setBusy(true);
     try { await action(); }
-    catch (failure) { if (scope === lifetime.current) setError(failure instanceof Error ? failure.message : 'Couldn’t continue. Try again.'); }
+    catch (failure) { if (scope === lifetime.current) setError(failure instanceof Error ? failure.message : t('vault.continueFailed')); }
     finally { if (scope === lifetime.current) { operation.current = false; setBusy(false); } }
   };
   useEffect(() => {
@@ -75,13 +78,13 @@ export function VaultScreen(props: VaultScreenProps) {
     if (props.initialMode === 'change-password') props.onCancel?.();
   };
   const newPassword = mode === 'setup' || mode === 'change-password';
-  const title = code ? 'Save your recovery code' : mode === 'setup' ? 'Create an encryption password'
-    : mode === 'unlock' ? 'Unlock your chats' : mode === 'recover' ? 'Use your recovery code'
-    : mode === 'change-password' ? 'Choose a new encryption password' : 'Delete all web chats?';
-  const description = mode === 'setup' ? 'This password protects your saved chats and unlocks them on other devices. It’s separate from your account sign-in.'
-    : mode === 'unlock' ? 'Enter the encryption password you chose for web chat. Signing in alone doesn’t unlock your saved chats.'
-    : mode === 'recover' ? 'Paste your code or open the file you saved. You’ll then choose a new password and recovery code. Your chats will be kept.'
-    : mode === 'change-password' ? recovered ? 'Your recovery code worked. Choose a new password to protect your chats.' : 'Your chats will be kept. This replaces your encryption password and recovery code.' : '';
+  const title = code ? t('vault.saveCode') : mode === 'setup' ? t('vault.setupTitle')
+    : mode === 'unlock' ? t('vault.unlockTitle') : mode === 'recover' ? t('vault.recoverTitle')
+    : mode === 'change-password' ? t('vault.changeTitle') : t('vault.resetTitle');
+  const description = mode === 'setup' ? t('vault.setupDescription')
+    : mode === 'unlock' ? t('vault.unlockDescription')
+    : mode === 'recover' ? t('vault.recoverDescription')
+    : mode === 'change-password' ? recovered ? t('vault.recoveredDescription') : t('vault.changeDescription') : '';
   const meetsLength = password.length >= 12;
   const passwordsMatch = password.length > 0 && password === confirmation;
   const sessionExpired = /session expired/i.test(error);
@@ -94,30 +97,30 @@ export function VaultScreen(props: VaultScreenProps) {
   return <div className="flex h-full min-h-0 flex-col overflow-y-auto px-5 py-8">
     <section className="glass-panel-solid shadow-glass-card m-auto w-full max-w-[440px] shrink-0 rounded-[22px] border border-[var(--color-border)] p-6 sm:p-8" aria-labelledby="vault-title" aria-busy={busy}>
       <LockKeyhole size={24} className="mb-5 text-[var(--color-cherry)]" aria-hidden="true" />
-      {newPassword && <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">Step {code ? '2' : '1'} of 2: {code ? 'Recovery code' : 'Password'}</p>}
+      {newPassword && <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">{t(code ? 'vault.codeStep' : 'vault.passwordStep')}</p>}
       <h1 id="vault-title" className="text-[23px] font-medium tracking-tight">{title}</h1>
-      <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">Signed in as {props.accountLabel}</p>
+      <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">{t('vault.signedInAs', { account: props.accountLabel })}</p>
       {!code && description && <p className="mt-4 text-[13px] leading-5 text-[var(--color-text-secondary)]">{description}</p>}
       {code ? <div className="mt-5 space-y-4">
-        <p className="text-[13px] leading-5 text-[var(--color-text-secondary)]">Save this in a password manager or another safe place. Treat it like a password: it can unlock your chats if you forget yours.</p>
-        {mode !== 'setup' && <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">This replaces your previous recovery code when you save the new password.</p>}
+        <p className="text-[13px] leading-5 text-[var(--color-text-secondary)]">{t('vault.codeHelp')}</p>
+        {mode !== 'setup' && <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">{t('vault.codeReplacement')}</p>}
         <div className="flex flex-wrap gap-2">
-          <button type="button" autoFocus disabled={busy} className={buttonClass + ' flex items-center gap-2'} onClick={download}><Download size={14} />Download recovery code</button>
-          <button type="button" aria-label="Copy recovery code" disabled={busy} className={inputClass + ' !w-auto flex items-center gap-2'} onClick={() => void perform(async () => {
+          <button type="button" autoFocus disabled={busy} className={buttonClass + ' flex items-center gap-2'} onClick={download}><Download size={14} />{t('vault.downloadCode')}</button>
+          <button type="button" aria-label={t('vault.copyCode')} disabled={busy} className={inputClass + ' !w-auto flex items-center gap-2'} onClick={() => void perform(async () => {
             try { await navigator.clipboard.writeText(code); setCopied(true); }
-            catch { throw new Error('Couldn’t copy the code. Download it or open “Show recovery code” to copy it yourself.'); }
-          })}>{copied ? <Check size={14} /> : <Copy size={14} />}<span role="status">{copied ? 'Copied' : 'Copy'}</span></button>
+            catch { throw new Error(t('vault.copyError')); }
+          })}>{copied ? <Check size={14} /> : <Copy size={14} />}<span role="status">{copied ? t('vault.copied') : t('vault.copy')}</span></button>
         </div>
-        {downloaded && <p role="status" className="text-[12px] text-[var(--color-text-secondary)]">Download started. Keep the file somewhere safe.</p>}
-        <details className="text-[12px] text-[var(--color-text-secondary)]"><summary className="cursor-pointer">Show recovery code</summary><textarea aria-label="Your recovery code" readOnly spellCheck={false} value={code} onFocus={event => event.currentTarget.select()} className={inputClass + ' mt-2 min-h-24 resize-y font-mono !text-[12px]'} /></details>
-        <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" disabled={busy} checked={saved} onChange={event => setSaved(event.target.checked)} className="mt-1" />I saved my recovery code.</label>
-        <button type="button" disabled={!saved || busy} className={buttonClass + ' w-full'} onClick={() => void perform(props.onCommit)}>{busy ? 'Saving…' : mode === 'setup' ? 'Open chats' : 'Save new password'}</button>
+        {downloaded && <p role="status" className="text-[12px] text-[var(--color-text-secondary)]">{t('vault.downloadStarted')}</p>}
+        <details className="text-[12px] text-[var(--color-text-secondary)]"><summary className="cursor-pointer">{t('vault.showCode')}</summary><textarea aria-label={t('vault.yourCode')} readOnly spellCheck={false} value={code} onFocus={event => event.currentTarget.select()} className={inputClass + ' mt-2 min-h-24 resize-y font-mono !text-[12px]'} /></details>
+        <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" disabled={busy} checked={saved} onChange={event => setSaved(event.target.checked)} className="mt-1" />{t('vault.codeSaved')}</label>
+        <button type="button" disabled={!saved || busy} className={buttonClass + ' w-full'} onClick={() => void perform(props.onCommit)}>{busy ? t('action.saving') : mode === 'setup' ? t('vault.openChats') : t('vault.saveNewPassword')}</button>
       </div> : mode === 'reset' ? <div className="mt-5 space-y-4">
-        <p className="text-[13px] leading-6 text-[var(--color-text-secondary)]">This permanently deletes all your saved web chats and files on every device. Axiom cannot restore them. Your account and balance will stay.</p>
-        <p role="timer" aria-live="polite" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">{remaining > 0 ? `You can confirm in ${remaining}s.` : 'You can now confirm deletion.'}</p>
-        <label className="block text-[12px]">Type DELETE ALL CHATS<input aria-label="Confirm deletion" disabled={busy} autoComplete="off" value={phrase} onChange={event => setPhrase(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} className={inputClass + ' mt-2'} /></label>
-        <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" disabled={busy} checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} className="mt-1" />I understand this deletes my web chats and files.</label>
-        <button type="button" disabled={remaining !== 0 || phrase !== 'DELETE ALL CHATS' || !acknowledged || busy} className={buttonClass + ' w-full !bg-[var(--color-danger-strong)] !text-white'} onClick={() => void perform(props.onReset)}>{busy ? 'Deleting…' : remaining > 0 ? `Delete all chats (${remaining}s)` : 'Delete all chats and start fresh'}</button>
+        <p className="text-[13px] leading-6 text-[var(--color-text-secondary)]">{t('vault.deleteWarning')}</p>
+        <p role="timer" aria-live="polite" className="text-[12px] leading-5 text-[var(--color-text-secondary)]">{remaining > 0 ? t('vault.confirmIn', { seconds: remaining }) : t('vault.confirmReady')}</p>
+        <label className="block text-[12px]">{t('vault.typePhrase', { phrase: DELETE_PHRASE })}<input aria-label={t('vault.confirmDeletion')} disabled={busy} autoComplete="off" value={phrase} onChange={event => setPhrase(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} className={inputClass + ' mt-2'} /></label>
+        <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" disabled={busy} checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} className="mt-1" />{t('vault.understandDeletion')}</label>
+        <button type="button" disabled={remaining !== 0 || phrase !== DELETE_PHRASE || !acknowledged || busy} className={buttonClass + ' w-full !bg-[var(--color-danger-strong)] !text-white'} onClick={() => void perform(props.onReset)}>{busy ? t('vault.deleting') : remaining > 0 ? t('vault.deleteSeconds', { seconds: remaining }) : t('vault.deleteAll')}</button>
       </div> : <form className="mt-5 space-y-4" onSubmit={event => {
         event.preventDefault();
         if (busy) return;
@@ -131,44 +134,44 @@ export function VaultScreen(props: VaultScreenProps) {
         });
       }}>
         {mode === 'recover' ? <>
-          <label className="block text-[12px]">Recovery code<textarea ref={recoveryInput} disabled={busy} aria-label="Recovery code" autoComplete="off" spellCheck={false} value={recovery} onChange={event => { setRecovery(event.target.value); setError(''); }} className={inputClass + ' mt-2 min-h-24 resize-y font-mono text-[12px]'} maxLength={256} required /></label>
-          <label className="inline-block cursor-pointer text-[12px] underline">Open recovery file<input type="file" disabled={busy} accept="text/plain,.txt" className="hidden" onChange={event => {
+          <label className="block text-[12px]">{t('vault.recoveryCode')}<textarea ref={recoveryInput} disabled={busy} aria-label={t('vault.recoveryCode')} autoComplete="off" spellCheck={false} value={recovery} onChange={event => { setRecovery(event.target.value); setError(''); }} className={inputClass + ' mt-2 min-h-24 resize-y font-mono text-[12px]'} maxLength={256} required /></label>
+          <label className="inline-block cursor-pointer text-[12px] underline">{t('vault.openRecoveryFile')}<input type="file" disabled={busy} accept="text/plain,.txt" className="hidden" onChange={event => {
             const file = event.target.files?.[0]; event.target.value = '';
             if (!file) return;
-            if (file.size > 1024) { setError('Invalid recovery file'); return; }
-            const scope = lifetime.current; void file.text().then(value => { if (scope === lifetime.current) setRecovery(value.trim()); }).catch(() => { if (scope === lifetime.current) setError('Couldn’t read this recovery file'); });
+            if (file.size > 1024) { setError(t('vault.invalidRecoveryFile')); return; }
+            const scope = lifetime.current; void file.text().then(value => { if (scope === lifetime.current) setRecovery(value.trim()); }).catch(() => { if (scope === lifetime.current) setError(t('vault.readRecoveryFailed')); });
           }} /></label>
         </> : <>
-          <label className="block text-[12px]">Encryption password<input ref={passwordInput} type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete={newPassword ? 'section-chat-encryption new-password' : 'section-chat-encryption current-password'} aria-label="Encryption password" aria-describedby={newPassword ? 'vault-password-criteria' : undefined} value={password} onChange={event => { setPassword(event.target.value); setError(''); }} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => setCapsLock(false)} minLength={newPassword ? 12 : undefined} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
+          <label className="block text-[12px]">{t('vault.password')}<input ref={passwordInput} type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete={newPassword ? 'section-chat-encryption new-password' : 'section-chat-encryption current-password'} aria-label={t('vault.password')} aria-describedby={newPassword ? 'vault-password-criteria' : undefined} value={password} onChange={event => { setPassword(event.target.value); setError(''); }} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => setCapsLock(false)} minLength={newPassword ? 12 : undefined} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
           {newPassword && <>
-            <label className="block text-[12px]">Confirm password<input type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete="section-chat-encryption new-password" aria-label="Confirm encryption password" aria-invalid={(!!confirmation && !passwordsMatch) || undefined} aria-describedby="vault-password-criteria" value={confirmation} onChange={event => setConfirmation(event.target.value)} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => { setCapsLock(false); }} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
-            <ul id="vault-password-criteria" aria-label="Password requirements" aria-live="polite" className="!mt-2 space-y-1.5 text-[12px]">
-              {([['At least 12 characters', meetsLength], ['Passwords match', passwordsMatch]] as const).map(([label, met]) => <li key={String(label)} data-met={String(met)} className={'flex items-center gap-2 ' + (met ? 'text-[var(--color-success)]' : 'text-[var(--color-text-tertiary)]')}>
-                {met ? <Check size={14} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}<span>{label}</span><span className="sr-only">{met ? 'Met' : 'Not met'}</span>
+            <label className="block text-[12px]">{t('vault.confirmPassword')}<input type={showPassword ? 'text' : 'password'} disabled={busy} autoComplete="section-chat-encryption new-password" aria-label={t('vault.confirmEncryptionPassword')} aria-invalid={(!!confirmation && !passwordsMatch) || undefined} aria-describedby="vault-password-criteria" value={confirmation} onChange={event => setConfirmation(event.target.value)} onKeyUp={event => setCapsLock(event.getModifierState('CapsLock'))} onBlur={() => { setCapsLock(false); }} maxLength={1024} className={inputClass + ' mt-2'} required /></label>
+            <ul id="vault-password-criteria" aria-label={t('vault.passwordRequirements')} aria-live="polite" className="!mt-2 space-y-1.5 text-[12px]">
+              {([['vault.minimumLength', meetsLength], ['vault.passwordMatch', passwordsMatch]] as const).map(([label, met]) => <li key={label} data-met={String(met)} className={'flex items-center gap-2 ' + (met ? 'text-[var(--color-success)]' : 'text-[var(--color-text-tertiary)]')}>
+                {met ? <Check size={14} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}<span>{t(label)}</span><span className="sr-only">{met ? t('vault.requirementMet') : t('vault.requirementUnmet')}</span>
               </li>)}
             </ul>
           </>}
-          <label className="flex items-center gap-2 text-[12px] text-[var(--color-text-secondary)]"><input type="checkbox" disabled={busy} checked={showPassword} onChange={event => setShowPassword(event.target.checked)} />{newPassword ? 'Show passwords' : 'Show password'}</label>
-          {capsLock && <p role="status" className="!mt-2 text-[12px] text-[var(--color-text-secondary)]">Caps Lock is on.</p>}
+          <label className="flex items-center gap-2 text-[12px] text-[var(--color-text-secondary)]"><input type="checkbox" disabled={busy} checked={showPassword} onChange={event => setShowPassword(event.target.checked)} />{newPassword ? t('vault.showPasswords') : t('vault.showPassword')}</label>
+          {capsLock && <p role="status" className="!mt-2 text-[12px] text-[var(--color-text-secondary)]">{t('vault.capsLock')}</p>}
         </>}
         {newPassword && <>
-          <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">Axiom cannot recover your encryption password. Save your recovery code. Without either, your chats cannot be decrypted.</p>
-          <label className="flex items-start gap-2 text-[12px]"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} className="mt-0.5" />I understand and will save my recovery code.</label>
+          <p className="text-[12px] leading-5 text-[var(--color-text-secondary)]">{t('vault.saveCodeWarning')}</p>
+          <label className="flex items-start gap-2 text-[12px]"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} className="mt-0.5" />{t('vault.understandRecovery')}</label>
         </>}
-        <button type="submit" disabled={busy || (mode === 'recover' ? !recovery.trim() : !password) || (newPassword && (password.length < 12 || password !== confirmation || !acknowledged))} className={buttonClass + ' w-full'}>{busy ? mode === 'unlock' ? 'Unlocking chats…' : mode === 'recover' ? 'Checking recovery code…' : 'Creating recovery code…' : mode === 'unlock' ? 'Unlock' : mode === 'recover' ? 'Recover chats' : 'Continue'}</button>
+        <button type="submit" disabled={busy || (mode === 'recover' ? !recovery.trim() : !password) || (newPassword && (password.length < 12 || password !== confirmation || !acknowledged))} className={buttonClass + ' w-full'}>{busy ? mode === 'unlock' ? t('vault.unlocking') : mode === 'recover' ? t('vault.checkingCode') : t('vault.creatingCode') : mode === 'unlock' ? t('vault.unlock') : mode === 'recover' ? t('vault.recover') : t('vault.continue')}</button>
       </form>}
-      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {sessionExpired && props.onSignIn && <button type="button" disabled={busy} onClick={props.onSignIn} className="underline">Sign in</button>}</p>}
+      {error && <p role="alert" className="mt-4 text-[12px] text-[var(--color-danger-strong)]">{error} {sessionExpired && props.onSignIn && <button type="button" disabled={busy} onClick={props.onSignIn} className="underline">{t('action.signIn')}</button>}</p>}
       {error.includes('encrypted local copy was kept') && props.onDownloadUnsynced && props.onUseSynced && <div className="mt-4 space-y-3 text-[12px]">
-        <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); }, false)}>Download unsynced encrypted copy</button>
-        <label className="flex items-start gap-2"><input type="checkbox" checked={discardConfirmed} onChange={event => setDiscardConfirmed(event.target.checked)} />I saved that copy and understand this device’s unsynced changes will be discarded.</label>
-        <button type="button" disabled={busy || !backupSaved || !discardConfirmed} className={inputClass} onClick={() => void perform(props.onUseSynced!, false)}>Use synced chats</button>
+        <button type="button" disabled={busy} className={inputClass} onClick={() => void perform(async () => { await props.onDownloadUnsynced!(); setBackupSaved(true); }, false)}>{t('vault.downloadUnsynced')}</button>
+        <label className="flex items-start gap-2"><input type="checkbox" checked={discardConfirmed} onChange={event => setDiscardConfirmed(event.target.checked)} />{t('vault.confirmDiscard')}</label>
+        <button type="button" disabled={busy || !backupSaved || !discardConfirmed} className={inputClass} onClick={() => void perform(props.onUseSynced!, false)}>{t('vault.useSynced')}</button>
       </div>}
       <div className="mt-5 flex flex-wrap gap-x-4 gap-y-3 text-[12px] text-[var(--color-text-tertiary)]">
-        {mode === 'unlock' && !code ? <><button type="button" disabled={busy} onClick={() => { setMode('recover'); setError(''); setPassword(''); setShowPassword(false); setCapsLock(false); }}>Use recovery code</button><button type="button" disabled={busy} onClick={() => { setMode('reset'); setError(''); setPassword(''); setShowPassword(false); setCapsLock(false); }}>Delete all chats and start fresh</button></>
-          : (mode !== 'setup' || code) && <button type="button" disabled={busy} onClick={cancel}>Cancel</button>}
-        <button type="button" disabled={busy} onClick={() => { cancel(); props.onSignOut(); }}>Sign out</button>
+        {mode === 'unlock' && !code ? <><button type="button" disabled={busy} onClick={() => { setMode('recover'); setError(''); setPassword(''); setShowPassword(false); setCapsLock(false); }}>{t('vault.useCode')}</button><button type="button" disabled={busy} onClick={() => { setMode('reset'); setError(''); setPassword(''); setShowPassword(false); setCapsLock(false); }}>{t('vault.deleteAll')}</button></>
+          : (mode !== 'setup' || code) && <button type="button" disabled={busy} onClick={cancel}>{t('action.cancel')}</button>}
+        <button type="button" disabled={busy} onClick={() => { cancel(); props.onSignOut(); }}>{t('action.signOut')}</button>
       </div>
-      <p className="mt-6 flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]"><ShieldCheck size={12} />Your encryption password never leaves this browser.</p>
+      <p className="mt-6 flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]"><ShieldCheck size={12} />{t('vault.localPassword')}</p>
     </section>
   </div>;
 }
