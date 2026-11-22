@@ -281,19 +281,18 @@ Native code enables `generate` when the installed image service passes its
 verified capability preflight, independently of chat vision support. It withholds
 and rejects `view_image` for chat models without vision, including after a model
 switch, and rejects their new image uploads. Other file types retain their own
-model capability checks. Image tools work independently of Web, MCP connections
-and Agent mode and never grant local or Web permissions. Image work starts
-through the LLM tool loop or an explicit per-image Regenerate action. The latter
-runs only the stored image request in a new image-only turn, preserving the chat
-prompt, original image, and later messages. The UI renders verified results with an
+model capability checks. Generation and viewing work independently of Web, MCP
+connections and Agent mode. Generation starts through the LLM tool loop or an
+explicit per-image Regenerate action. Regenerate runs only the stored image request
+in a new image-only turn, preserving the chat prompt, original image, and later
+messages. The UI renders verified results with an
 AstreaAI attribution and offers Save image. In Desktop, right-click an image in the
 chat or full-image viewer to copy the image to the system clipboard or save it.
 Click a generated or edited image to open the full-image viewer. Uploaded
 and previous generated/edited images can be edited; each edit keeps its source
 and creates a new result. Saved legacy `edit_image` results remain readable.
-The installed AstreaAI image adapter is required even when the chat model uses
-another provider; without it image tools are not registered and native image
-requests fail with an unavailable-service error. When the service is unavailable,
+The installed AstreaAI image adapter is required for generation and viewing,
+even when the chat model uses another provider. When the service is unavailable,
 the model is instructed to say image generation is currently unavailable and
 suggest trying again later, without claiming a model capability limitation or
 recommending a model switch. See the
@@ -316,6 +315,23 @@ while work is pending; its percentage and progress bar disappear after successfu
 result verification and settlement. This requires the
 matching streaming image cords and backend relay paths. Save image suggests
 a new random UUID `.png` filename on each click, including repeated saves.
+
+### Saving images to local files
+
+Axiom keeps conversation images in its encrypted local storage. The model uses
+`save_image` only when the user asks for a local copy or a processing step needs
+an image file. The tool accepts an exact `image_id` from the current conversation
+and a destination `path`. It writes the original image in its existing format
+and returns the resolved path for tools like Python. The resulting file is
+outside Axiom's encrypted storage.
+
+Use an absolute filename or a path relative to the Agent working directory. The
+parent directory must already exist, and the destination must be a new filename.
+The tool is available with **Ask for permission** and **Full access**, including
+for images from restored conversations when the image generation service is
+unavailable. **Ask for permission** prompts for the destination. Destinations
+outside the working directory require one-time approval in either mode. Configured
+file-write rules still apply.
 
 ## Limits
 

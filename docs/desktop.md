@@ -442,6 +442,10 @@ capable model and retains a textual successor summary; it never
 inserts encoded file bytes as message text. Older extracted-text attachments are
 readable in saved history but cannot be submitted as new uploads.
 
+With Agent enabled, ask the model to save an image from the conversation to a
+specific local filename. Agent can also export an image for processing in a
+local tool such as Python. See [saving images to local files](configuration.md#saving-images-to-local-files).
+
 ## Edit, regenerate and compaction
 
 Sent user messages show **Edit**, **Regenerate** and **Copy** beneath the bubble.
