@@ -138,8 +138,8 @@ test("shortcuts step every open window, tell the renderer, and reset to the plat
 
 test("the largest size grows a window that is smaller than its new minimum, except when maximized", async () => {
   const userData = await mkdtemp(join(tmpdir(), "axiom-interface-size-"));
+  const controller = new InterfaceSizeController(userData, "darwin");
   try {
-    const controller = new InterfaceSizeController(userData, "darwin");
     const small = fakeWindow([960, 640]);
     const maximized = fakeWindow([960, 640]);
     maximized.window.isMaximized = () => true;
@@ -151,5 +151,8 @@ test("the largest size grows a window that is smaller than its new minimum, exce
     controller.set(100);
     assert.deepEqual(small.record.minimum.at(-1), [960, 640]);
     assert.deepEqual(small.record.size, [1080, 720], "a smaller minimum never shrinks the window");
-  } finally { await rm(userData, { recursive: true, force: true }); }
+  } finally {
+    await controller.saved();
+    await rm(userData, { recursive: true, force: true });
+  }
 });
