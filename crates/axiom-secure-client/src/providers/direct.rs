@@ -599,17 +599,7 @@ impl DirectProvider {
     }
 
     fn image_runtime(&self, policy: &TrustPolicy) -> Result<axiom_inference::ImageRuntimePolicy> {
-        let runtime = installed_image_policy(&self.config)?;
-        if !policy.is_valid_at(now())
-            || !policy.require_nvidia_verified
-            || !policy.require_model_binding
-            || !policy.require_live_tls_binding
-        {
-            return Err(SecureClientError::attestation(
-                "strict image attestation policy required",
-            ));
-        }
-        Ok(runtime)
+        image_runtime_with_policy(&self.config, policy)
     }
 
     async fn prepare_image_worker(&self, cancel: &CancellationToken) -> anyhow::Result<()> {
@@ -921,6 +911,23 @@ pub(crate) fn installed_image_policy(
     }
     let runtime = direct_image_runtime();
     runtime.validate().map_err(SecureClientError::capability)?;
+    Ok(runtime)
+}
+
+pub(crate) fn image_runtime_with_policy(
+    config: &SecureClientConfig,
+    policy: &TrustPolicy,
+) -> Result<axiom_inference::ImageRuntimePolicy> {
+    let runtime = installed_image_policy(config)?;
+    if !policy.is_valid_at(now())
+        || !policy.require_nvidia_verified
+        || !policy.require_model_binding
+        || !policy.require_live_tls_binding
+    {
+        return Err(SecureClientError::attestation(
+            "strict image attestation policy required",
+        ));
+    }
     Ok(runtime)
 }
 

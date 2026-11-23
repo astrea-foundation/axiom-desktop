@@ -181,6 +181,7 @@ impl SecureClient {
         if let Some(image) = crate::image_overflow::try_image(
             &self.config,
             &self.credential,
+            &policy,
             &request,
             &progress,
             &cancellation,

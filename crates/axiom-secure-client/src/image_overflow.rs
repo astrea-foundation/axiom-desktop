@@ -32,7 +32,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     ApiCredential, EvidenceClaim, GeneratedImage, Result, SecureClientConfig, SecureClientError,
-    SecureErrorCode,
+    SecureErrorCode, TrustPolicy,
     catalog::relay_endpoint,
     http::{bounded_body, relay_client},
 };
@@ -234,6 +234,7 @@ fn eligible(request: &ImageGenerationRequest<'_>) -> Option<ImageDimensions> {
 pub(crate) async fn try_image(
     client: &SecureClientConfig,
     authority: &ApiCredential,
+    policy: &TrustPolicy,
     request: &ImageGenerationRequest<'_>,
     progress: &mpsc::Sender<ImageGenerationProgress>,
     cancel: &CancellationToken,
@@ -243,6 +244,10 @@ pub(crate) async fn try_image(
     };
     // A gateway delegation must stay on the direct provider when it falls back.
     if authority.expose().starts_with("axg_") {
+        return Ok(None);
+    }
+    let runtime = crate::providers::direct::image_runtime_with_policy(client, policy)?;
+    if u64::from(size.width) * u64::from(size.height) > runtime.image.max_pixels {
         return Ok(None);
     }
     let preparation = tokio::select! {
