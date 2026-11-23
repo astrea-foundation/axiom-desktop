@@ -2384,7 +2384,7 @@ fn send_event(
                 protocol::ToolCallUpdateFields::new().raw_output(
                     serde_json::json!({"imageResource": {
                         "callId":call_id,"sha256":image.sha256,"mimeType":image.mime_type,
-                        "width":image.width,"height":image.height
+                        "width":image.width,"height":image.height,"providerId":image.usage.provider_id
                     }}),
                 ),
                 revision,

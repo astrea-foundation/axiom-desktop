@@ -48,9 +48,7 @@ struct PersistedTrustPolicy {
 }
 
 impl SecureClient {
-    /// The installed direct (`AstreaAI`) provider is the only image service.
-    /// Without its trusted local configuration, image requests fail closed
-    /// before any network or catalog access.
+    /// The installed `AstreaAI` provider defines the image service's capabilities.
     fn image_provider(&self) -> Result<Arc<dyn crate::provider::SecureProvider>> {
         self.config
             .direct
@@ -180,6 +178,18 @@ impl SecureClient {
     ) -> Result<crate::GeneratedImage> {
         let provider = self.image_provider()?;
         let policy = self.trust_policy(cancellation.clone()).await?;
+        if let Some(image) = crate::image_overflow::try_image(
+            &self.config,
+            &self.credential,
+            &policy,
+            &request,
+            &progress,
+            &cancellation,
+        )
+        .await?
+        {
+            return Ok(image);
+        }
         // The image adapter remains paused for every chat model and regeneration.
         provider
             .image_request(&policy, request, false, Some(progress), cancellation)

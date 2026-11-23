@@ -123,7 +123,8 @@ export class AgentStateTransport {
             this.images.set(key, image);
           }
           used.add(key);
-          return { type: "image", mimeType: "image/png", axiomImageAsset: image.id, lazy: true, width: image.width, height: image.height };
+          return { type: "image", mimeType: "image/png", axiomImageAsset: image.id, lazy: true, width: image.width, height: image.height,
+            ...(resource.providerId === "chutes" ? { providerId: "chutes" } : {}) };
         }
         if (!this.context || block.mimeType !== "image/png" || typeof block.data !== "string"
           || block.data.length > 28_000_000) return empty;

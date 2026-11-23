@@ -285,8 +285,8 @@ model capability checks. Generation and viewing work independently of Web, MCP
 connections and Agent mode. Generation starts through the LLM tool loop or an
 explicit per-image Regenerate action. Regenerate runs only the stored image request
 in a new image-only turn, preserving the chat prompt, original image, and later
-messages. The UI renders verified results with an
-AstreaAI attribution and offers Save image. In Desktop, right-click an image in the
+messages. The UI renders verified results with their image provider and offers
+Save image. In Desktop, right-click an image in the
 chat or full-image viewer to copy the image to the system clipboard or save it.
 Click a generated or edited image to open the full-image viewer. Uploaded
 and previous generated/edited images can be edited; each edit keeps its source
@@ -385,6 +385,7 @@ different search destination. Search queries are not inference E2EE; see
 | `AXIOM_POOL_CLIENT_CONFIG_FILE` | Installed public pool pins and offerings; never a provider credential |
 | `AXIOM_LOCAL_RELAY_CA_FILE` | Explicit CA for an HTTPS loopback API; cannot change provider trust |
 | `AXIOM_DIRECT_CLIENT_CONFIG_FILE` | Explicit installed AstreaAI worker pins, verifier and capability flags; installers otherwise use their bundled configuration. See [AstreaAI connection](direct-verda.md) |
+| `AXIOM_IMAGE_OVERFLOW_CONFIG_FILE` | Absolute path to the optional gateway trust configuration for the [Desktop overflow pilot](direct-verda.md#desktop-chutes-overflow-preview) |
 | `AXIOM_DESKTOP_LOCAL_PROFILE=1` | Unpackaged loopback profile with separate Electron/native storage |
 | `AXIOM_DESKTOP_LOCAL_CREDENTIALS=1` | Explicit unpackaged local-profile opt-in to the debug native credential file; both API and auth origins must be loopback |
 | `AXIOMCLI_LOCAL_DEV_CREDENTIALS=1` | Debug Unix builds only: owner-only, origin-scoped credentials under the isolated native data directory; rejected for remote origins, release builds and API-key overrides |

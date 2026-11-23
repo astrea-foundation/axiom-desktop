@@ -212,7 +212,8 @@ function mergeTool(
 ): ToolActivity {
   const resource = object(object(update.rawOutput)?.imageResource);
   const content = resource ? [{ type: "image", mimeType: resource.mimeType, width: resource.width, height: resource.height,
-    imageResource: { callId: resource.callId, sha256: resource.sha256 } }]
+    imageResource: { callId: resource.callId, sha256: resource.sha256,
+      ...(resource.providerId === "chutes" ? { providerId: "chutes" } : {}) } }]
     : Array.isArray(update.content) ? update.content : [];
   const locations = Array.isArray(update.locations) ? update.locations : [];
   return {

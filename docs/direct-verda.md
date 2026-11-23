@@ -231,7 +231,7 @@ native storage beneath `.axiom-staging/profiles/<name>/`. Debug builds also
 scope a named staging profile's system Keychain credential to that profile,
 so qualification never reads or replaces the ordinary staging account's token.
 The default staging
-profile retains its previous paths. Only public Direct/pool configuration paths
+profile retains its previous paths. Public Direct, pool and overflow configuration paths
 are forwarded; local CA and local credential overrides are not forwarded to a
 hosted staging process. Packaged applications ignore these development profiles.
 
@@ -239,6 +239,32 @@ hosted staging process. Packaged applications ignore these development profiles.
 source and locked Python requirements. This owned bundle lets companion measured
 gateways package the same independent verifier from the pinned native repository
 without relying on a neighboring checkout or a client-held signing key.
+
+### Desktop Chutes overflow preview
+
+An unpackaged Desktop staging profile can opt into Chutes overflow with
+`AXIOM_IMAGE_OVERFLOW_CONFIG_FILE`. Use the staging account controller and
+attested gateway with the overflow pilot enabled for the same native account.
+Generate the native verifier from the reviewed gateway source under
+`verifier/` using `go build -o /absolute/path/axiom-gateway-verify ./cmd/native`.
+Set the following fields in a local JSON file using the staging gateway's
+public origin and publisher key and the installed verifier's SHA-256.
+
+```json
+{
+  "gateway_origin": "https://axiom-gateway-staging.axiomai.containers.tinfoil.dev",
+  "publisher_key": "<64 lowercase hex characters>",
+  "verifier": "/absolute/path/axiom-gateway-verify",
+  "verifier_sha256": "<64 lowercase hex characters>"
+}
+```
+
+Desktop asks the controller for a pilot grant before sending any prompt. It
+verifies fresh gateway evidence locally and uses the encrypted gateway image
+operation for eligible text-only jobs with explicit dimensions. A pre-reservation
+decline returns the job to direct AstreaAI admission. Desktop keeps a dispatched
+overflow attempt on its original route and accepts only an authenticated and
+settled image. AstreaAI handles image edits and sizes outside the Chutes pilot.
 
 ## Verification and completion
 
