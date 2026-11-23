@@ -4,17 +4,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { AccountPresentation } from "@axiom/chat-core/account";
 import { AxiomMark } from "./AxiomLogo";
 import { LoadProgressBar } from "./LoadProgressBar";
+import { useChatLocale } from "./ChatLocale";
 
 type Preparation = Extract<AccountPresentation, { kind: "starting" | "unavailable" }>;
 type Phase = NonNullable<Preparation["phase"]> | "starting";
-const steps: Record<Phase, string> = {
-  starting: "Start Axiom",
-  checking_sign_in: "Check sign-in",
-  switching_account: "Update account",
-  opening_chats: "Unlock saved key",
-  decrypting_chats: "Decrypt chats",
-};
-
 // Native preparation is a fixed pipeline; sign-in checks and account switches
 // occupy the same slot. Storage decryption itself is one indivisible SQLCipher
 // open, so the bar advances only on observed stage changes, never on a timer.
@@ -39,7 +32,9 @@ export function ChatPreparationScreen({ account, onRetry, onOpenSettings }: {
   onRetry: () => void | Promise<unknown>;
   onOpenSettings?: (trigger: HTMLElement) => void;
 }) {
+  const { t } = useChatLocale();
   const phase: Phase = account.phase ?? "starting";
+  const progress = { step: stepPosition[phase] + 1, total: stepCount, label: t(`preparation.${phase}`) };
   const failed = account.kind === "unavailable";
   const [history, setHistory] = useState<{ failed: boolean; steps: Phase[] }>({ failed, steps: [phase] });
   const [retrying, setRetrying] = useState(false);
@@ -65,7 +60,7 @@ export function ChatPreparationScreen({ account, onRetry, onOpenSettings }: {
     catch (cause) { setRetryError(cause instanceof Error ? cause.message : String(cause)); }
     finally { inFlight.current = false; setRetrying(false); }
   }
-  return <section ref={root} data-chat-preparation aria-label="Chat preparation" aria-describedby={`${id}-description`}
+  return <section ref={root} data-chat-preparation aria-label={t("preparation.label")} aria-describedby={`${id}-description`}
     className="flex w-full min-w-0 flex-col items-center text-center">
     <AxiomMark className="mb-6 h-7 w-auto shrink-0" />
     <div role="status" aria-live="polite" aria-atomic="true"><h1 ref={heading} id={id} tabIndex={-1} className="text-[clamp(28px,4.2vw,44px)] font-normal leading-[1.08] tracking-[-0.035em] text-[var(--color-text-primary)] outline-none"
@@ -74,34 +69,34 @@ export function ChatPreparationScreen({ account, onRetry, onOpenSettings }: {
     </h1></div>
     <p id={`${id}-description`} role={failed ? "alert" : undefined} className="mt-3 max-w-[52ch] text-[14px] leading-relaxed text-[var(--color-text-secondary)]">{account.detail}</p>
     <div aria-busy={!failed || retrying} className="chat-preparation-surface shadow-glass-card relative mt-6 flex min-h-[168px] w-full flex-col justify-center overflow-hidden rounded-[22px] border border-[var(--color-border)] bg-[var(--surface-card)] px-5 py-6 text-left sm:px-6">
-      <ol aria-label="Observed preparation steps" className="space-y-4">
+      <ol aria-label={t("preparation.steps")} className="space-y-4">
         {currentSteps.map(step => {
           const active = step === phase;
           const encrypted = step === "opening_chats" || step === "decrypting_chats";
           const Icon = !active ? Check : failed ? CircleAlert : encrypted ? LockKeyhole : LoaderCircle;
           return <li key={step} aria-current={active ? "step" : undefined} className={`flex min-w-0 items-center gap-3 text-[13px] ${active ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-secondary)]"}`}>
             <Icon size={18} strokeWidth={1.7} aria-hidden="true" className={`shrink-0 ${active && !failed ? encrypted ? "chat-preparation-pulse text-brand" : "animate-spin text-brand motion-reduce:animate-none" : ""}`} />
-            <span className="min-w-0 flex-1">{steps[step]}</span>
-            <span className="shrink-0 text-[11.5px] text-[var(--color-text-secondary)]">{active ? failed ? "Didn’t finish" : "In progress" : "Done"}</span>
+            <span className="min-w-0 flex-1">{t(`preparation.${step}`)}</span>
+            <span className="shrink-0 text-[11.5px] text-[var(--color-text-secondary)]">{t(active ? failed ? "preparation.failed" : "preparation.inProgress" : "preparation.done")}</span>
           </li>;
         })}
       </ol>
       {failed ? <>
         {account.technicalDetails ? <details className="mt-5 text-[12px] text-[var(--color-text-secondary)]">
-          <summary className="cursor-pointer">Details</summary><p className="mt-2 whitespace-pre-wrap break-words">{account.technicalDetails}</p>
+          <summary className="cursor-pointer">{t("action.details")}</summary><p className="mt-2 whitespace-pre-wrap break-words">{account.technicalDetails}</p>
         </details> : null}
         {retryError ? <p role="alert" className="mt-3 text-[12px] text-[var(--color-danger-strong)]">{retryError}</p> : null}
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <button type="button" disabled={retrying} onClick={() => void retry()} className="inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-[12px] font-medium text-on-brand hover:bg-brand-hover disabled:opacity-50">
-            <RefreshCw size={13} aria-hidden="true" className={retrying ? "animate-spin motion-reduce:animate-none" : ""} />{retrying ? "Trying again…" : "Try again"}
+            <RefreshCw size={13} aria-hidden="true" className={retrying ? "animate-spin motion-reduce:animate-none" : ""} />{t(retrying ? "preparation.retrying" : "action.retry")}
           </button>
-          {onOpenSettings ? <button type="button" onClick={event => onOpenSettings(event.currentTarget)} className="inline-flex items-center gap-2 rounded-full bg-[var(--wash-chip)] px-4 py-2 text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--wash-chip-hover)]"><Settings size={13} aria-hidden="true" />Open Settings</button> : null}
+          {onOpenSettings ? <button type="button" onClick={event => onOpenSettings(event.currentTarget)} className="inline-flex items-center gap-2 rounded-full bg-[var(--wash-chip)] px-4 py-2 text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--wash-chip-hover)]"><Settings size={13} aria-hidden="true" />{t("preparation.openSettings")}</button> : null}
         </div>
-      </> : <LoadProgressBar className="mt-6" label="Chat preparation progress"
+      </> : <LoadProgressBar className="mt-6" label={t("preparation.progress")}
         value={stepPosition[phase] / stepCount} active={1 / stepCount}
-        valueText={`Step ${stepPosition[phase] + 1} of ${stepCount}: ${steps[phase]}`}
-        start={steps[phase]} end={`Step ${stepPosition[phase] + 1} of ${stepCount}`} />}
+        valueText={t("preparation.currentStepDescription", progress)}
+        start={progress.label} end={t("preparation.currentStep", progress)} />}
     </div>
-    {!failed ? <p className="mt-4 inline-flex items-center justify-center gap-1.5 text-[11.5px] text-[var(--color-text-secondary)]"><ShieldCheck size={12} aria-hidden="true" className="shrink-0" />Your saved chats stay encrypted on this device.</p> : null}
+    {!failed ? <p className="mt-4 inline-flex items-center justify-center gap-1.5 text-[11.5px] text-[var(--color-text-secondary)]"><ShieldCheck size={12} aria-hidden="true" className="shrink-0" />{t("preparation.encryptedStorage")}</p> : null}
   </section>;
 }

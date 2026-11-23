@@ -1,4 +1,5 @@
 import { Folder, PanelLeftOpen } from "lucide-react";
+import { useChatLocale } from "@axiom/chat-ui/ChatLocale";
 import { isChatPreparation } from "@axiom/chat-core/account";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BalanceScreen } from "./components/BalanceScreen";
@@ -22,6 +23,7 @@ import { WebConsentDialog } from "./components/WebConsentDialog";
 import { WelcomeView } from "./components/WelcomeView";
 import { WindowControls } from "./components/WindowControls";
 import { FirstLaunchUpdate } from "./components/FirstLaunchUpdate";
+import { desktopMessages } from "./lib/desktopMessages";
 import { setThemePreference, useTheme } from "./lib/theme";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import { useDesktopUpdates } from "./useDesktopUpdates";
@@ -37,6 +39,8 @@ import { PROOF_IDLE_AFTER_MS } from "./privacyProof";
 const SIDEBAR_WIDTH = 260;
 
 export function App() {
+  const { locale, t } = useChatLocale();
+  const copy = desktopMessages[locale];
   const updates = useDesktopUpdates();
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("appearance");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -135,7 +139,7 @@ export function App() {
       showSettings: (open) => setAccountScreen(open ? "settings" : null),
       showWelcome,
       openModelPicker: () => {
-        document.querySelector<HTMLButtonElement>('[title="Select model"]')?.click();
+        document.querySelector<HTMLButtonElement>('[data-model-picker-trigger]')?.click();
       },
       showProxy,
       showFolder: () => {
@@ -150,7 +154,7 @@ export function App() {
         if (target) void loadThread(target);
       },
       showSignIn: (open = true) => {
-        document.querySelector<HTMLButtonElement>('[title="Select model"][aria-expanded="true"]')?.click();
+        document.querySelector<HTMLButtonElement>('[data-model-picker-trigger][aria-expanded="true"]')?.click();
         setAccountScreen(null);
         if (!open) {
           setSignInState({ kind: "closed" });
@@ -172,9 +176,9 @@ export function App() {
   }, [folders, loadThread, showProxy, showWelcome, threads]);
 
   const title = surface === "proxy"
-    ? (proxyInspecting ? "Attestation" : "Proxy")
+    ? (proxyInspecting ? copy.attestation : t("sidebar.proxy"))
     : surface === "welcome" || !activeThread
-      ? "New thread"
+      ? t("sidebar.newThread")
       : activeThread.title;
 
   const runCollectionIntent = (intent: Promise<unknown> | undefined) => {
@@ -293,7 +297,7 @@ export function App() {
         <div className="stage-ring pointer-events-none absolute inset-0" aria-hidden="true" />
         <section data-chat-drop-zone {...fileDrop.handlers} className="stage-card absolute inset-px flex flex-col overflow-hidden rounded-[21px] bg-[var(--surface-stage)]">
           {fileDrop.dragging ? <div data-file-drop-overlay className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-[16px] border-2 border-dashed border-[var(--color-cherry)] bg-[var(--surface-stage)]/90">
-            <div className="rounded-xl bg-[var(--surface-float)] px-6 py-4 text-center text-[15px] font-medium text-[var(--color-text-primary)]">Drop files to attach</div>
+            <div className="rounded-xl bg-[var(--surface-float)] px-6 py-4 text-center text-[15px] font-medium text-[var(--color-text-primary)]">{copy.dropFiles}</div>
           </div> : null}
           <header
             className={[
@@ -303,7 +307,7 @@ export function App() {
               "pr-2",
             ].join(" ")}
           >
-            {!sidebarOpen ? <button type="button" onClick={() => setSidebarOpen(true)} className="no-drag mr-2 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)]" aria-label="Open sidebar"><PanelLeftOpen size={16} /></button> : null}
+            {!sidebarOpen ? <button type="button" onClick={() => setSidebarOpen(true)} className="no-drag mr-2 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface-hover)]" aria-label={t("sidebar.open")}><PanelLeftOpen size={16} /></button> : null}
             <div className="flex min-w-0 flex-1 items-center gap-2 pl-1 text-[13px] font-medium tracking-tight">
               <OverflowTitle text={title} />
               {surface === "thread" && activeThread?.folderId ? (() => {
@@ -391,19 +395,19 @@ export function App() {
               <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-[var(--color-text-tertiary)]">
                 {threadLoadError?.id === activeThreadId ? (
                   <>
-                    <p role="alert">Could not open this thread. {threadLoadError.detail}</p>
+                    <p role="alert">{copy.threadOpenFailed} {threadLoadError.detail}</p>
                     <div className="flex gap-3">
                       <button type="button" className="rounded-md bg-[var(--wash-row)] px-3 py-2" onClick={() => {
                         if (activeThreadId) void ensureThreadLoaded(activeThreadId, true);
-                      }}>Retry</button>
-                      <button type="button" className="rounded-md bg-[var(--wash-row)] px-3 py-2" onClick={showWelcome}>New thread</button>
+                      }}>{copy.retry}</button>
+                      <button type="button" className="rounded-md bg-[var(--wash-row)] px-3 py-2" onClick={showWelcome}>{t("sidebar.newThread")}</button>
                     </div>
                   </>
                 ) : (
                   // One native load request; no partial counts exist, so the bar stays indeterminate.
                   <div className="w-full max-w-[280px] px-6">
-                    <p className="mb-3 text-center">Loading thread…</p>
-                    <LoadProgressBar label="Loading thread" />
+                    <p className="mb-3 text-center">{copy.loadingThread}</p>
+                    <LoadProgressBar label={copy.loadingThreadLabel} />
                   </div>
                 )}
               </div>

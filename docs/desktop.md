@@ -640,6 +640,11 @@ To keep streamed replies responsive, blocks over 50,000 characters (10,000 for
 automatic language detection), or beyond a 100,000-character per-message highlighting
 budget, remain plain text without truncation. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
+**Settings → Appearance → Language** switches between English and Japanese.
+Axiom starts with the first supported language in your system preferences and
+remembers an explicit choice in the Desktop profile. Japanese covers the welcome
+screen, sidebar, composer, chat preparation and settings navigation. Some
+specialized panels and native dialogs still use English.
 **Settings → Appearance → Interface size** scales text, icons and spacing together
 by zooming the window: 100%, 110%, 125% or 150%. Windows and Linux start at 110%
 and macOS at 100%. `Ctrl` (`⌘` on macOS) with `+`, `-` and `0` steps through the

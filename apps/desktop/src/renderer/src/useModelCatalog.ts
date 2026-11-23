@@ -1,3 +1,5 @@
+import { useChatLocale } from "@axiom/chat-ui/ChatLocale";
+import { desktopMessages } from "./lib/desktopMessages";
 import type { ClientState, ListModelsResponse } from "@axiom/axiom-acp-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { desktopErrorMessage } from "./signInFlow";
@@ -251,21 +253,23 @@ export function useModelCatalog(agentState: ClientState, navigation: ReturnType<
     });
   };
 
+  const { locale, t } = useChatLocale();
+  const copy = desktopMessages[locale];
   const modelStatusLabel = models.length && modelId && !selectedModel
-    ? unavailableModels.some((model) => model.id === modelId) ? "Model temporarily unavailable" : "Model unavailable"
+    ? unavailableModels.some((model) => model.id === modelId) ? copy.modelTemporarilyUnavailable : copy.modelUnavailable
     : !agentState.connected || !desktopReady
-    ? "Starting…"
+    ? copy.modelStarting
     : !agentState.account || agentState.account.state === "starting"
-      ? "Preparing your account…"
+      ? copy.modelPreparing
     : modelCatalogError
-      ? "Models unavailable"
+      ? copy.modelsUnavailable
       : agentState.account?.state === "expired"
-        ? "Sign in again"
+        ? t("action.signInAgain")
         : agentState.account?.state === "unavailable"
-          ? "Models unavailable"
+          ? copy.modelsUnavailable
           : agentState.account?.state === "valid"
-            ? "Loading models…"
-            : "Sign in for models";
+            ? copy.modelsLoading
+            : copy.signInForModels;
   const refreshModels = useCallback(() => setModelCatalogRefresh((version) => version + 1), []);
   const clearModels = useCallback(() => { setModels([]); setUnavailableModels([]); setModelCatalogError(null); }, []);
   const rememberSelection = useCallback((model: string, thinking: ReasoningEffort) => {

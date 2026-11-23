@@ -48,3 +48,5 @@ export * from "./VaultScreen";
 
 export * from "./AccountScreen";
 export * from "./SettingsLayout";
+export * from "./ChatLocale";
+export { chatTranslator, isChatLocale, preferredChatLocale, type ChatLocale } from "./messages";

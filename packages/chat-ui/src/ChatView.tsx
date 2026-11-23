@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+import { useChatLocale } from "./ChatLocale";
 import { ArrowDown } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ClientSessionState, PromptAttachment } from "@axiom/chat-core/viewTypes";
@@ -85,6 +86,7 @@ export function ChatView({
   webDisabled,
   onWebToggle,
 }: ChatViewProps) {
+  const { t } = useChatLocale();
   const autoScroll = useChatAutoScroll(preparation?.id ?? session?.sessionId ?? "");
 
   return (
@@ -95,7 +97,7 @@ export function ChatView({
         ref={autoScroll.viewportRef}
         data-chat-scroll
         role="region"
-        aria-label="Chat messages"
+        aria-label={t("chat.messages")}
         tabIndex={0}
         className="title-fade h-full overflow-y-auto px-4 sm:px-6"
         style={{ overflowAnchor: "none" }}
@@ -111,7 +113,7 @@ export function ChatView({
           type="button"
           onClick={autoScroll.resume}
           onWheel={autoScroll.onOverlayWheel}
-          aria-label="Scroll to latest"
+          aria-label={t("chat.scrollToLatest")}
           className="shadow-glass-pop animate-fade-in absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-[var(--surface-float)] text-[var(--color-text-secondary)] transition-[transform,color] hover:text-[var(--color-text-primary)] active:scale-90"
         >
           <ArrowDown size={16} />

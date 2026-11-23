@@ -5,6 +5,8 @@ import { useTheme, type ThemePreference } from "../lib/theme";
 import { useInterfaceSize } from "../lib/interfaceSize";
 import { isMac } from "../lib/window-chrome";
 import { INTERFACE_SIZES } from "../../../shared/interface-size";
+import { ChatLanguageSelect, useChatLocale } from "@axiom/chat-ui/ChatLocale";
+import { desktopMessages } from "../lib/desktopMessages";
 import { SettingsLayout } from "@axiom/chat-ui/SettingsLayout";
 import { SettingsPanel, type SettingsCategory } from "./SettingsPanel";
 import { UsagePanel } from "./UsagePanel";
@@ -17,11 +19,7 @@ import { FactoryResetPanel } from "./FactoryResetPanel";
 import { ClearChatsPanel, type ClearChatsOptions } from "./ClearChatsPanel";
 import { accountPresentation } from "../signInFlow";
 
-const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "System" },
-];
+const THEME_OPTIONS = ["light", "dark", "system"] as const satisfies readonly ThemePreference[];
 
 interface SettingsSheetProps {
   initialCategory?: SettingsCategory;
@@ -50,37 +48,39 @@ export function SettingsSheet({
   onLogout,
   onManageAccount,
 }: SettingsSheetProps) {
+  const { locale, t } = useChatLocale();
+  const copy = desktopMessages[locale];
   const [category, setCategory] = useState<SettingsCategory>(initialCategory);
   const id = useId();
   const theme = useTheme();
   const interfaceSize = useInterfaceSize();
   const signedIn = account?.state === "valid";
-  const accountView = accountPresentation(connected, true, account);
+  const accountView = accountPresentation(connected, true, account, locale);
   const preparingAccount = accountView.kind === "starting";
   const avatar = accountAvatar(account?.account?.displayName);
   const accountLabel = signedIn
-    ? (account.account?.displayName || account.account?.verifiedEmail || "Connected Axiom account")
+    ? (account.account?.displayName || account.account?.verifiedEmail || copy.connectedAccount)
     : accountView.title;
   const linkedMethods = account?.account?.linkedMethods?.map((method) => ({
-    passkey: "Passkey",
+    passkey: copy.passkey,
     google: "Google",
-    password: "Email and password",
-    ethereum_wallet: "Ethereum wallet",
+    password: copy.emailPassword,
+    ethereum_wallet: copy.ethereumWallet,
   })[method]) ?? [];
   return (
     <SettingsLayout category={category} onCategory={setCategory} idPrefix={id} onClose={onClose}>
           <SettingsPanel category="appearance" active={category} idPrefix={id}>
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4 text-[13px]">
               <div>
-                <h3 className="font-medium text-[var(--color-text-primary)]">Theme</h3>
-                <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">Choose a look, or follow your system.</p>
+                <h3 className="font-medium text-[var(--color-text-primary)]">{t("theme.label")}</h3>
+                <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">{copy.themeDescription}</p>
               </div>
               <div
                 className="flex gap-1 rounded-[8px] bg-[var(--surface-track)] p-0.5"
                 role="radiogroup"
-                aria-label="Theme"
+                aria-label={t("theme.label")}
                 onKeyDown={(event) => {
-                  const current = THEME_OPTIONS.findIndex((option) => option.value === theme.preference);
+                  const current = THEME_OPTIONS.indexOf(theme.preference);
                   const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
                     : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
                   const target = event.key === "Home" ? 0
@@ -89,40 +89,44 @@ export function SettingsSheet({
                   const next = target < 0 ? undefined : THEME_OPTIONS[target];
                   if (!next) return;
                   event.preventDefault();
-                  theme.setPreference(next.value);
+                  theme.setPreference(next);
                   (event.currentTarget.children[target] as HTMLElement | undefined)?.focus();
                 }}
               >
                 {THEME_OPTIONS.map((option) => (
                   <button
-                    key={option.value}
+                    key={option}
                     type="button"
                     role="radio"
-                    aria-checked={theme.preference === option.value}
-                    tabIndex={theme.preference === option.value ? 0 : -1}
-                    onClick={() => theme.setPreference(option.value)}
+                    aria-checked={theme.preference === option}
+                    tabIndex={theme.preference === option ? 0 : -1}
+                    onClick={() => theme.setPreference(option)}
                     className={[
                       "rounded-[6px] px-2.5 py-1 text-[12.5px] transition-colors",
-                      theme.preference === option.value
+                      theme.preference === option
                         ? "bg-[var(--surface-tile)] text-[var(--color-text-primary)] shadow-glass-tile"
                         : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
                     ].join(" ")}
                   >
-                    {option.label}
+                    {t(`theme.${option}`)}
                   </button>
                 ))}
               </div>
             </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-4 rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4 text-[13px]">
+              <h3 className="font-medium text-[var(--color-text-primary)]">{t("language.label")}</h3>
+              <ChatLanguageSelect className="rounded-md border border-[var(--color-border)] bg-[var(--surface-tile)] px-2.5 py-1.5 text-[var(--color-text-primary)]" />
+            </div>
             {interfaceSize ? (
               <div className="mt-3 flex flex-wrap items-center justify-between gap-4 rounded-[13px] border border-[var(--color-border)] bg-[var(--wash-row)] p-4 text-[13px]">
                 <div>
-                  <h3 className="font-medium text-[var(--color-text-primary)]">Interface size</h3>
-                  <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">Scales text and controls together. Also {isMac ? "⌘" : "Ctrl"} + and {isMac ? "⌘" : "Ctrl"} −.</p>
+                  <h3 className="font-medium text-[var(--color-text-primary)]">{copy.interfaceSize}</h3>
+                  <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)]">{copy.interfaceSizeDescription.replaceAll("{modifier}", isMac ? "⌘" : "Ctrl")}</p>
                 </div>
                 <div
                   className="flex gap-1 rounded-[8px] bg-[var(--surface-track)] p-0.5"
                   role="radiogroup"
-                  aria-label="Interface size"
+                  aria-label={copy.interfaceSize}
                   onKeyDown={(event) => {
                     const current = INTERFACE_SIZES.indexOf(interfaceSize.size);
                     const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
@@ -143,7 +147,7 @@ export function SettingsSheet({
                       type="button"
                       role="radio"
                       aria-checked={interfaceSize.size === size}
-                      aria-label={size === interfaceSize.defaultSize ? `${size}%, default` : `${size}%`}
+                      aria-label={size === interfaceSize.defaultSize ? copy.defaultSize.replace("{size}", String(size)) : `${size}%`}
                       tabIndex={interfaceSize.size === size ? 0 : -1}
                       onClick={() => interfaceSize.setSize(size)}
                       className={[
@@ -174,13 +178,13 @@ export function SettingsSheet({
                     </span>
                   )}
                   <div className="min-w-0 flex-1">
-                    <div className="break-words text-[15px] font-medium leading-5 tracking-[-0.01em] text-[var(--color-text-primary)]">{connected ? accountLabel : "AxiomCLI disconnected"}</div>
+                    <div className="break-words text-[15px] font-medium leading-5 tracking-[-0.01em] text-[var(--color-text-primary)]">{connected ? accountLabel : copy.disconnected}</div>
                     {signedIn && account?.account?.displayName && account.account.verifiedEmail ? <p className="mt-0.5 break-all text-[12.5px] leading-[18px] text-[var(--color-text-secondary)]">{account.account.verifiedEmail}</p> : null}
                     <div className="mt-1.5 flex items-start gap-1.5 text-[12px] leading-[18px] text-[var(--color-text-tertiary)]">
                       {signedIn || account?.state === "expired" || accountView.kind === "unavailable" ? (
                         <span className={`mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full ${signedIn ? "bg-[var(--color-success)]" : "bg-[var(--color-warning)]"}`} aria-hidden="true" />
                       ) : null}
-                      <span className="min-w-0 break-words">{signedIn ? "Signed in" : accountView.detail}</span>
+                      <span className="min-w-0 break-words">{signedIn ? copy.signedIn : accountView.detail}</span>
                     </div>
                   </div>
                   <button
@@ -188,14 +192,14 @@ export function SettingsSheet({
                     onClick={onRefreshAccount}
                     disabled={!connected || preparingAccount}
                     className="-mr-1 -mt-1 shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-surface-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-35"
-                    aria-label="Refresh account"
+                    aria-label={copy.refreshAccount}
                   >
                     <RefreshCw size={14} />
                   </button>
                 </div>
                 {signedIn && linkedMethods.length > 0 ? (
                   <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-[var(--color-border)] px-4 py-3 text-[12px] leading-[18px]">
-                    <span className="text-[var(--color-text-tertiary)]">Sign-in methods</span>
+                    <span className="text-[var(--color-text-tertiary)]">{copy.signInMethods}</span>
                     <span className="text-[var(--color-text-secondary)]">{linkedMethods.join(", ")}</span>
                   </div>
                 ) : null}
@@ -207,7 +211,7 @@ export function SettingsSheet({
                         onClick={onManageAccount}
                         className="flex items-center gap-1.5 rounded-md border border-[var(--color-border-strong)] bg-[var(--surface-button-secondary)] px-3 py-1.5 text-[12.5px] font-medium text-[var(--color-text-primary)] transition-[background-color,border-color,transform] duration-150 hover:border-[var(--color-border-accent)] hover:bg-[var(--surface-button-secondary-hover)] active:scale-[0.97]"
                       >
-                        Manage account
+                        {copy.manageAccount}
                         <ArrowUpRight size={13} />
                       </button>
                       <button
@@ -217,7 +221,7 @@ export function SettingsSheet({
                         className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-secondary)] transition-colors duration-150 enabled:hover:bg-[var(--wash-hover)] enabled:hover:text-[var(--color-text-primary)] disabled:opacity-50"
                       >
                         <LogOut size={13} />
-                        Sign out
+                        {t("action.signOut")}
                       </button>
                     </>
                   ) : (
@@ -228,12 +232,12 @@ export function SettingsSheet({
                       className="flex items-center gap-1.5 rounded-md bg-[var(--color-cherry)] px-3 py-1.5 text-[12.5px] font-medium text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] duration-150 enabled:hover:bg-[var(--color-cherry-bright)] enabled:active:scale-[0.97] disabled:opacity-50"
                     >
                       <LogIn size={13} />
-                      {preparingAccount ? "Getting ready…" : account?.state === "expired" ? "Sign in again" : "Sign in"}
+                      {preparingAccount ? t("account.readying") : account?.state === "expired" ? t("action.signInAgain") : t("action.signIn")}
                     </button>
                   )}
                 </div>
               </div>
-              <p className="mt-3 text-[12px] leading-5 text-[var(--color-text-tertiary)]">Your sign-in is shared with AxiomCLI on this device.</p>
+              <p className="mt-3 text-[12px] leading-5 text-[var(--color-text-tertiary)]">{copy.accountShared}</p>
             </div>
           </SettingsPanel>
 
@@ -258,7 +262,7 @@ export function SettingsSheet({
           <SettingsPanel category="api-keys" active={category} idPrefix={id}>
             {category === "api-keys" && (connected && signedIn && account.account ? <ApiKeysPanel
               key={`${runtimeInstanceId}:${account.account.id}`} accountId={account.account.id} onLogin={onLogin}
-            /> : <div className="text-[13px] text-[var(--color-text-secondary)]"><p>Sign in to manage API keys.</p><button type="button" disabled={!connected} onClick={onLogin} className="mt-4 rounded-lg border border-[var(--color-border)] px-3 py-2 disabled:opacity-50">Sign in</button></div>)}
+            /> : <div className="text-[13px] text-[var(--color-text-secondary)]"><p>Sign in to manage API keys.</p><button type="button" disabled={!connected} onClick={onLogin} className="mt-4 rounded-lg border border-[var(--color-border)] px-3 py-2 disabled:opacity-50">{t("action.signIn")}</button></div>)}
           </SettingsPanel>
           <SettingsPanel category="updates" active={category} idPrefix={id}>
             <UpdatesPanel updates={updates} />
