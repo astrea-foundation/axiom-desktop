@@ -21,7 +21,7 @@ export function localProfile(options: {
     if (name !== undefined && !/^[a-z0-9][a-z0-9-]{0,47}$/.test(name)) throw new Error("Invalid staging profile name");
     const root = name ? join(home, ".axiom-staging", "profiles", name) : join(home, ".axiom-staging");
     const sidecarEnv: NodeJS.ProcessEnv = { XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data") };
-    for (const key of ["AXIOM_DIRECT_CLIENT_CONFIG_FILE", "AXIOM_POOL_CLIENT_CONFIG_FILE"] as const) {
+    for (const key of ["AXIOM_DIRECT_CLIENT_CONFIG_FILE", "AXIOM_POOL_CLIENT_CONFIG_FILE", "AXIOM_IMAGE_OVERFLOW_CONFIG_FILE"] as const) {
       const path = environment[key];
       if (path !== undefined) {
         if (!isAbsolute(path)) throw new Error(`${key} requires an absolute path`);

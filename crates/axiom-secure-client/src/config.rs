@@ -33,6 +33,7 @@ pub struct SecureClientConfig {
     pub pool: Option<crate::PoolClientConfig>,
     /// Explicit operator installation; never accepted from a remote catalog.
     pub direct: Option<axiom_pool_client::direct::DirectConfig>,
+    pub(crate) image_overflow: Option<Arc<crate::image_overflow::Config>>,
     #[cfg(feature = "test-fixture")]
     test_fixture: bool,
 }
@@ -61,6 +62,7 @@ impl SecureClientConfig {
             endpoint_policy: EndpointPolicy::default(),
             pool: crate::providers::pool::installed_config()?,
             direct,
+            image_overflow: crate::image_overflow::Config::installed()?.map(Arc::new),
             #[cfg(feature = "test-fixture")]
             test_fixture: false,
         })
@@ -98,6 +100,7 @@ impl SecureClientConfig {
             },
             pool: None,
             direct: None,
+            image_overflow: None,
             test_fixture: true,
         })
     }

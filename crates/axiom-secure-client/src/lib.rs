@@ -8,6 +8,7 @@ mod client;
 mod config;
 mod error;
 mod http;
+mod image_overflow;
 mod lease;
 mod near_budget;
 mod provider;

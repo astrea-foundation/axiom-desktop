@@ -13,7 +13,7 @@ import { useChatHost } from "./ChatHost";
 const MAX_DETAIL_CHARS = 16_000;
 const SENSITIVE_KEY = /authorization|api.?key|password|secret|token|cookie/i;
 
-type ToolImage = {type:"image"; mimeType:"image/png"; data?:string; imageUrl?:string; assetId?:string; width?:number; height?:number};
+type ToolImage = {type:"image"; mimeType:"image/png"; data?:string; imageUrl?:string; assetId?:string; width?:number; height?:number; providerId?:string};
 function imageBlock(value: unknown): ToolImage | null {
   if (!value || typeof value !== "object") return null;
   const outer = value as Record<string,unknown>;
@@ -110,7 +110,7 @@ function GeneratedToolImage({image, onRegenerate, regenerationDisabled}: {image:
     </div> : null}
     {regenerationError ? <p role="alert" className="mt-1 text-[12px] text-[var(--color-danger-strong)]">{regenerationError}</p> : null}
     <figcaption className="mt-2 flex items-center justify-between text-[11px] text-[var(--color-text-tertiary)]">
-      <span>AstreaAI</span>{source ? <a href={source.url} download={downloadName}
+      <span>{image.providerId === "chutes" ? "Chutes" : "AstreaAI"}</span>{source ? <a href={source.url} download={downloadName}
         onClick={event => { event.currentTarget.download = `${crypto.randomUUID()}.png`; }} className="hover:underline">Save image</a> : null}
     </figcaption>
     {source && preview === source.url ? <ImagePreviewDialog name="Generated image" src={source.url} onClose={() => setPreview(null)} /> : null}

@@ -105,7 +105,7 @@ test("live image references survive tool completion and metadata-only timeline r
   const proposed = toolUpdate(2, "image");
   Object.assign(proposed.update, {title: "Generating image: generate", kind: "other", rawInput: {prompt: "A blue mug"}});
   store.standardUpdate(proposed);
-  const imageResource = { callId: "image", sha256: "ab".repeat(32), mimeType: "image/png", width: 1024, height: 1024 };
+  const imageResource = { callId: "image", sha256: "ab".repeat(32), mimeType: "image/png", width: 1024, height: 1024, providerId: "chutes" };
   store.standardUpdate({ ...toolUpdate(3, "image", "in_progress"), update: {
     sessionUpdate: "tool_call_update", toolCallId: "image", rawOutput: { imageResource },
   } });
@@ -113,7 +113,7 @@ test("live image references survive tool completion and metadata-only timeline r
   const live = store.snapshot().sessions.thread!.timeline.find(row => row.tool?.callId === "image")!.tool!;
   assert.equal(live.status, "completed"); assert.equal(live.content.length, 1);
   assert.deepEqual(live.content[0], { type: "image", mimeType: "image/png", width: 1024, height: 1024,
-    imageResource: { callId: "image", sha256: imageResource.sha256 } });
+    imageResource: { callId: "image", sha256: imageResource.sha256, providerId: "chutes" } });
   assert.ok(!JSON.stringify(live).includes('"data":'));
   const durable = page(5); durable.thread.lastTimelineSequence = 2;
   durable.items.push({ ...durable.items[0]!, id: "image-tool", externalId: "image", sequence: 2,
