@@ -396,6 +396,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       axiomDesktop: {
         platform, agent, setTheme: () => {},
+        systemLanguages: new URLSearchParams(location.search).getAll("system-language"),
         onBeforeLocalStateChange: (flush: () => Promise<void>, release: () => void) => {
           flushLocal = flush; releaseLocal = release; return () => {};
         },
@@ -2481,7 +2482,7 @@ async function openAccountScreen(page: Page, name: "Settings" | "Billing") {
   await page.getByRole("region", { name, exact: true }).waitFor();
 }
 
-test("the Desktop language preference updates the renderer and survives reload", async () => {
+test("Desktop follows the system language on launch and remembers an explicit choice", async () => {
   const { page, errors } = await openApp("darwin");
   try {
     const draft = page.getByPlaceholder("Ask anything");
@@ -2503,6 +2504,16 @@ test("the Desktop language preference updates the renderer and survives reload",
     await page.getByRole("combobox", { name: "表示言語" }).selectOption("en");
     await page.getByRole("tab", { name: "Appearance", exact: true }).waitFor();
     assert.equal(await page.locator("html").getAttribute("lang"), "en");
+
+    const japaneseSystem = new URL(origin);
+    japaneseSystem.searchParams.set("system-language", "ja-JP");
+    await page.addInitScript(() => Object.defineProperty(navigator, "languages", { value: ["en-US", "ja-JP"] }));
+    await page.goto(japaneseSystem.href);
+    await page.getByPlaceholder("Ask anything").waitFor();
+    await page.evaluate(() => localStorage.removeItem("axiom.desktop.locale"));
+    await page.reload();
+    await localizedDraft.waitFor();
+    assert.equal(await page.locator("html").getAttribute("lang"), "ja");
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

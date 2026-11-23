@@ -570,7 +570,10 @@ function createWindow(): BrowserWindow {
       sandbox: true,
       // Sizes the first paint; the controller keeps later documents in step.
       zoomFactor: interfaceSize().zoomFactor,
-      additionalArguments: PLATFORM_PREVIEW ? [`--axiom-platform-preview=${PLATFORM_PREVIEW}`] : [],
+      additionalArguments: [
+        `--axiom-system-languages=${app.getPreferredSystemLanguages().join(",")}`,
+        ...(PLATFORM_PREVIEW ? [`--axiom-platform-preview=${PLATFORM_PREVIEW}`] : []),
+      ],
     },
   });
 

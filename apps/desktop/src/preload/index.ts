@@ -7,6 +7,7 @@ import type { InterfaceSizeApi } from "../shared/interface-size";
 
 export type DesktopApi = {
   platform: NodeJS.Platform;
+  systemLanguages: readonly string[];
   factoryReset: (confirmation: string) => Promise<void>;
   minimize: () => void;
   maximize: () => void;
@@ -30,9 +31,12 @@ export type DesktopApi = {
 
 const previewArgument = process.argv.find((argument) => argument.startsWith("--axiom-platform-preview="));
 const previewPlatform = previewArgument?.slice("--axiom-platform-preview=".length) as NodeJS.Platform | undefined;
+const systemLanguagesFlag = "--axiom-system-languages=";
+const systemLanguages = process.argv.find((argument) => argument.startsWith(systemLanguagesFlag))?.slice(systemLanguagesFlag.length);
 
 const api: DesktopApi = {
   platform: previewPlatform ?? process.platform,
+  systemLanguages: systemLanguages ? systemLanguages.split(",") : [],
   astreaBanner: {
     claim: () => ipcRenderer.invoke("astrea-banner:claim"),
   },
