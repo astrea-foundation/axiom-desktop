@@ -7502,7 +7502,9 @@ mod engine_tests {
                 provider: provider.clone(),
             }))
             .unwrap();
-        let engine = AgentEngine::new(provider.clone(), Arc::new(tools), "vision", 4);
+        let engine = AgentEngine::new(provider.clone(), Arc::new(tools), "vision", 4)
+            .with_system_prompt(DESKTOP_CHAT_SYSTEM_PROMPT.to_owned())
+            .unwrap();
         let ctx = TurnContext {
             image_tools_available: true,
             permission_profile: PermissionProfile::Web,
@@ -7522,6 +7524,9 @@ mod engine_tests {
         let requests = provider.requests.lock().await;
         assert_eq!(requests.len(), 2, "no separate view_image round trip");
         let messages = &requests[1].messages;
+        let system_prompt = &messages[0].content;
+        assert!(system_prompt.contains("Inspect inline images directly."));
+        assert!(!system_prompt.contains("are not automatically visible to you"));
         let tail = &messages[messages.len() - 2..];
         assert_eq!(tail[0].role, ChatRole::Tool);
         assert_eq!(tail[0].tool_call_id.as_deref(), Some("generate"));
