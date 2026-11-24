@@ -8,7 +8,8 @@ function initialLocale(): ChatLocale {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (isChatLocale(saved)) return saved;
   } catch { /* Continue with the system preference. */ }
-  return preferredChatLocale(navigator.languages);
+  const systemLanguages = window.axiomDesktop?.systemLanguages;
+  return preferredChatLocale(systemLanguages?.length ? systemLanguages : navigator.languages);
 }
 
 export function useDesktopLocale() {
