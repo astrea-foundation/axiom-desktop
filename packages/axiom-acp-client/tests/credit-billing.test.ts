@@ -66,10 +66,15 @@ test("billing actions are finite and cannot redirect native credentials or payme
   assert(allowedBillingUrl("https://checkout.stripe.com/c/pay/fixture"));
   assert(allowedBillingUrl("https://checkout.stripe.com/g/pay/cs_fixture#stripe-fragment"));
   assert(allowedBillingUrl("https://billing.stripe.com/p/session/fixture"));
+  assert(allowedBillingUrl("https://billing.stripe.com/p/session?secret=live_Fixture"));
   for (const url of ["https://evil.invalid", "https://checkout.stripe.com.evil.invalid/g/pay/x",
     "https://user@checkout.stripe.com/c/pay/x", "https://checkout.stripe.com/other", "javascript:alert(1)",
     "http://checkout.stripe.com/g/pay/x", "https://checkout.stripe.com:8443/g/pay/x",
     "https://checkout.stripe.com/g/pay/../../elsewhere", "https://checkout.stripe.com/x/pay/x",
+    "https://billing.stripe.com/p/session", "https://billing.stripe.com/p/session?secret=",
+    "https://billing.stripe.com/p/session?secret=&secret=live_Fixture",
+    "https://billing.stripe.com/p/sessions?secret=live_Fixture",
+    "https://billing.stripe.com.evil.invalid/p/session?secret=live_Fixture",
   ]) assert(!allowedBillingUrl(url));
 });
 

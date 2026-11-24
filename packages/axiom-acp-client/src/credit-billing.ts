@@ -32,8 +32,11 @@ export function validateCreditAction(value: unknown): CreditBillingAction {
 export function allowedBillingUrl(value: string): boolean {
   try {
     const url = new URL(value);
+    const portalSecrets = url.pathname === "/p/session" ? url.searchParams.getAll("secret") : [];
+    const portalPath = url.pathname.startsWith("/p/session/") ||
+      (portalSecrets.length === 1 && portalSecrets[0] !== "");
     return value.length <= 4096 && !/[\x00-\x20]/.test(value) && url.protocol === "https:" && !url.username && !url.password && !url.port
       && ((url.hostname === "checkout.stripe.com" && /^\/[cg]\/pay\//.test(url.pathname)) ||
-          (url.hostname === "billing.stripe.com" && url.pathname.startsWith("/p/session/")));
+          (url.hostname === "billing.stripe.com" && portalPath));
   } catch { return false; }
 }
