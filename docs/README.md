@@ -17,6 +17,7 @@ must be recorded against the actual source revision and signed installers.
 | [Privacy](privacy.md) | Local storage, credentials and what leaves the device |
 | [Encrypted local storage](local-storage.md) | Binary assets, forward migration, OS-protected keys and recovery |
 | [Troubleshooting](troubleshooting.md) | Diagnosis, factory reset and recovery |
+| [0.1.31 release notes](releases/0.1.31.md) | Japanese, system language, Stripe billing links and saving images |
 | [0.1.30 release notes](releases/0.1.30.md) | Balance-funded plans, network funding minimums, usage reporting and interface size |
 | [0.1.29 release notes](releases/0.1.29.md) | Live Thinking, a simpler model picker and local free-trial retry times |
 | [0.1.28 release notes](releases/0.1.28.md) | Smaller default images and longer waits for an available GPU |
