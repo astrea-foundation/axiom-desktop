@@ -442,6 +442,10 @@ capable model and retains a textual successor summary; it never
 inserts encoded file bytes as message text. Older extracted-text attachments are
 readable in saved history but cannot be submitted as new uploads.
 
+With Agent enabled, ask the model to save an image from the conversation to a
+specific local filename. Agent can also export an image for processing in a
+local tool such as Python. See [saving images to local files](configuration.md#saving-images-to-local-files).
+
 ## Edit, regenerate and compaction
 
 Sent user messages show **Edit**, **Regenerate** and **Copy** beneath the bubble.
@@ -636,6 +640,12 @@ To keep streamed replies responsive, blocks over 50,000 characters (10,000 for
 automatic language detection), or beyond a 100,000-character per-message highlighting
 budget, remain plain text without truncation. Scrolling up or selecting transcript content pauses
 automatic following; Scroll to latest resumes it. Theme is light, dark or system.
+**Settings → Appearance → Language** switches between English and Japanese.
+Axiom checks the operating system's preferred language list on launch and uses
+the first supported language. An explicit choice in the Desktop profile takes
+precedence. Japanese covers the welcome screen, sidebar, composer, chat
+preparation and settings navigation. Some specialized panels and native dialogs
+still use English.
 **Settings → Appearance → Interface size** scales text, icons and spacing together
 by zooming the window: 100%, 110%, 125% or 150%. Windows and Linux start at 110%
 and macOS at 100%. `Ctrl` (`⌘` on macOS) with `+`, `-` and `0` steps through the

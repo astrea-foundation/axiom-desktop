@@ -1,4 +1,6 @@
 /** @jsxRuntime automatic */
+import { chatTranslator, type ChatTranslator } from "./messages";
+import { useChatLocale } from "./ChatLocale";
 import { ChevronUp, LoaderCircle, LogIn, LogOut, Settings, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -24,13 +26,14 @@ export interface AccountMenuProps {
  * Credits are weekly plan allowance only. Free trial and added funds are the
  * server's dollar total; trial credit is never converted or counted as credits here.
  */
-export function balanceLabel(billing: BillingStatus): string {
+export function balanceLabel(billing: BillingStatus, t: ChatTranslator = chatTranslator("en")): string {
   const dollars = usdFromMicrousd(billing.availableMicrousd, 2);
   return billing.credits && hasWeeklyAllowance(billing.credits)
-    ? `${creditAmount(billing.credits.allowance.remaining_units)} credits · ${dollars}` : dollars;
+    ? t("account.creditBalance", { credits: creditAmount(billing.credits.allowance.remaining_units), dollars }) : dollars;
 }
 
 export function AccountMenu({ account, accountId, billing, connected, onRefreshBalance, onSignIn, onLogout, onOpenSettings, onOpenBalance }: AccountMenuProps) {
+  const { t } = useChatLocale();
   const avatar = accountAvatar(account.kind === "valid" ? account.title : null);
   const [open, setOpen] = useState(false);
   const [refresh, setRefresh] = useState<"loading" | "ready" | "failed">("ready");
@@ -82,11 +85,11 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
     };
   }, [open, dismiss]);
 
-  const balance = account.kind === "starting" ? "Getting ready…" : account.kind === "unavailable" ? "Unavailable" : account.kind !== "valid" ? "Sign in" : !connected ? "Offline" : refresh === "failed" ? "Unavailable"
-    : billing ? balanceLabel(billing) : refresh === "loading" ? "Loading…" : "Unavailable";
+  const balance = account.kind === "starting" ? t("account.readying") : account.kind === "unavailable" ? t("account.unavailable") : account.kind !== "valid" ? t("action.signIn") : !connected ? t("account.offline") : refresh === "failed" ? t("account.unavailable")
+    : billing ? balanceLabel(billing, t) : refresh === "loading" ? t("account.loading") : t("account.unavailable");
   const itemClass = "flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2.5 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--wash-hover)] focus:bg-[var(--wash-hover)] focus:text-[var(--color-text-primary)] focus:outline-none";
   return <>
-    <button ref={trigger} type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
+    <button ref={trigger} type="button" aria-label={t("account.menu")} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
       onClick={() => setOpen((value) => !value)}
       onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); setOpen(true); } }}
       className={`flex w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-[var(--wash-hover)] ${open ? "bg-[var(--wash-hover)]" : ""}`}>
@@ -100,7 +103,7 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
       </span>
       <ChevronUp size={13} aria-hidden="true" className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
     </button>
-    {open ? createPortal(<div ref={menu} id={id} role="menu" aria-label="Account actions"
+    {open ? createPortal(<div ref={menu} id={id} role="menu" aria-label={t("account.actions")}
       className="account-menu-motion no-drag glass-panel-solid shadow-glass-pop fixed z-[100] max-h-[calc(100dvh-80px)] overflow-y-auto rounded-[12px] p-1.5"
       onKeyDown={(event) => {
         if (event.key === "Escape" || event.key === "Tab") { event.preventDefault(); event.stopPropagation(); restore(); }
@@ -113,17 +116,17 @@ export function AccountMenu({ account, accountId, billing, connected, onRefreshB
           items[next]?.focus();
         }
       }}>
-      <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenSettings(trigger.current!); }}><Settings size={15} aria-hidden="true" />Settings</button>
+      <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onOpenSettings(trigger.current!); }}><Settings size={15} aria-hidden="true" />{t("settings.title")}</button>
       <button type="button" role="menuitem" aria-disabled={account.kind === "starting" || undefined} className={`${itemClass} aria-disabled:opacity-50`} onClick={() => { if (account.kind === "starting") return; restore(); onOpenBalance(trigger.current!); }}>
-        <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>Billing</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
+        <WalletCards size={15} className="shrink-0" aria-hidden="true" /><span>{t("account.billing")}</span><span className="ml-auto text-[12px] tabular-nums text-[var(--color-text-tertiary)]">{balance}</span>
       </button>
       {account.kind === "valid" ? <>
         <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />
-        <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onLogout(); }}><LogOut size={15} aria-hidden="true" />Log out</button>
+        <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onLogout(); }}><LogOut size={15} aria-hidden="true" />{t("account.logOut")}</button>
       </> : null}
       {account.kind === "signed-out" || account.kind === "expired" ? <>
         <div className="mx-2 my-1 h-px bg-[var(--color-border)]" />
-        <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onSignIn(); }}><LogIn size={15} aria-hidden="true" />{account.kind === "expired" ? "Sign in again" : "Sign in"}</button>
+        <button type="button" role="menuitem" className={itemClass} onClick={() => { restore(); onSignIn(); }}><LogIn size={15} aria-hidden="true" />{account.kind === "expired" ? t("action.signInAgain") : t("action.signIn")}</button>
       </> : null}
     </div>, document.body) : null}
   </>;

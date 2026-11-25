@@ -16,6 +16,7 @@ pub enum ToolAccess {
     Interaction,
     Web,
     Image,
+    ImageExport,
     Read,
     Write,
 }
@@ -45,6 +46,9 @@ pub enum Effect {
         path: PathBuf,
     },
     FileWrite {
+        path: PathBuf,
+    },
+    ImageExport {
         path: PathBuf,
     },
     FileDelete {
@@ -101,7 +105,7 @@ impl EffectClass {
         match effect {
             Effect::ToolUse { .. } => Self::ToolUse,
             Effect::FileRead { .. } => Self::FileRead,
-            Effect::FileWrite { .. } => Self::FileWrite,
+            Effect::FileWrite { .. } | Effect::ImageExport { .. } => Self::FileWrite,
             Effect::FileDelete { .. } => Self::FileDelete,
             Effect::Process { .. } => Self::Process,
             Effect::RepositoryMutation { .. } => Self::RepositoryMutation,
@@ -542,6 +546,18 @@ impl PolicyEngine {
             );
         }
 
+        if let Effect::ImageExport { path } = &normalized {
+            let outside = !self.roots.iter().any(|root| path.starts_with(root));
+            if outside || profile == PermissionProfile::Confirm {
+                let explanation = if outside {
+                    "Image destination is outside the working directory"
+                } else {
+                    "Confirm profile requires approval for this image save"
+                };
+                return decision(DecisionKind::Ask, explanation.into(), normalized, false);
+            }
+        }
+
         if self
             .grants
             .read()
@@ -635,6 +651,15 @@ impl PolicyEngine {
             Effect::FileWrite { path } => Ok(Effect::FileWrite {
                 path: self.normalize_path(path),
             }),
+            Effect::ImageExport { path } => {
+                // Keep authorization bound to the destination resolved by the tool.
+                if self.normalize_path(path.clone()) != path {
+                    return Err(AxiomError::PermissionDenied(
+                        "The image save destination changed before approval.".into(),
+                    ));
+                }
+                Ok(Effect::ImageExport { path })
+            }
             Effect::FileDelete { path } => Ok(Effect::FileDelete {
                 path: self.normalize_path(path),
             }),
@@ -946,6 +971,17 @@ fn profile_default(
             "observe profile permits only read tools",
             false,
         ),
+        (
+            PermissionProfile::Confirm,
+            Effect::ToolUse {
+                access: ToolAccess::ImageExport,
+                ..
+            },
+        ) => (
+            DecisionKind::Allow,
+            "the image save destination is approved during execution",
+            false,
+        ),
         (PermissionProfile::Confirm, Effect::ToolUse { .. }) => (
             DecisionKind::Ask,
             "confirm profile requires approval for this tool",
@@ -985,6 +1021,7 @@ fn suggested_prefix(effect: &Effect) -> Option<ScopedGrant> {
         }),
         Effect::Process { .. }
         | Effect::ToolUse { .. }
+        | Effect::ImageExport { .. }
         | Effect::RepositoryMutation { .. }
         | Effect::ScopeChange { .. }
         | Effect::CredentialAccess { .. }
@@ -1017,6 +1054,7 @@ fn effect_path(effect: &Effect) -> Option<&Path> {
     match effect {
         Effect::FileRead { path }
         | Effect::FileWrite { path }
+        | Effect::ImageExport { path }
         | Effect::FileDelete { path }
         | Effect::PlanWrite { path } => Some(path),
         _ => None,
@@ -1028,6 +1066,7 @@ fn effect_matches_prefix(effect: &Effect, prefix: &str) -> bool {
         Effect::ToolUse { name, .. } => name.starts_with(prefix),
         Effect::FileRead { path }
         | Effect::FileWrite { path }
+        | Effect::ImageExport { path }
         | Effect::FileDelete { path }
         | Effect::PlanWrite { path } => path.starts_with(Path::new(prefix)),
         Effect::Process { program, .. } => program.starts_with(prefix),
@@ -1133,6 +1172,9 @@ pub fn describe_effect(effect: &Effect) -> String {
         Effect::ToolUse { name, .. } => format!("use tool {name}"),
         Effect::FileRead { path } => format!("read {}", path.display()),
         Effect::FileWrite { path } => format!("write {}", path.display()),
+        Effect::ImageExport { path } => {
+            format!("save an unencrypted image file to {}", path.display())
+        }
         Effect::FileDelete { path } => format!("delete {}", path.display()),
         Effect::Process {
             program,
@@ -1201,6 +1243,40 @@ mod tests {
 
     fn profiles() -> [PermissionProfile; 5] {
         PermissionProfile::ALL
+    }
+
+    #[test]
+    fn image_export_retains_file_write_denials() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let restricted = outside
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("restricted.png");
+        let policy = PolicyEngine::for_workspace_with_rules(
+            root.path(),
+            vec![PolicyRule {
+                action: RuleAction::Deny,
+                effect: Some(EffectClass::FileWrite),
+                resource_prefix: Some(restricted.to_string_lossy().into_owned()),
+                reason: Some("restricted destination".into()),
+            }],
+        )
+        .unwrap();
+        let denied = policy.evaluate(
+            PermissionProfile::FullAccess,
+            Effect::ImageExport { path: restricted },
+        );
+        assert_eq!(denied.kind, DecisionKind::Deny);
+        assert_eq!(denied.explanation, "restricted destination");
+        let external_write = policy.evaluate(
+            PermissionProfile::FullAccess,
+            Effect::FileWrite {
+                path: outside.path().join("other.png"),
+            },
+        );
+        assert_eq!(external_write.kind, DecisionKind::Deny);
     }
 
     #[test]

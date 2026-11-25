@@ -3,11 +3,13 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "katex/dist/katex.min.css";
 import "./index.css";
-import { ChatHostProvider, type ChatHost } from "@axiom/chat-ui";
+import { ChatHostProvider, ChatLocaleProvider, type ChatHost } from "@axiom/chat-ui";
 import { isMac, MAC_TRAFFIC_LIGHT_INSET_CLASS, useFullScreen } from "./lib/window-chrome";
 import { desktopCreditUsage } from "./creditUsageHost";
+import { useDesktopLocale } from "./lib/locale";
 
 function DesktopHost() {
+  const { locale, selectLocale } = useDesktopLocale();
   const fullScreen = useFullScreen();
   const host = useMemo<ChatHost>(() => ({
     chrome: { isMac, fullScreen, trafficLightInsetClass: MAC_TRAFFIC_LIGHT_INSET_CLASS },
@@ -41,7 +43,9 @@ function DesktopHost() {
     resolvePermission: async (id, outcome) => window.axiomDesktop?.agent.resolvePermission(id, outcome),
     resolveElicitation: async (id, outcome) => window.axiomDesktop?.agent.resolveElicitation(id, outcome),
   }), [fullScreen]);
-  return <ChatHostProvider host={host}><App /></ChatHostProvider>;
+  return <ChatLocaleProvider locale={locale} onChange={selectLocale}>
+    <ChatHostProvider host={host}><App /></ChatHostProvider>
+  </ChatLocaleProvider>;
 }
 
 const root = document.getElementById("root");

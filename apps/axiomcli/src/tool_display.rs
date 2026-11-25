@@ -35,6 +35,7 @@ pub(crate) fn describe_tool(
             "Failed to view image",
         )
         .into(),
+        "save_image" => describe_path_action(arguments, "path", phase, cwd, PathAction::SaveImage),
         "read_file" => describe_path_action(arguments, "path", phase, cwd, PathAction::Read),
         "list_files" => describe_path_action(arguments, "path", phase, cwd, PathAction::List),
         "inspect_metadata" => {
@@ -124,6 +125,7 @@ enum PathAction {
     List,
     Inspect,
     Edit,
+    SaveImage,
 }
 
 fn describe_path_action(
@@ -138,12 +140,14 @@ fn describe_path_action(
         PathAction::List => ("Listing", "Listed", "Failed to list"),
         PathAction::Inspect => ("Inspecting", "Inspected", "Failed to inspect"),
         PathAction::Edit => ("Editing", "Edited", "Failed to edit"),
+        PathAction::SaveImage => ("Saving", "Saved", "Failed to save"),
     };
     let verb = phased(phase, active, completed, failed);
     argument_path(arguments, key, cwd).map_or_else(
         || {
             let fallback = match action {
                 PathAction::Inspect => "file metadata",
+                PathAction::SaveImage => "image",
                 PathAction::Read | PathAction::List | PathAction::Edit => "files",
             };
             format!("{verb} {fallback}")

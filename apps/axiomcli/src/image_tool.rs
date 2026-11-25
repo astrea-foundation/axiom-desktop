@@ -1,8 +1,8 @@
-//! Conversation-local image generation with automatic visual previews.
+//! Conversation-local image generation, viewing and export.
 use crate::{
     AxiomError, Result,
     app::AppEvent,
-    policy::{Effect, ToolAccess},
+    policy::{DenyDynamicEffects, Effect, EffectAuthorizer, ToolAccess},
     provider::InferenceProvider,
     tools::{Tool, ToolContext, ToolResult},
 };
@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::Cursor,
+    io::{Cursor, ErrorKind, Write as _},
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,8 @@ pub struct ImageGenerationTool {
 }
 
 pub struct ViewImageTool;
+
+pub struct SaveImageTool;
 
 pub(crate) fn configure_runtime_definition(
     tool: &mut axiom_inference::ToolDefinition,
@@ -379,6 +382,175 @@ impl Tool for ViewImageTool {
         result.images.push(image);
         Ok(result)
     }
+}
+
+#[async_trait]
+impl Tool for SaveImageTool {
+    fn name(&self) -> &'static str {
+        "save_image"
+    }
+    fn description(&self) -> &'static str {
+        "Save the original image bytes from this conversation as a regular file and return its resolved path. Axiom keeps conversation images in encrypted local storage by default. Save a separate copy only when the user asks for a file or a local processing step needs one. The exported file is outside Axiom's encrypted storage. Choose a new filename in an existing directory. Destinations outside the working directory require user approval."
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object", "properties":{
+            "image_id":{"type":"string","pattern":"^img_[0-9a-f]{32}$",
+                "description":"Exact ID of an uploaded, generated or edited image in this conversation."},
+            "path":{"type":"string","minLength":1,
+                "description":"Destination filename, as an absolute path or relative to the working directory. Use an extension matching the original image format."}},
+            "required":["image_id","path"], "additionalProperties":false})
+    }
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ImageExport
+    }
+    fn effects(&self, _: &ToolContext, _: &Value) -> Result<Vec<Effect>> {
+        // Authorize the resolved destination once, immediately before writing.
+        Ok(vec![])
+    }
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+    ) -> Result<ToolResult> {
+        self.execute_authorized(context, arguments, cancellation, &DenyDynamicEffects)
+            .await
+    }
+    async fn execute_authorized(
+        &self,
+        context: &ToolContext,
+        arguments: Value,
+        cancellation: CancellationToken,
+        authorization: &dyn EffectAuthorizer,
+    ) -> Result<ToolResult> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Arguments {
+            image_id: String,
+            path: String,
+        }
+        let args: Arguments = serde_json::from_value(arguments).map_err(|_| {
+            AxiomError::Tool(
+                "save_image requires a conversation-local image_id and a destination path.".into(),
+            )
+        })?;
+        if !valid_image_id(&args.image_id) {
+            return Err(AxiomError::Tool(
+                "save_image requires a valid conversation-local image_id.".into(),
+            ));
+        }
+        let source = context.images.resolve(&args.image_id)?;
+        let destination = image_save_destination(&context.cwd, &args.path)?;
+        let saved = json!({
+            "image_id": source.id,
+            "mime_type": source.image.mime_type,
+            "path": serde_json::to_value(&destination)?,
+        });
+        authorization
+            .authorize(
+                Effect::ImageExport {
+                    path: destination.clone(),
+                },
+                cancellation.clone(),
+            )
+            .await?;
+
+        let cancellation = cancellation.child_token();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        tokio::task::spawn_blocking(move || {
+            let bytes = STANDARD
+                .decode(&source.image.data)
+                .map_err(|_| AxiomError::Storage("invalid image bytes".into()))?;
+            write_image_file(&destination, &bytes, &cancellation)?;
+            Ok(ToolResult::success(saved.to_string()))
+        })
+        .await
+        .map_err(|_| AxiomError::Tool("Could not finish saving the image.".into()))?
+    }
+}
+
+fn image_save_destination(cwd: &Path, input: &str) -> Result<PathBuf> {
+    let invalid_path =
+        || AxiomError::Tool("Provide a destination path ending in a filename.".into());
+    let filename = input
+        .rsplit(std::path::is_separator)
+        .next()
+        .unwrap_or_default();
+    if matches!(filename, "" | "." | "..")
+        || input.contains('\0')
+        || (cfg!(windows) && filename.contains(':'))
+    {
+        return Err(invalid_path());
+    }
+    let input = Path::new(input);
+    let path = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        if input.has_root() || matches!(input.components().next(), Some(Component::Prefix(_))) {
+            return Err(invalid_path());
+        }
+        cwd.join(input)
+    };
+    let parent = path.parent().ok_or_else(invalid_path)?;
+    let directory = parent.canonicalize().map_err(|error| {
+        AxiomError::Tool(format!(
+            "Could not resolve image destination directory {} ({error}).",
+            parent.display()
+        ))
+    })?;
+    if !directory.is_dir() {
+        return Err(AxiomError::Tool(
+            "Choose an existing destination directory.".into(),
+        ));
+    }
+    let destination = directory.join(filename);
+    match std::fs::symlink_metadata(&destination) {
+        Ok(_) => Err(image_destination_exists(&destination)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(destination),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn image_destination_exists(path: &Path) -> AxiomError {
+    AxiomError::Tool(format!(
+        "An entry already exists at {}. Choose a new filename.",
+        path.display()
+    ))
+}
+
+fn write_image_file(path: &Path, bytes: &[u8], cancellation: &CancellationToken) -> Result<()> {
+    let parent = path
+        .parent()
+        .expect("resolved image destination has a parent");
+    let changed = || AxiomError::Tool("The image destination directory changed. Try again.".into());
+    if cancellation.is_cancelled() {
+        return Err(AxiomError::Cancelled);
+    }
+    if parent.canonicalize()? != parent {
+        return Err(changed());
+    }
+    // Stage beside the destination so only a complete file becomes visible at
+    // the requested path, even if another save races this one.
+    let mut pending = tempfile::NamedTempFile::new_in(parent)?;
+    if pending.path().canonicalize()? != pending.path() {
+        return Err(changed());
+    }
+    pending.write_all(bytes)?;
+    pending.as_file().sync_all()?;
+    if parent.canonicalize()? != parent {
+        return Err(changed());
+    }
+    if cancellation.is_cancelled() {
+        return Err(AxiomError::Cancelled);
+    }
+    pending.persist_noclobber(path).map_err(|error| {
+        if error.error.kind() == ErrorKind::AlreadyExists {
+            image_destination_exists(path)
+        } else {
+            error.error.into()
+        }
+    })?;
+    Ok(())
 }
 
 fn image_result(
@@ -932,6 +1104,31 @@ pub(crate) mod tests {
         assert!(catalog.resolve(&format!("img_{:032x}", 0)).is_ok());
         assert!(catalog.resolve(&format!("img_{:032x}", 269)).is_ok());
         assert_eq!(catalog.0.lock().unwrap().len(), 270);
+    }
+
+    #[test]
+    fn image_save_leaves_a_destination_created_after_validation_intact() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = image_save_destination(directory.path(), "image.png").unwrap();
+        std::fs::write(&path, b"existing file").unwrap();
+        let error = write_image_file(&path, b"new image", &CancellationToken::new()).unwrap_err();
+        assert!(error.to_string().contains("Choose a new filename"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing file");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_save_rejects_a_parent_redirected_after_validation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let parent = workspace.path().join("output");
+        std::fs::create_dir(&parent).unwrap();
+        let path = image_save_destination(workspace.path(), "output/image.png").unwrap();
+        std::fs::remove_dir(&parent).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &parent).unwrap();
+        assert!(write_image_file(&path, b"new image", &CancellationToken::new()).is_err());
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[test]

@@ -109,7 +109,8 @@ subscription's seven-day schedule.
 Account controls require interactive native sign-in. `AXIOM_API_KEY` cannot
 authorize these operations. Outputs are bounded, validated JSON. Card/portal
 URLs are returned for explicit browser opening; they are restricted to approved
-Stripe hosts.
+Stripe hosts. Customer Portal session URLs use `/p/session?secret=…` or
+`/p/session/…` on `https://billing.stripe.com`.
 
 ```sh
 axiomcli billing status

@@ -771,6 +771,7 @@ pub fn registry_with_search(
         max_diff_bytes: max_output_bytes,
     }))?;
     registry.register(Arc::new(ReplaceText))?;
+    registry.register(Arc::new(crate::image_tool::SaveImageTool))?;
     registry.register(Arc::new(RunCommand {
         processes: processes.clone(),
     }))?;
@@ -2664,7 +2665,13 @@ mod tests {
         ] {
             assert!(observe.iter().any(|name| name == expected), "{expected}");
         }
-        for excluded in ["apply_patch", "fetch_url", "run_command", "web_search"] {
+        for excluded in [
+            "apply_patch",
+            "fetch_url",
+            "run_command",
+            "save_image",
+            "web_search",
+        ] {
             assert!(observe.iter().all(|name| name != excluded), "{excluded}");
         }
 

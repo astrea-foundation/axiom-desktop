@@ -1,23 +1,21 @@
 /** @jsxRuntime automatic */
-/** @jsxRuntime automatic */
+import { useChatLocale } from "./ChatLocale";
 import { useEffect, useRef, useState } from "react";
 
 const GREETINGS = [
-  "Think freely.",
-  "Off the record.",
-  "Nobody's listening.",
-  "A quiet place to think.",
-  "Speak freely.",
-  "Your words stay yours.",
-];
-
-function pickGreeting(): string {
-  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)] ?? "Think freely.";
-}
+  "greeting.thinkFreely",
+  "greeting.offTheRecord",
+  "greeting.nobodyListening",
+  "greeting.quietPlace",
+  "greeting.speakFreely",
+  "greeting.yourWords",
+] as const;
 
 export function GreetingHeadline() {
   const ref = useRef<HTMLHeadingElement>(null);
-  const [line] = useState(pickGreeting);
+  const { t } = useChatLocale();
+  const [greeting] = useState(() => GREETINGS[Math.floor(Math.random() * GREETINGS.length)] ?? GREETINGS[0]);
+  const line = t(greeting);
   const words = line.split(" ");
 
   useEffect(() => {

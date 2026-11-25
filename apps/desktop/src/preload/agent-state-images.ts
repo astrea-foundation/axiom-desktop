@@ -136,7 +136,8 @@ export class AgentStateImages {
     if (block.type === "image") {
       const id = typeof block.axiomImageAsset === "string" ? block.axiomImageAsset : "";
       if (this.context && id && block.lazy === true) {
-        return { type: "image", mimeType: "image/png", assetId: id, width: block.width, height: block.height };
+        return { type: "image", mimeType: "image/png", assetId: id, width: block.width, height: block.height,
+          ...(block.providerId === "chutes" ? { providerId: "chutes" } : {}) };
       }
       const image = this.context ? this.urls.get(id) : undefined;
       if (!image) {

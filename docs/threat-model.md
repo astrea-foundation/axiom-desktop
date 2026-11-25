@@ -138,6 +138,10 @@ rules. Confirm asks for each invocation. Full access skips routine prompts but
 does not bypass structural validation. Repository configuration cannot launch
 MCP servers or grant broader authority.
 
+Image export can create a new file outside the working directory with one-time
+approval for the resolved destination. File-write rules apply to the export,
+and the saved file is outside Axiom's encrypted storage. See [saving images to local files](configuration.md#saving-images-to-local-files).
+
 [workspace.rs](../apps/axiomcli/src/workspace.rs) has different process paths:
 
 - **Linux:** `/usr/bin/bwrap` is mandatory. Commands run in isolated namespaces,

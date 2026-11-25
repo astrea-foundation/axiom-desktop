@@ -396,6 +396,7 @@ async function openApp(platform = "linux", failDelete = false, thinkingLevels: s
       },
       axiomDesktop: {
         platform, agent, setTheme: () => {},
+        systemLanguages: new URLSearchParams(location.search).getAll("system-language"),
         onBeforeLocalStateChange: (flush: () => Promise<void>, release: () => void) => {
           flushLocal = flush; releaseLocal = release; return () => {};
         },
@@ -2480,6 +2481,42 @@ async function openAccountScreen(page: Page, name: "Settings" | "Billing") {
   await page.getByRole("menuitem", { name: name === "Settings" ? "Settings" : /^Billing/ }).click();
   await page.getByRole("region", { name, exact: true }).waitFor();
 }
+
+test("Desktop follows the system language on launch and remembers an explicit choice", async () => {
+  const { page, errors } = await openApp("darwin");
+  try {
+    const draft = page.getByPlaceholder("Ask anything");
+    await draft.fill("下書きはそのまま");
+    await openAccountScreen(page, "Settings");
+    await page.getByRole("combobox", { name: "Language" }).selectOption("ja");
+    await page.getByRole("tab", { name: "外観", exact: true }).waitFor();
+    assert.equal(await page.locator("html").getAttribute("lang"), "ja");
+    await page.getByRole("button", { name: "戻る", exact: true }).click();
+    const localizedDraft = page.getByPlaceholder("何でも聞いてください");
+    await localizedDraft.waitFor();
+    assert.equal(await localizedDraft.inputValue(), "下書きはそのまま");
+    await page.getByRole("button", { name: "新しいチャット", exact: true }).waitFor();
+
+    await page.reload();
+    await localizedDraft.waitFor();
+    await page.getByRole("button", { name: "アカウントメニュー" }).click();
+    await page.getByRole("menuitem", { name: "設定", exact: true }).click();
+    await page.getByRole("combobox", { name: "表示言語" }).selectOption("en");
+    await page.getByRole("tab", { name: "Appearance", exact: true }).waitFor();
+    assert.equal(await page.locator("html").getAttribute("lang"), "en");
+
+    const japaneseSystem = new URL(origin);
+    japaneseSystem.searchParams.set("system-language", "ja-JP");
+    await page.addInitScript(() => Object.defineProperty(navigator, "languages", { value: ["en-US", "ja-JP"] }));
+    await page.goto(japaneseSystem.href);
+    await page.getByPlaceholder("Ask anything").waitFor();
+    await page.evaluate(() => localStorage.removeItem("axiom.desktop.locale"));
+    await page.reload();
+    await localizedDraft.waitFor();
+    assert.equal(await page.locator("html").getAttribute("lang"), "ja");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 for (const platform of ["linux", "win32", "darwin"]) {
   test(`settings categories animate, work with keyboard, and preserve the chat (${platform})`, async () => {

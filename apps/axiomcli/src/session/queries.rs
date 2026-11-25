@@ -343,7 +343,8 @@ impl SessionStore {
                                 'width',json_extract(metadata,'$.generated_image.width'),
                                 'height',json_extract(metadata,'$.generated_image.height'),
                                 'imageResource',json_object('callId',external_id,
-                                    'sha256',json_extract(metadata,'$.generated_image.sha256'))))))
+                                    'sha256',json_extract(metadata,'$.generated_image.sha256'),
+                                    'providerId',json_extract(metadata,'$.generated_image.usage.providerId'))))))
                         ELSE metadata END, created_at, updated_at
                  FROM timeline_items
                  WHERE thread_id=?1 AND sequence>?2 ORDER BY sequence ASC LIMIT ?3",

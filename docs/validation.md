@@ -62,6 +62,9 @@ The launch dependency audit updates Tokio to 1.53.3, the rustls verifier to
 0.103.16, both webpki root lists to 1.0.10, libz-sys to 1.1.31 and
 pulldown-cmark to 0.13.6. These retain the existing security audit gate.
 
+The workspace locks `url` to 2.5.9 to pick up the patched origin handling.
+[RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592.html)
+
 The 0.1.24 release audit updates `libz-sys` to 1.1.33, the patched range for
 [RUSTSEC-2026-0544](https://github.com/RustSec/advisory-db/blob/main/crates/libz-sys/RUSTSEC-2026-0544.md)
 in the bundled Git dependency. The vulnerability remains enforced by the audit.

@@ -46,6 +46,11 @@ pub fn valid_billing_url(value: &str) -> bool {
                 Some("checkout.stripe.com") => {
                     url.path().starts_with("/c/pay/") || url.path().starts_with("/g/pay/")
                 }
+                Some("billing.stripe.com") if url.path() == "/p/session" => {
+                    let mut secrets = url.query_pairs().filter(|(key, _)| key == "secret");
+                    secrets.next().is_some_and(|(_, secret)| !secret.is_empty())
+                        && secrets.next().is_none()
+                }
                 Some("billing.stripe.com") => url.path().starts_with("/p/session/"),
                 _ => false,
             }
@@ -781,6 +786,9 @@ mod tests {
         assert!(valid_billing_url(
             "https://billing.stripe.com/p/session/example"
         ));
+        assert!(valid_billing_url(
+            "https://billing.stripe.com/p/session?secret=live_Fixture"
+        ));
         for bad in [
             "http://checkout.stripe.com/g/pay/x",
             "https://checkout.stripe.com:8443/g/pay/x",
@@ -789,6 +797,11 @@ mod tests {
             "https://checkout.stripe.com/x/pay/x",
             "https://billing.stripe.com.example.com/p/session/x",
             "https://user@billing.stripe.com/p/session/x",
+            "https://billing.stripe.com/p/session",
+            "https://billing.stripe.com/p/session?secret=",
+            "https://billing.stripe.com/p/session?secret=&secret=live_Fixture",
+            "https://billing.stripe.com/p/sessions?secret=live_Fixture",
+            "https://billing.stripe.com.example.com/p/session?secret=live_Fixture",
             "javascript:alert(1)",
             "https://billing.stripe.com/wrong",
         ] {

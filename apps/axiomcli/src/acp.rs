@@ -259,7 +259,9 @@ fn tool_kind(name: &str) -> protocol::ToolKind {
     match name {
         "read_file" | "list_files" | "glob_files" | "inspect_metadata" | "inspect_git"
         | "select_context" | "view_session_diff" | "view_image" => protocol::ToolKind::Read,
-        "apply_patch" | "replace_text" | "plan_create" | "plan_revise" => protocol::ToolKind::Edit,
+        "apply_patch" | "replace_text" | "save_image" | "plan_create" | "plan_revise" => {
+            protocol::ToolKind::Edit
+        }
         "search_text" | "web_search" | "fetch_url" => protocol::ToolKind::Search,
         "run_command" | "run_shell" | "start_background" | "background_wait"
         | "background_list" | "background_status" | "stop_background" | "background_process" => {
@@ -2382,7 +2384,7 @@ fn send_event(
                 protocol::ToolCallUpdateFields::new().raw_output(
                     serde_json::json!({"imageResource": {
                         "callId":call_id,"sha256":image.sha256,"mimeType":image.mime_type,
-                        "width":image.width,"height":image.height
+                        "width":image.width,"height":image.height,"providerId":image.usage.provider_id
                     }}),
                 ),
                 revision,
@@ -2914,6 +2916,7 @@ mod tests {
             "read_file",
             "apply_patch",
             "replace_text",
+            "save_image",
             "run_command",
             "run_shell",
             "start_background",

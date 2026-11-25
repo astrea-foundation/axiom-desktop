@@ -1,4 +1,5 @@
 /** @jsxRuntime automatic */
+import { useChatLocale } from "./ChatLocale";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { LogIn, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AxiomMark } from "./AxiomLogo";
@@ -57,6 +58,7 @@ export function WelcomeView({
   webDisabled,
   onWebToggle,
 }: WelcomeViewProps) {
+  const { t } = useChatLocale();
   const root = useRef<HTMLDivElement>(null);
   const prepared = useRef(false);
   const preparing = isChatPreparation(account);
@@ -106,7 +108,7 @@ export function WelcomeView({
               <div className="text-[13px] font-medium text-[var(--color-text-primary)]">{account.title}</div>
               <div className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--color-text-secondary)]">{account.detail}</div>
               {account.kind === "unavailable" && account.technicalDetails ? <details className="mt-2 text-[11.5px] text-[var(--color-text-secondary)]">
-                <summary className="cursor-pointer">Details</summary>
+                <summary className="cursor-pointer">{t("action.details")}</summary>
                 <p className="mt-1 whitespace-pre-wrap break-words">{account.technicalDetails}</p>
               </details> : null}
             </div>
@@ -116,7 +118,7 @@ export function WelcomeView({
               className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--color-cherry)] px-3.5 py-1.5 text-[11.5px] font-medium text-on-accent shadow-[0_1px_3px_var(--shade-button)] transition-[background-color,transform] hover:bg-[var(--color-cherry-bright)] active:scale-[0.97]"
             >
               {account.kind === "unavailable" ? <RefreshCw size={12} /> : <LogIn size={12} />}
-              {account.kind === "unavailable" ? "Try again" : account.kind === "expired" ? "Sign in again" : "Sign in"}
+              {account.kind === "unavailable" ? t("action.retry") : account.kind === "expired" ? t("action.signInAgain") : t("action.signIn")}
             </button>
           </div>
         ) : null}
@@ -145,9 +147,9 @@ export function WelcomeView({
           />
         </div>
         <div className="mt-3.5 flex items-center justify-center text-[11.5px] text-[var(--color-text-tertiary)]">
-          <span className="inline-flex items-center gap-1.5" title="Enabling Web shares search queries with an external search service.">
+          <span className="inline-flex items-center gap-1.5" title={t("welcome.searchDisclosure")}>
             <ShieldCheck size={12} className="shrink-0 text-[var(--color-text-muted)]" />
-            Model conversations are end-to-end encrypted
+            {t("welcome.encryption")}
           </span>
         </div>
         </>}
